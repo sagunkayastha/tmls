@@ -16,7 +16,6 @@ from tmls import hosts
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
-SKETCHPAD_URL = "http://<lan-ip>:8790"  # ~/Others/sketchpad hub, home network
 
 
 def slug(host, name):
@@ -90,9 +89,10 @@ class Tmls(App):
     #empty { padding: 2 4; color: $text-muted; }
     """
 
-    def __init__(self, remotes=()):
+    def __init__(self, remotes=(), sketchpad=None):
         super().__init__()
         self.remotes = list(remotes)
+        self.sketchpad = sketchpad  # sketchpad hub URL; no Sketch button without one
         self.open_sessions = {}  # slug -> Session
         self.current = None      # slug of the tab being shown
         self._listing = None
@@ -110,7 +110,8 @@ class Tmls(App):
                     yield Tabs(id="tabs")
                     yield Button("Open", id="open", variant="success")
                     yield Button("Copy", id="copy", variant="primary")
-                    yield Button("Sketch", id="sketch", variant="warning")
+                    if self.sketchpad:
+                        yield Button("Sketch", id="sketch", variant="warning")
                     yield Button("Quit", id="quit", variant="error")
                 with ContentSwitcher(id="terms", initial="empty"):
                     yield Static("← pick a session", id="empty")
@@ -207,7 +208,7 @@ class Tmls(App):
             self.exit()
             return
         if event.button.id == "sketch":
-            open_url(SKETCHPAD_URL)
+            open_url(self.sketchpad)
             return
         session = self.open_sessions.get(self.current)
         if session is None:
@@ -226,4 +227,5 @@ def main():
     ap = argparse.ArgumentParser(description="tmux sessions from every host in one TUI.")
     ap.add_argument("host", nargs="*", help=f"ssh host to include (default: lines of {hosts.CONFIG})")
     args = ap.parse_args()
-    Tmls(args.host or hosts.read_config()).run()
+    sketchpad = hosts.read_config(hosts.SKETCHPAD)
+    Tmls(args.host or hosts.read_config(), sketchpad[0] if sketchpad else None).run()

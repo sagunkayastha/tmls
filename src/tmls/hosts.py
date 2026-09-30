@@ -9,6 +9,7 @@ from pathlib import Path
 
 LOCAL = "local"
 CONFIG = Path.home() / ".config" / "tmls" / "hosts"
+SKETCHPAD = CONFIG.parent / "sketchpad"  # optional: the sketchpad hub's URL on one line
 # tmux prints tabs in -F output as "_"; ":" is safe because tmux bans it in session names.
 # window_activity is the last output; session_activity only moves on keypresses.
 FORMAT = "#{session_name}:#{session_windows}:#{session_attached}:#{window_activity}"

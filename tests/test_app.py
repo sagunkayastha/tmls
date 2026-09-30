@@ -233,13 +233,19 @@ async def test_needs_me_diamond_when_claude_stops_then_cleared_by_looking(clock_
         assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("◆"))
 
 
-async def test_sketch_button_opens_sketchpad(fake_hosts, monkeypatch):
+async def test_sketch_button_opens_the_configured_sketchpad(fake_hosts, monkeypatch):
     opened = []
     monkeypatch.setattr(tmls_app, "open_url", opened.append)
-    app = tmls_app.Tmls()
+    app = tmls_app.Tmls(sketchpad="http://hub.lan:8790")
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.click("#sketch")
-        assert opened == [tmls_app.SKETCHPAD_URL]
+        assert opened == ["http://hub.lan:8790"]
+
+
+async def test_no_sketch_button_without_a_sketchpad(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)):
+        assert not app.query("#sketch")
 
 
 async def test_mark_stays_on_the_name_line(clock_hosts):
