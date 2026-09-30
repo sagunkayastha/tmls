@@ -24,7 +24,9 @@ command.
   | Mark | Meaning |
   |------|---------|
   | green `●` | running |
+  | yellow `?` | Claude is waiting on you (a permission prompt or a question). Hover for which. It stays until you answer. |
   | orange `◆` | finished since you last looked: it needs you. Opening its tab clears it. |
+  | red `✕` | Claude's last reply was an API error. Clears when the next turn starts. |
   | dim `○` | idle, and you've seen it |
 
   For a session running [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
@@ -112,7 +114,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 47 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 52 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

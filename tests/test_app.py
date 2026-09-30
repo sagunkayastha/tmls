@@ -299,3 +299,16 @@ async def test_kitty_sessions_listed_and_click_focuses_their_window(fake_hosts, 
         await pilot.pause(0.2)
         assert focused == [win]
         assert not app.open_sessions  # no tab: it lives in its own kitty window
+
+
+async def test_waiting_mark_with_reason_on_hover_and_failed_mark(clock_hosts, monkeypatch):
+    async def list_host(host):
+        return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590, waiting="permission prompt"),
+                      hosts.Session(host, "broke", 1, False, 3600, 3600, "idle", 3590, failed=True)]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        assert rows(app)["ask"].endswith("?") and rows(app)["broke"].endswith("✕")
+        assert app.query_one("#s-box-ask").tooltip == "permission prompt"
+        assert app.query_one("#s-box-broke").tooltip is None

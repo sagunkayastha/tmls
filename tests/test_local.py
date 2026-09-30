@@ -37,3 +37,23 @@ def test_to_sessions_keeps_interactive_claude_outside_tmux():
         (hosts.KITTY, "proj", "idle", 1, 100),         # unnamed: folder name
     ]
     assert [s.kitty.id if s.kitty else None for s in got] == [4, 1, None]
+
+
+def test_to_sessions_carries_waiting_reason_and_failed():
+    files = [{"pid": 1, "name": "a", "kind": "interactive", "status": "waiting", "waitingFor": "input needed"},
+             {"pid": 2, "name": "b", "kind": "interactive", "status": "idle", "failed": True}]
+    got = local.to_sessions(files, {}, {}, now=100)
+    assert [(s.waiting, s.failed) for s in got] == [("input needed", False), (None, True)]
+
+
+def test_last_reply_failed_reads_the_newest_assistant_line(tmp_path):
+    t = tmp_path / "s.jsonl"
+    dumps = lambda d: json.dumps(d, separators=(",", ":"))  # compact, like Claude's transcripts
+    ok = dumps({"type": "assistant", "message": {"content": 'said "isApiErrorMessage":true'}})
+    err = dumps({"type": "assistant", "isApiErrorMessage": True})
+    user = dumps({"type": "user", "message": {"content": "retry"}})
+    t.write_text(f"{err}\n{ok}\n{user}\n")
+    assert not local.last_reply_failed(t)  # an old error, and a reply that only quotes the field
+    t.write_text(f"{ok}\n{err}\n{user}\n")
+    assert local.last_reply_failed(t)
+    assert not local.last_reply_failed(tmp_path / "missing.jsonl")

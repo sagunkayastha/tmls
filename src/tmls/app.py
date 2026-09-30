@@ -36,7 +36,8 @@ def open_url(url):
 
 
 ROW_WIDTH = 24  # #left width 28, minus its right border (1) and SessionRow padding (2 + 1)
-MARKS = {"running": Text("●", style="bold #4ebf71"), "done": Text("◆", style="bold #ff8c00"),
+MARKS = {"running": Text("●", style="bold #4ebf71"), "waiting": Text("?", style="bold #e5c07b"),
+         "done": Text("◆", style="bold #ff8c00"), "failed": Text("✕", style="bold #e06c75"),
          "idle": Text("○", style="dim")}
 
 
@@ -46,6 +47,8 @@ class SessionRow(Static):
         left.truncate(ROW_WIDTH - 2, overflow="ellipsis", pad=True)
         super().__init__(left + " " + MARKS[mark], id=f"s-{slug(session.host, session.name)}")
         self.session = session
+        if mark == "waiting":
+            self.tooltip = session.waiting  # the row has no room for why
 
     async def on_click(self):
         await self.app.open_session(self.session)
@@ -148,7 +151,7 @@ class Tmls(App):
 
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
-        listing = [(h, online, [(s.name, m) for s, m in sm]) for h, online, sm in rows]
+        listing = [(h, online, [(s.name, m, s.waiting) for s, m in sm]) for h, online, sm in rows]
         if listing == self._listing:
             return  # rebuilding would flicker and lose the scroll position
         self._listing = listing

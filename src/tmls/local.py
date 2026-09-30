@@ -14,6 +14,7 @@ from pathlib import Path
 from tmls import hosts
 
 SESSIONS = Path.home() / ".claude" / "sessions"
+PROJECTS = Path.home() / ".claude" / "projects"  # transcripts: <project>/<sessionId>.jsonl
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,8 @@ def to_sessions(files, windows, parents, now):
             name = f"{name} ({f['pid']})"
         names.add(name)
         out.append(hosts.Session(hosts.KITTY, name, 1, False, 0, now, f.get("status"),
-                                 f.get("statusUpdatedAt", 0) // 1000, find_window(f["pid"], parents, windows)))
+                                 f.get("statusUpdatedAt", 0) // 1000, find_window(f["pid"], parents, windows),
+                                 f.get("waitingFor"), bool(f.get("failed"))))
     return out
 
 
@@ -78,8 +80,26 @@ def _files():
         except (OSError, ValueError):
             continue
         if isinstance(f.get("pid"), int) and _alive(f["pid"]):
+            f["failed"] = any(last_reply_failed(t) for t in PROJECTS.glob(f"*/{f.get('sessionId')}.jsonl"))
             out.append(f)
     return out
+
+
+def last_reply_failed(transcript):
+    """Is the newest reply in a Claude transcript an API error? (hosts.CLAUDE does this remotely.)"""
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(max(0, fh.seek(0, 2) - 300_000))
+            lines = fh.read().decode(errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in reversed(lines):
+        if '"type":"assistant"' in line:
+            try:
+                return json.loads(line).get("isApiErrorMessage") is True
+            except ValueError:
+                return False  # cut off by the seek
+    return False
 
 
 async def _run(*argv):

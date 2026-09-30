@@ -36,15 +36,34 @@ def test_parse_claude_status_by_tmux_session():
     assert got == {"work": ("busy", 900), "notes": ("idle", 500), "plain": (None, 0)}
 
 
+def test_parse_waiting_reason_and_failed_reply():
+    # "failed" after a session file: its transcript's last reply is an API error
+    out = ("1000\nask:1:0:990\nbroke:1:0:990\nboth:1:0:990\n---\n"
+           '{"status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":900000,"tmux":"ask:@1.%1"}\n'
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"broke:@2.%2"}\nfailed\n'
+           '{"status":"idle","statusUpdatedAt":950000,"tmux":"both:@3.%3"}\nfailed\n'
+           '{"status":"waiting","waitingFor":"input needed","statusUpdatedAt":940000,"tmux":"both:@4.%4"}\n')
+    got = {s.name: (s.claude, s.waiting, s.failed) for s in hosts.parse("nas", out)}
+    assert got == {"ask": ("waiting", "permission prompt", False), "broke": ("idle", None, True),
+                   "both": ("waiting", "input needed", False)}  # waiting on you beats the rest
+
+
 def test_list_argv_reads_host_clock_windows_and_claude():
     script = hosts.list_argv("nas")[-1]
     assert hosts.list_argv(hosts.LOCAL)[:2] == ["sh", "-c"]
     assert "date +%s" in script and "list-windows -a" in script and ".claude/sessions/" in script
     assert ".key" not in script
+    assert '"isApiErrorMessage":true' in script and ".claude/projects/" in script
 
 
-def S(activity=0, now=100, claude=None, since=0):
-    return hosts.Session("nas", "x", 1, False, activity, now, claude, since)
+def S(activity=0, now=100, claude=None, since=0, failed=False):
+    return hosts.Session("nas", "x", 1, False, activity, now, claude, since, failed=failed)
+
+
+def test_status_waiting_and_failed_stay_until_they_change():
+    assert hosts.status(S(claude="waiting", since=50), seen=90, started=0) == "waiting"  # looking doesn't clear it
+    assert hosts.status(S(claude="idle", since=50, failed=True), seen=90, started=0) == "failed"
+    assert hosts.status(S(claude="busy", failed=True), seen=0, started=0) == "running"  # retrying
 
 
 def test_status_from_claude():

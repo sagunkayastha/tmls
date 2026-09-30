@@ -19,8 +19,15 @@ QUIET = 30  # seconds without output before a non-Claude session counts as finis
 # session; its status line redraws every minute, so output alone can't tell busy from idle.
 # Only live pids' .json files: stale ones outlive crashes, and the .key files next to them are secrets.
 RUNNING = {"busy", "shell"}  # "shell": the turn is over but a monitor or background shell still runs
+# "failed" after a session's file: the newest reply in its transcript is an API error. [^\\] skips
+# the field quoted inside a message, where JSON escapes its quotes (doubled for ugrep). The final
+# `true`: a false test last would fail the whole listing.
 CLAUDE = ('echo ---; for f in "$HOME"/.claude/sessions/*.json; do p=${f##*/}; '
-          'kill -0 "${p%.json}" 2>/dev/null && cat "$f" && echo; done')
+          'kill -0 "${p%.json}" 2>/dev/null || continue; cat "$f"; echo; '
+          'i=$(sed -n \'s/.*"sessionId":"\\([^"]*\\)".*/\\1/p\' "$f"); '
+          'for t in "$HOME"/.claude/projects/*/"$i".jsonl; do [ -f "$t" ] && tail -c 300000 "$t" '
+          '| grep \'[^\\\\]"type":"assistant"\' | tail -n 1 '
+          '| grep -q \'[^\\\\]"isApiErrorMessage":true\' && echo failed; done; done; true')
 
 
 @dataclass
@@ -34,6 +41,8 @@ class Session:
     claude: str | None = None  # Claude Code's status in this session ("busy", "idle", "shell")
     claude_since: int = 0      # when that status began, host clock
     kitty: object = None       # local.Window for KITTY sessions: click focuses it instead of attaching
+    waiting: str | None = None  # what Claude waits on you for ("permission prompt", "input needed", ...)
+    failed: bool = False        # Claude's newest reply is an API error
 
 
 def parse(host, out):
@@ -46,19 +55,29 @@ def parse(host, out):
         name, windows, attached, activity = line.rsplit(":", 3)
         if name not in sessions or int(activity) > sessions[name].activity:
             sessions[name] = Session(host, name, int(windows), attached != "0", int(activity), int(now))
+    files = []
     for line in claude.splitlines():
+        if line == "failed" and files:
+            files[-1]["failed"] = True
+            continue
         try:
-            c = json.loads(line)
+            files.append(json.loads(line))
         except ValueError:
             continue
+    for c in files:
         s = sessions.get((c.get("tmux") or "").split(":")[0])
         if s is None:
             continue
         status, since = c.get("status"), c.get("statusUpdatedAt", 0) // 1000
-        # two Claudes in one session: running wins, then the latest change
-        if s.claude is None or (status in RUNNING, since) > (s.claude in RUNNING, s.claude_since):
+        # two Claudes in one session: waiting on you wins, then running, then the latest change
+        if s.claude is None or rank(status, since) > rank(s.claude, s.claude_since):
             s.claude, s.claude_since = status, since
+            s.waiting, s.failed = c.get("waitingFor"), bool(c.get("failed"))
     return list(sessions.values())
+
+
+def rank(status, since):
+    return status == "waiting", status in RUNNING, since
 
 
 def list_argv(host):
@@ -69,10 +88,15 @@ def list_argv(host):
 
 
 def status(s, seen, started):
-    """"running", "done" (finished after tmls started and after you last looked), or "idle"."""
+    """"waiting" (on you), "running", "failed", "done" (finished after tmls started and after
+    you last looked), or "idle". Looking doesn't clear waiting or failed: they still need you."""
     if s.claude:
+        if s.claude == "waiting":
+            return "waiting"
         if s.claude in RUNNING:
             return "running"
+        if s.failed:
+            return "failed"
         finished = s.claude_since
     else:
         if s.now - s.activity < QUIET:
