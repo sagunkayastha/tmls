@@ -10,6 +10,15 @@ command.
 
 - **Lists sessions per host**: this machine (if it has tmux) plus any ssh hosts you name.
   The list refreshes every 5 seconds. A host that doesn't answer shows as *offline*.
+- **Also lists Claude Code sessions on this machine that aren't in tmux**, under
+  `<hostname> · kitty`, with the same status marks. There's no tmux to attach to, so a
+  click focuses the [kitty](https://sw.kovidgoyal.net/kitty/) window they run in. This
+  needs kitty remote control in `kitty.conf`:
+
+  ```
+  allow_remote_control socket-only
+  listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}
+  ```
 - **Shows what each session is doing**, with one mark after its name:
 
   | Mark | Meaning |
@@ -103,7 +112,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 43 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 47 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

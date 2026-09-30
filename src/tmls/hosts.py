@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LOCAL = "local"
+KITTY = "kitty"  # this machine's Claude sessions outside tmux (see local.py)
 CONFIG = Path.home() / ".config" / "tmls" / "hosts"
 SKETCHPAD = CONFIG.parent / "sketchpad"  # optional: the sketchpad hub's URL on one line
 # tmux prints tabs in -F output as "_"; ":" is safe because tmux bans it in session names.
@@ -32,6 +33,7 @@ class Session:
     now: int       # host clock when listed; compare only against the same host's times
     claude: str | None = None  # Claude Code's status in this session ("busy", "idle", "shell")
     claude_since: int = 0      # when that status began, host clock
+    kitty: object = None       # local.Window for KITTY sessions: click focuses it instead of attaching
 
 
 def parse(host, out):
@@ -107,6 +109,8 @@ def hosts(remotes):
 
 
 def label(host):
+    if host == KITTY:
+        return f"{socket.gethostname()} · kitty"
     return socket.gethostname() if host == LOCAL else host
 
 

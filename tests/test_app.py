@@ -2,8 +2,16 @@ import pytest
 from textual.widgets import ContentSwitcher, Tabs
 
 from tmls import app as tmls_app
-from tmls import hosts
+from tmls import hosts, local
 from tmls.term import Terminal
+
+
+@pytest.fixture(autouse=True)
+def no_local_claude(monkeypatch):
+    # the machine running the tests has its own Claude sessions; keep them out
+    async def none():
+        return []
+    monkeypatch.setattr(local, "list_sessions", none)
 
 
 @pytest.fixture
@@ -271,3 +279,23 @@ async def test_alt_shift_arrows_switch_tabs_even_from_the_terminal(fake_hosts):
         assert await wait_for(pilot, lambda: active() == "beta ×")
         await pilot.press("alt+shift+right")  # wraps around
         assert await wait_for(pilot, lambda: active() == "alpha ×")
+
+
+async def test_kitty_sessions_listed_and_click_focuses_their_window(fake_hosts, monkeypatch):
+    focused = []
+    win = local.Window("sock", 4, False)
+    async def sessions():
+        return [hosts.Session(hosts.KITTY, "notes", 1, False, 0, 3600, "idle", 3590, win)]
+
+    async def focus(w):
+        focused.append(w)
+    monkeypatch.setattr(local, "list_sessions", sessions)
+    monkeypatch.setattr(local, "focus", focus)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-kitty-notes"))
+        assert "box" in [str(h.render()) for h in app.query(".host-label")]
+        await pilot.click("#s-kitty-notes")
+        await pilot.pause(0.2)
+        assert focused == [win]
+        assert not app.open_sessions  # no tab: it lives in its own kitty window

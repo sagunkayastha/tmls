@@ -12,7 +12,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Static, Tab, Tabs
 
-from tmls import hosts
+from tmls import hosts, local
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
@@ -99,6 +99,7 @@ class Tmls(App):
         self._results = []       # [(host, online, sessions)] from the last poll
         self.started = {}        # host -> host clock at first poll, minus QUIET: older output isn't news
         self.seen = {}           # slug -> host clock when its tab was last on screen
+        self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
 
     def compose(self):
         with Horizontal():
@@ -127,18 +128,25 @@ class Tmls(App):
         names = hosts.hosts(self.remotes)
         results = await asyncio.gather(*(hosts.list_host(h) for h in names))
         self._results = [(h, online, ss) for h, (online, ss) in zip(names, results)]
+        kitty = await local.list_sessions()
+        if kitty:
+            self._results.append((hosts.KITTY, True, kitty))
         for h, _, ss in self._results:
             if ss:
                 self.started.setdefault(h, ss[0].now - hosts.QUIET)
-        await self._render_rows(bool(names))
+        await self._render_rows(bool(self._results))
 
     def _mark(self, s):
         key = slug(s.host, s.name)
-        if key == self.current:
+        if key == self.current or (s.kitty and s.kitty.focused):
             self.seen[key] = s.now  # on screen, so seen up to now
         return hosts.status(s, self.seen.get(key, 0), self.started[s.host])
 
     async def _render_rows(self, any_hosts=True):
+        async with self._render_lock:  # interleaved redraws would mount the same row twice
+            await self._draw_rows(any_hosts)
+
+    async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
         listing = [(h, online, [(s.name, m) for s, m in sm]) for h, online, sm in rows]
         if listing == self._listing:
@@ -159,6 +167,15 @@ class Tmls(App):
 
     async def open_session(self, session):
         key = slug(session.host, session.name)
+        if session.host == hosts.KITTY:  # no tmux to attach: jump to its own window
+            if session.kitty:
+                await local.focus(session.kitty)
+                self.seen[key] = session.now
+                # not inline: this runs in the clicked row's handler, and the redraw removes that row
+                self.run_worker(self._render_rows(), group="render")
+            else:
+                self.notify(f"{session.name} isn't in a kitty window tmls can reach.")
+            return
         if key not in self.open_sessions:
             self.open_sessions[key] = session
             # add_content keeps it hidden until its tab is active, so the terminals
