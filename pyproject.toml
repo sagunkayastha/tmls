@@ -1,0 +1,19 @@
+[project]
+name = "tmls"
+version = "0.1.0"
+description = "tmux sessions from every host in one TUI: list, attach in a tab, open in a window"
+requires-python = ">=3.12"
+dependencies = ["textual>=8.2", "pyte>=0.8.2"]
+
+[project.scripts]
+tmls = "tmls.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
