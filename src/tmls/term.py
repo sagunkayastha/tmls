@@ -1,8 +1,10 @@
 """A terminal inside a Textual widget: runs a command on a pty and renders it with pyte."""
 import asyncio
+import base64
 import fcntl
 import os
 import pty
+import re
 import signal
 import struct
 import termios
@@ -26,6 +28,10 @@ KEYS = {
 }
 ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 MODIFIERS = {"shift": 2, "alt": 3, "ctrl": 5, "ctrl+shift": 6}
+# pyte keeps DEC private modes shifted left by 5
+MOUSE_CLICKS, MOUSE_DRAGS, MOUSE_ANY, MOUSE_SGR = (m << 5 for m in (1000, 1002, 1003, 1006))
+BUTTONS = {1: 0, 2: 1, 3: 2}  # Textual left/middle/right -> xterm button codes
+OSC52 = re.compile(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)")
 
 
 def key_to_bytes(key, character):
@@ -39,6 +45,28 @@ def key_to_bytes(key, character):
     if mods == "ctrl" and len(base) == 1 and base.isalpha():
         return bytes([ord(base) & 0x1F])
     return character.encode() if character else b""
+
+
+def mouse_bytes(button, x, y, press, drag=False, shift=False, meta=False, ctrl=False):
+    """SGR mouse report (xterm mode 1006) for 0-based cell x, y."""
+    code = button + 32 * drag + 4 * shift + 8 * meta + 16 * ctrl
+    return f"\x1b[<{code};{x + 1};{y + 1}{'M' if press else 'm'}".encode()
+
+
+class Clipboard:
+    """Picks OSC 52 clipboard writes (tmux copy with set-clipboard) out of the child's output,
+    which pyte would drop. Keeps an unfinished sequence until its terminator arrives."""
+
+    def __init__(self):
+        self.pending = b""
+
+    def feed(self, data):
+        buf = self.pending + data
+        texts = [base64.b64decode(m.group(1)).decode(errors="replace") for m in OSC52.finditer(buf)]
+        start = buf.rfind(b"\x1b]52;")
+        unfinished = start != -1 and not OSC52.match(buf, start)
+        self.pending = buf[start:][-(1 << 20):] if unfinished else b""
+        return texts
 
 
 def color(name):
@@ -81,6 +109,7 @@ class VT(pyte.Screen):
 
 class Terminal(Widget, can_focus=True):
     DEFAULT_CSS = "Terminal { height: 1fr; }"
+    ALLOW_SELECT = False  # drags go to the child (tmux selects and copies); shift+drag is kitty's
 
     def __init__(self, argv, **kwargs):
         super().__init__(**kwargs)
@@ -91,6 +120,8 @@ class Terminal(Widget, can_focus=True):
         self.fd = None
         self.exited = False
         self._dirty = False
+        self.clipboard = Clipboard()
+        self._held = None  # xterm code of the button held down, for drags
 
     def on_mount(self):
         self.set_interval(1 / 30, self._flush)
@@ -129,6 +160,8 @@ class Terminal(Widget, can_focus=True):
         if not data:
             self._finish()
             return
+        for text in self.clipboard.feed(data):
+            self.app.copy_to_clipboard(text)
         self.stream.feed(data)
         self._dirty = True
 
@@ -170,6 +203,41 @@ class Terminal(Widget, can_focus=True):
         event.prevent_default()
         if self.fd is not None and not self.exited:
             os.write(self.fd, key_to_bytes(event.key, event.character))
+
+    @property
+    def mouse_mode(self):
+        """The child asked for mouse reports, in SGR form (tmux does with `mouse on`)."""
+        modes = self.vt.mode
+        return MOUSE_SGR in modes and bool(modes & {MOUSE_CLICKS, MOUSE_DRAGS, MOUSE_ANY})
+
+    def _mouse(self, event, button, press, drag=False):
+        event.stop()
+        if self.mouse_mode and self.fd is not None and not self.exited:
+            os.write(self.fd, mouse_bytes(button, event.x, event.y, press, drag,
+                                          event.shift, event.meta, event.ctrl))
+
+    def on_mouse_down(self, event):
+        if event.button in BUTTONS:
+            self._held = BUTTONS[event.button]
+            self.capture_mouse()  # keep getting the drag when it leaves the widget
+            self._mouse(event, self._held, press=True)
+
+    def on_mouse_move(self, event):
+        modes = self.vt.mode
+        if self._held is not None and modes & {MOUSE_DRAGS, MOUSE_ANY}:
+            self._mouse(event, self._held, press=True, drag=True)
+
+    def on_mouse_up(self, event):
+        if self._held is not None:
+            self._mouse(event, self._held, press=False)
+            self._held = None
+            self.release_mouse()
+
+    def on_mouse_scroll_up(self, event):
+        self._mouse(event, 64, press=True)
+
+    def on_mouse_scroll_down(self, event):
+        self._mouse(event, 65, press=True)
 
     def close(self):
         if self.pid is not None and not self.exited:

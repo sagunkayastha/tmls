@@ -13,7 +13,7 @@ def fake_hosts(monkeypatch):
     async def list_host(host):
         if not state["online"][host]:
             return False, []
-        return True, [hosts.Session(host, "alpha", 1, False, 0), hosts.Session(host, "beta", 2, True, 0)]
+        return True, [hosts.Session(host, "alpha", 1, False, 0, 0, None, 0), hosts.Session(host, "beta", 2, True, 0, 0, None, 0)]
 
     monkeypatch.setattr(hosts, "hosts", lambda remotes: ["box", "down"])
     monkeypatch.setattr(hosts, "label", lambda h: h)
@@ -175,3 +175,93 @@ async def test_quit_button_exits_tmls(fake_hosts):
         await pilot.click("#quit")
         await pilot.pause(0.2)
         assert app._exit
+
+
+async def test_no_hosts_explains_why(monkeypatch):
+    # no local tmux and no hosts file used to leave the list silently blank
+    monkeypatch.setattr(hosts, "hosts", lambda remotes: [])
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(".host-label"))
+        msg = str(app.query_one(".host-label").render())
+        assert "no hosts" in msg and str(hosts.CONFIG) in msg
+
+
+@pytest.fixture
+def clock_hosts(monkeypatch):
+    # name -> Claude status and when it last changed (host clock)
+    state = {"now": 3600, "claude": {"alpha": ("idle", 0), "beta": ("busy", 3590)}}
+
+    async def list_host(host):
+        return True, [hosts.Session(host, n, 1, False, state["now"], state["now"], c, t)
+                      for n, (c, t) in state["claude"].items()]
+
+    monkeypatch.setattr(hosts, "hosts", lambda remotes: ["box"])
+    monkeypatch.setattr(hosts, "label", lambda h: h)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(hosts, "attach_argv", lambda h, n: ["sh", "-c", "sleep 5"])
+    return state
+
+
+def rows(app):
+    return {r.session.name: str(r.render()).rstrip() for r in app.query(tmls_app.SessionRow)}
+
+
+async def test_marks_running_and_idle_in_name_order(clock_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        assert list(rows(app)) == ["alpha", "beta"]
+        assert rows(app)["beta"].endswith("●") and rows(app)["alpha"].endswith("○")
+
+
+async def test_needs_me_diamond_when_claude_stops_then_cleared_by_looking(clock_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        clock_hosts["claude"]["beta"] = ("idle", 3650)
+        clock_hosts["now"] = 3700
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("◆"))
+        await pilot.click("#s-box-beta")
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("○"))
+        tab = app.query_one(Tabs).active_tab
+        await pilot.click(tab, offset=(tab.size.width - 2, 0))  # close it
+        clock_hosts["claude"]["beta"] = ("idle", 3750)  # another turn finished while not shown
+        clock_hosts["now"] = 3800
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("◆"))
+
+
+async def test_sketch_button_opens_sketchpad(fake_hosts, monkeypatch):
+    opened = []
+    monkeypatch.setattr(tmls_app, "open_url", opened.append)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.click("#sketch")
+        assert opened == [tmls_app.SKETCHPAD_URL]
+
+
+async def test_mark_stays_on_the_name_line(clock_hosts):
+    clock_hosts["claude"]["a-very-long-session-name-indeed"] = ("busy", 3590)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await pilot.pause(0.1)
+        assert [r.size.height for r in app.query(tmls_app.SessionRow)] == [1, 1, 1]
+
+
+async def test_alt_shift_arrows_switch_tabs_even_from_the_terminal(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        await open_session(app, pilot, "beta")
+        active = lambda: app.query_one(Tabs).active_tab.label.plain
+        assert active() == "beta ×" and isinstance(app.focused, Terminal)
+        await pilot.press("alt+shift+left")
+        assert await wait_for(pilot, lambda: active() == "alpha ×")
+        await pilot.press("alt+shift+right")
+        assert await wait_for(pilot, lambda: active() == "beta ×")
+        await pilot.press("alt+shift+right")  # wraps around
+        assert await wait_for(pilot, lambda: active() == "alpha ×")

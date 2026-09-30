@@ -8,6 +8,7 @@ import subprocess
 
 from rich.text import Text
 from textual.app import App
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Static, Tab, Tabs
 
@@ -15,6 +16,7 @@ from tmls import hosts
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
+SKETCHPAD_URL = "http://<lan-ip>:8790"  # ~/Others/sketchpad hub, home network
 
 
 def slug(host, name):
@@ -29,12 +31,21 @@ def launch_window(argv):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def open_url(url):
+    subprocess.Popen(["xdg-open", url], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+ROW_WIDTH = 24  # #left width 28, minus its right border (1) and SessionRow padding (2 + 1)
+MARKS = {"running": Text("●", style="bold #4ebf71"), "done": Text("◆", style="bold #ff8c00"),
+         "idle": Text("○", style="dim")}
+
+
 class SessionRow(Static):
-    def __init__(self, session):
-        label = Text(session.name)
-        if session.attached:
-            label.append(" ●", style="dim")  # attached somewhere else too
-        super().__init__(label, id=f"s-{slug(session.host, session.name)}")
+    def __init__(self, session, mark):
+        left = Text(session.name)
+        left.truncate(ROW_WIDTH - 2, overflow="ellipsis", pad=True)
+        super().__init__(left + " " + MARKS[mark], id=f"s-{slug(session.host, session.name)}")
         self.session = session
 
     async def on_click(self):
@@ -58,6 +69,11 @@ class CloseTab(Tab):
 
 class Tmls(App):
     TITLE = "tmls"
+    # priority: the terminal forwards every other key to the session. kitty owns ctrl+shift+arrows.
+    BINDINGS = [
+        Binding("alt+shift+left", "switch_tab(-1)", "Previous tab", priority=True),
+        Binding("alt+shift+right", "switch_tab(1)", "Next tab", priority=True),
+    ]
     CSS = """
     #left { width: 28; border-right: solid $primary-darken-2; }
     #title { padding: 0 1; text-style: bold; }
@@ -80,6 +96,9 @@ class Tmls(App):
         self.open_sessions = {}  # slug -> Session
         self.current = None      # slug of the tab being shown
         self._listing = None
+        self._results = []       # [(host, online, sessions)] from the last poll
+        self.started = {}        # host -> host clock at first poll, minus QUIET: older output isn't news
+        self.seen = {}           # slug -> host clock when its tab was last on screen
 
     def compose(self):
         with Horizontal():
@@ -91,6 +110,7 @@ class Tmls(App):
                     yield Tabs(id="tabs")
                     yield Button("Open", id="open", variant="success")
                     yield Button("Copy", id="copy", variant="primary")
+                    yield Button("Sketch", id="sketch", variant="warning")
                     yield Button("Quit", id="quit", variant="error")
                 with ContentSwitcher(id="terms", initial="empty"):
                     yield Static("← pick a session", id="empty")
@@ -105,18 +125,34 @@ class Tmls(App):
     async def _refresh(self):
         names = hosts.hosts(self.remotes)
         results = await asyncio.gather(*(hosts.list_host(h) for h in names))
-        listing = [(h, online, [(s.name, s.windows, s.attached) for s in ss])
-                   for h, (online, ss) in zip(names, results)]
+        self._results = [(h, online, ss) for h, (online, ss) in zip(names, results)]
+        for h, _, ss in self._results:
+            if ss:
+                self.started.setdefault(h, ss[0].now - hosts.QUIET)
+        await self._render_rows(bool(names))
+
+    def _mark(self, s):
+        key = slug(s.host, s.name)
+        if key == self.current:
+            self.seen[key] = s.now  # on screen, so seen up to now
+        return hosts.status(s, self.seen.get(key, 0), self.started[s.host])
+
+    async def _render_rows(self, any_hosts=True):
+        rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
+        listing = [(h, online, [(s.name, m) for s, m in sm]) for h, online, sm in rows]
         if listing == self._listing:
             return  # rebuilding would flicker and lose the scroll position
         self._listing = listing
         box = self.query_one("#sessions")
         await box.remove_children()
         widgets = []
-        for h, (online, ss) in zip(names, results):
+        if not any_hosts:
+            widgets.append(Static(f"no hosts: tmux isn't installed here and {hosts.CONFIG} "
+                                  "lists none", classes="host-label"))
+        for h, online, sm in rows:
             label = hosts.label(h) if online else f"{hosts.label(h)} · offline"
             widgets.append(Static(label, classes="host-label"))
-            widgets.extend(SessionRow(s) for s in ss)
+            widgets.extend(SessionRow(s, m) for s, m in sm)
         await box.mount_all(widgets)
         self._mark_rows()
 
@@ -151,6 +187,14 @@ class Tmls(App):
         switcher.current = f"term-{self.current}"
         switcher.visible_content.focus()
         self._mark_rows()
+        self.run_worker(self._render_rows(), group="render")  # clears its ◆
+
+    def action_switch_tab(self, step):
+        tabs = self.query_one(Tabs)
+        if step > 0:
+            tabs.action_next_tab()
+        else:
+            tabs.action_previous_tab()
 
     def _mark_rows(self):
         for row in self.query(SessionRow):
@@ -161,6 +205,9 @@ class Tmls(App):
     def on_button_pressed(self, event):
         if event.button.id == "quit":
             self.exit()
+            return
+        if event.button.id == "sketch":
+            open_url(SKETCHPAD_URL)
             return
         session = self.open_sessions.get(self.current)
         if session is None:

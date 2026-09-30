@@ -5,7 +5,7 @@ from textual.app import App
 
 import pyte
 
-from tmls.term import VT, Terminal, color, key_to_bytes
+from tmls.term import VT, Clipboard, Terminal, color, key_to_bytes, mouse_bytes
 
 
 def test_special_keys():
@@ -127,3 +127,46 @@ def test_device_attribute_queries_get_no_reply():
     stream = pyte.ByteStream(VT(80, 24, replies.append))
     stream.feed(b"\x1b[>c\x1b[c")
     assert replies == []
+
+
+def test_mouse_bytes_sgr():
+    # 1-based cells; M = press/drag, m = release; drag adds 32, wheel is 64/65; shift 4, alt 8, ctrl 16
+    assert mouse_bytes(0, 0, 0, press=True) == b"\x1b[<0;1;1M"
+    assert mouse_bytes(0, 9, 4, press=False) == b"\x1b[<0;10;5m"
+    assert mouse_bytes(0, 2, 3, press=True, drag=True) == b"\x1b[<32;3;4M"
+    assert mouse_bytes(64, 5, 5, press=True) == b"\x1b[<64;6;6M"
+    assert mouse_bytes(2, 0, 0, press=True, meta=True, ctrl=True) == b"\x1b[<26;1;1M"
+
+
+def test_clipboard_catches_osc52_even_when_split():
+    clip = Clipboard()
+    assert clip.feed(b"hi \x1b]52;c;aGVs") == []
+    assert clip.feed(b"bG8=\x07 and \x1b]52;;d29ybGQ=\x1b\\ done") == ["hello", "world"]
+    assert clip.feed(b"plain output") == []
+
+
+async def test_mouse_goes_to_child_only_when_it_asks():
+    # the child turns on SGR mouse reporting, then shows the raw bytes it receives
+    script = "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=10 2>/dev/null | od -An -c; sleep 5"
+    app = Host(["sh", "-c", script])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: term.mouse_mode)
+        await pilot.click(term, offset=(2, 1))
+        assert await wait_for(pilot, lambda: "<   0   ;   3   ;   2   M" in screen_text(term))
+
+
+async def test_no_mouse_mode_sends_nothing():
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=1 2>/dev/null | od -An -c; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        await pilot.pause(0.3)
+        await pilot.click(term, offset=(2, 1))
+        await pilot.pause(0.3)
+        assert "<" not in screen_text(term)
+
+
+async def test_child_copy_reaches_the_clipboard():
+    app = Host(["sh", "-c", "printf '\\033]52;c;Y29waWVk\\007'; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        assert await wait_for(pilot, lambda: app.clipboard == "copied")
