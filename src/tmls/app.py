@@ -407,7 +407,7 @@ class Tmls(App):
         self.unread += 1
         self._show_unread()
         if mark in notifications.SYMBOL and (self.notifications.desktop or self.notifications.sound):
-            self.run_worker(notifications.emit(self.notifications, session.host, session.name,
+            self.run_worker(notifications.emit(self.notifications, hosts.label(session.host), session.name,
                                                mark, session.waiting), group="notifications")
 
     def _notification_controls(self):

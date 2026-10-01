@@ -673,3 +673,17 @@ async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(
         await pilot.click(box.query_one(".yes"))
         assert await wait_for(pilot, lambda: answered == [("box", "ask", ["Bash command", "touch /tmp/x"], True)])
         assert await wait_for(pilot, lambda: not app.query(tmls_app.Approval))
+
+
+async def test_desktop_notifications_name_the_host_as_the_sidebar_does(fake_hosts, monkeypatch):
+    # internally this machine is "local"; the popup should say its hostname
+    emitted = []
+    async def emit(*args):
+        emitted.append(args)
+    monkeypatch.setattr(notifications, "emit", emit)
+    monkeypatch.setattr(hosts, "label", lambda h: f"label-of-{h}")
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        app._alert(hosts.Session("box", "beta", 1, False, 0, 0), "done")
+        assert await wait_for(pilot, lambda: emitted and emitted[0][1] == "label-of-box")
