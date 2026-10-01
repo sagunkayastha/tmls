@@ -360,3 +360,44 @@ async def test_context_fill_shows_at_the_end_of_the_second_line(clock_hosts, mon
         assert lines["Season-36"][1].startswith("  NERSC_Train") and lines["Season-36"][1].endswith(" 75%")
         assert len(lines["Season-36"][1]) == tmls_app.ROW_WIDTH
         assert lines["notes"][1].strip() == "5%"  # same name as tmux: the line only holds the meter
+
+
+async def test_keyboard_into_the_list_move_and_attach(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        assert isinstance(app.focused, Terminal)
+        cursor = lambda: [r.session.name for r in app.query(".cursor")]
+        await pilot.press("alt+shift+up")  # from the terminal, which takes every other key
+        assert await wait_for(pilot, lambda: isinstance(app.focused, tmls_app.SessionList))
+        assert cursor() == ["alpha"]  # starts on the tab being shown
+        await pilot.press("j")
+        assert cursor() == ["beta"]
+        await pilot.press("j")  # stays on the last row
+        await pilot.press("up")
+        assert cursor() == ["alpha"]
+        await pilot.press("down", "enter")
+        assert await wait_for(pilot, lambda: name(app.query_one(Tabs).active_tab) == "beta ×")
+        assert await wait_for(pilot, lambda: isinstance(app.focused, Terminal))
+
+
+async def test_escape_leaves_the_list_without_changing_anything(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        await pilot.press("alt+shift+up", "j")
+        assert await wait_for(pilot, lambda: isinstance(app.focused, tmls_app.SessionList))
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: isinstance(app.focused, Terminal))
+        assert tab_names(app) == ["alpha ×"]
+
+
+async def test_enter_on_the_shown_session_goes_back_to_its_terminal(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        await pilot.press("alt+shift+up", "enter")
+        assert await wait_for(pilot, lambda: isinstance(app.focused, Terminal))

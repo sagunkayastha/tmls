@@ -67,6 +67,35 @@ class SessionRow(Static):
         await self.app.open_session(self.session)
 
 
+class SessionList(VerticalScroll):
+    """The sessions on the left; Alt+Shift+Up focuses it from the terminal."""
+    BINDINGS = [
+        Binding("j,down", "move(1)", "Next", show=False),
+        Binding("k,up", "move(-1)", "Previous", show=False),
+        Binding("enter", "attach", "Attach", show=False),
+        Binding("escape", "leave", "Back to the terminal", show=False),
+    ]
+
+    def action_move(self, step):
+        rows = list(self.query(SessionRow))
+        keys = [slug(r.session.host, r.session.name) for r in rows]
+        if not rows:
+            return
+        i = keys.index(self.app.cursor) + step if self.app.cursor in keys else 0
+        self.app.cursor = keys[max(0, min(i, len(keys) - 1))]
+        self.app._mark_rows()
+        self.query_one(".cursor").scroll_visible()
+
+    async def action_attach(self):
+        for row in self.query(".cursor"):
+            await self.app.open_session(row.session)
+            if row.session.host != hosts.KITTY:
+                self.app.focus_terminal()  # already the shown tab: no tab switch to move focus
+
+    def action_leave(self):
+        self.app.focus_terminal()
+
+
 class CloseTab(Tab):
     """A tab whose last cell is an × that closes it."""
 
@@ -95,6 +124,7 @@ class Tmls(App):
     BINDINGS = [
         Binding("alt+shift+left", "switch_tab(-1)", "Previous tab", priority=True),
         Binding("alt+shift+right", "switch_tab(1)", "Next tab", priority=True),
+        Binding("alt+shift+up", "focus_list", "Sessions list", priority=True),
     ]
     CSS = """
     #left { width: 28; border-right: solid $primary-darken-2; }
@@ -104,6 +134,7 @@ class Tmls(App):
     SessionRow:hover { background: $boost; }
     SessionRow.open { text-style: bold; }
     SessionRow.current { color: #ff8c00; background: $boost; }
+    SessionList:focus SessionRow.cursor { border-left: outer $accent; padding-left: 1; }
     #bar { height: 3; }
     #terms { height: 1fr; }
     #bar Tabs { width: 1fr; }
@@ -124,12 +155,13 @@ class Tmls(App):
         self.seen = {}           # slug -> host clock when its tab was last on screen
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
         self.marks = {}          # slug -> last mark shown, for the tabs
+        self.cursor = None       # slug of the row the keyboard is on in the list
 
     def compose(self):
         with Horizontal():
             with Vertical(id="left"):
                 yield Static("tmux", id="title")
-                yield VerticalScroll(id="sessions")
+                yield SessionList(id="sessions")
             with Vertical(id="right"):
                 with Horizontal(id="bar"):
                     yield Tabs(id="tabs")
@@ -247,6 +279,17 @@ class Tmls(App):
             key = slug(row.session.host, row.session.name)
             row.set_class(key in self.open_sessions, "open")
             row.set_class(key == self.current, "current")
+            row.set_class(key == self.cursor, "cursor")
+
+    def action_focus_list(self):
+        self.cursor = self.current
+        box = self.query_one(SessionList)
+        box.focus()
+        box.action_move(0)  # onto the shown session, else the first
+
+    def focus_terminal(self):
+        if self.current:
+            self.query_one(ContentSwitcher).visible_content.focus()
 
     def on_button_pressed(self, event):
         if event.button.id == "quit":

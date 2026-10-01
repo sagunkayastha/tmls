@@ -40,6 +40,8 @@ command.
 - **Attach in a tab**: click a session and it runs `tmux attach` (over `ssh -t` for
   remote hosts) in an embedded terminal. Every key goes to the session, including
   Ctrl+C and Tab. Open several and switch with the tab bar or **Alt+Shift+Left/Right**.
+  **Alt+Shift+Up** moves to the session list: j/k or arrows move, Enter attaches, Esc goes
+  back to the terminal.
   `×` on a tab detaches it; the session keeps running.
 - **Mouse in the terminal**: the wheel scrolls back through tmux's history, and a drag
   selects and copies to your clipboard (needs `set -g mouse on` in tmux). Shift+drag
@@ -122,7 +124,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 66 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 69 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License
