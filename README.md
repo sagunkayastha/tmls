@@ -64,7 +64,9 @@ command.
   it's plain `claude`.
 - **New session**: `+` on a host line opens a small form (host, folder, name, start a
   shell or `claude`). The session is created with `tmux new-session` in that folder and
-  opens in a tab.
+  opens in a tab. Optional named agent commands appear below `claude` in Start. Put them
+  in `~/.config/tmls/agent-presets.json` as argv lists, for example
+  `{"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"]}`.
 - **Ask**: sends a message to the shown session: type one, pick a saved prompt (one per
   line in `~/.config/tmls/prompts`; default "What's the progress?"), or resend one of the
   last ten you typed to its Claude. It goes in through tmux's paste buffer, then Enter.

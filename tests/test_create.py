@@ -1,5 +1,6 @@
 import os
 import subprocess
+import json
 
 import pytest
 from textual.app import App
@@ -19,6 +20,17 @@ def test_script_expands_home_and_quotes_everything_else():
 def test_claude_starts_inside_the_login_shell_of_the_new_session():
     # a bare `tmux new ... claude` gets a non-login shell without ~/.local/bin on PATH
     assert "send-keys -t =n: claude Enter" in create.script("n", "~", "claude")
+
+
+def test_named_agent_presets_are_argv_and_shell_quoted(tmp_path, monkeypatch):
+    config = tmp_path / "agent-presets.json"
+    monkeypatch.setattr(create, "PRESETS", config)
+    config.write_text(json.dumps({"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"],
+                                  "bad": "claude --dangerously-skip-permissions"}))
+    assert create.load_presets() == {"Opus plan": ("claude", "--model", "opus", "--permission-mode", "plan")}
+    command = create.script("n", "~", ("claude", "--model", "opus", "; touch /tmp/INJECTED"))
+    assert "send-keys -t =n: 'claude --model opus '\"'\"'; touch /tmp/INJECTED'\"'\"'' Enter" in command
+    assert create.load_presets() == {"Opus plan": ("claude", "--model", "opus", "--permission-mode", "plan")}
 
 
 def test_names():
@@ -83,6 +95,21 @@ async def test_form_creates_with_folder_name_by_default(monkeypatch):
         await pilot.pause(0.2)
     assert made == [("archbox", "bloom_26", "~/Pollensense/2026/bloom_26", "claude")]
     assert app.result == ("archbox", "bloom_26")
+
+
+async def test_form_offers_named_agent_presets(tmp_path, monkeypatch):
+    monkeypatch.setattr(create, "PRESETS", tmp_path / "presets.json")
+    create.PRESETS.write_text(json.dumps({"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"]}))
+    made = []
+    async def fake(host, name, folder, start):
+        made.append((host, name, folder, start))
+    monkeypatch.setattr(create, "create", fake)
+    app = Host(hosts=["archbox"], host="archbox")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#preset-0")
+        await pilot.click("#create")
+        await pilot.pause(.2)
+    assert made == [("archbox", "home", "~", ("claude", "--model", "opus", "--permission-mode", "plan"))]
 
 
 async def test_form_shows_errors_and_stays_open(monkeypatch):
