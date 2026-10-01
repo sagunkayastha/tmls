@@ -146,6 +146,74 @@ async def test_kill_requires_confirmation_warns_about_process_and_closes_tab(fak
         assert killed == [("box", "alpha")]
 
 
+async def test_new_window_keeps_the_existing_terminal_attached(fake_hosts, monkeypatch):
+    made = []
+    async def new_window(host, name):
+        made.append((host, name))
+    monkeypatch.setattr(manage, "new_window", new_window)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        terminal = app.query_one("#term-box-alpha", Terminal)
+        row = app.query_one("#s-box-alpha")
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 0))
+        await pilot.click("#new-window")
+        assert await wait_for(pilot, lambda: made == [("box", "alpha")])
+        assert app.query_one("#term-box-alpha", Terminal) is terminal
+
+
+@pytest.mark.parametrize("last", [True, False])
+async def test_kill_pane_confirms_process_and_closes_only_the_last_tab(fake_hosts, monkeypatch, last):
+    killed = []
+    async def pane_info(host, name):
+        return "claude", last
+    async def kill_pane(host, name):
+        killed.append((host, name))
+    monkeypatch.setattr(manage, "pane_info", pane_info)
+    monkeypatch.setattr(manage, "kill_pane", kill_pane)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        row = app.query_one("#s-box-alpha")
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 0))
+        await pilot.click("#kill-pane")
+        warning = str(app.screen.query_one("#pane-warning").render())
+        assert "claude" in warning and ("this ends the session" in warning) == last
+        assert killed == []
+        await pilot.pause(.2)
+        await pilot.click("#kill-pane")
+        assert await wait_for(pilot, lambda: bool(killed))
+        assert ("box-alpha" in app.open_sessions) != last
+
+
+async def test_kill_pane_refreshes_confirmation_if_the_target_changed(fake_hosts, monkeypatch):
+    info = iter([("claude", False), ("sleep", True), ("sleep", True)])
+    killed = []
+    async def pane_info(host, name):
+        return next(info)
+    async def kill_pane(host, name):
+        killed.append((host, name))
+    monkeypatch.setattr(manage, "pane_info", pane_info)
+    monkeypatch.setattr(manage, "kill_pane", kill_pane)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        row = app.query_one("#s-box-alpha")
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 0))
+        await pilot.click("#kill-pane")
+        await pilot.pause(.2)
+        await pilot.click("#kill-pane")
+        warning = str(app.screen.query_one("#pane-warning").render())
+        assert "sleep" in warning and "this ends the session" in warning
+        assert killed == []
+        await pilot.pause(.2)
+        await pilot.click("#kill-pane")
+        assert await wait_for(pilot, lambda: killed == [("box", "alpha")])
+
+
 async def test_url_link_opens_external_browser(fake_hosts, monkeypatch):
     opened = []
     monkeypatch.setattr(tmls_app, "open_url", opened.append)

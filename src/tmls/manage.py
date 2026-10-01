@@ -1,4 +1,4 @@
-"""Rename and kill tmux sessions, with a small confirmation dialog."""
+"""Manage tmux sessions, windows and panes from one dialog."""
 
 import asyncio
 import shlex
@@ -59,6 +59,45 @@ async def kill(host, name):
     return None
 
 
+async def _change(host, command):
+    try:
+        await _run(host, command)
+    except ManageError as error:
+        return str(error)
+    return None
+
+
+async def new_window(host, name):
+    return await _change(host, ["tmux", "new-window", "-t", "=" + name + ":",
+                                "-c", "#{pane_current_path}"])
+
+
+async def rename_window(host, name, new_name):
+    if not new_name.strip():
+        return "the window needs a name"
+    return await _change(host, ["tmux", "rename-window", "-t", "=" + name + ":", new_name])
+
+
+async def split(host, name, direction):
+    if direction not in {"h", "v"}:
+        raise ValueError(direction)
+    return await _change(host, ["tmux", "split-window", "-" + direction,
+                                "-t", "=" + name + ":", "-c", "#{pane_current_path}"])
+
+
+async def pane_info(host, name):
+    target = "=" + name + ":"
+    command = (await _run(host, ["tmux", "display-message", "-p", "-t", target,
+                                 "#{pane_current_command}"])).strip()
+    panes = (await _run(host, ["tmux", "list-panes", "-s", "-t", target,
+                               "-F", "#{pane_id}"])).splitlines()
+    return (command if command not in SHELLS else None), len(panes) == 1
+
+
+async def kill_pane(host, name):
+    return await _change(host, ["tmux", "kill-pane", "-t", "=" + name + ":"])
+
+
 class SessionActions(ModalScreen):
     CSS = """
     SessionActions { align: center middle; }
@@ -68,13 +107,17 @@ class SessionActions(ModalScreen):
     #session-actions Horizontal { height: auto; align-horizontal: right; }
     #session-actions Button { margin-left: 1; }
     #action-error { color: $error; height: auto; }
-    #kill-warning { height: auto; }
+    #kill-warning, #pane-warning { height: auto; }
+    #window-heading { padding-top: 1; text-style: bold; }
     """
 
     def __init__(self, session):
         super().__init__()
         self.session = session
         self.confirming = False
+        self.confirming_pane = False
+        self.pane_last = False
+        self.pane_confirmation = None
 
     def compose(self):
         with Vertical(id="session-actions") as box:
@@ -87,6 +130,17 @@ class SessionActions(ModalScreen):
                 yield Button("Cancel", id="cancel-actions")
                 yield Button("Rename", id="rename-session", variant="primary")
                 yield Button("Kill…", id="kill-session", variant="error")
+            yield Static("Window and pane", id="window-heading")
+            yield Input(placeholder="Window name", id="window-name")
+            with Horizontal():
+                yield Button("New window", id="new-window")
+                yield Button("Rename window", id="rename-window")
+            with Horizontal():
+                yield Button("Split side by side", id="split-horizontal")
+                yield Button("Split top/bottom", id="split-vertical")
+            yield Static("", id="pane-warning")
+            with Horizontal():
+                yield Button("Kill pane…", id="kill-pane", variant="error")
 
     async def on_button_pressed(self, event):
         event.stop()
@@ -119,6 +173,48 @@ class SessionActions(ModalScreen):
                 self.query_one("#action-error", Static).update(error)
                 return
             await self.app.killed_session(self.session)
+            self.dismiss(None)
+        elif event.button.id in {"new-window", "rename-window", "split-horizontal", "split-vertical"}:
+            action = event.button.id
+            if action == "new-window":
+                error = await new_window(self.session.host, self.session.name)
+            elif action == "rename-window":
+                window_name = self.query_one("#window-name", Input).value.strip()
+                error = await rename_window(self.session.host, self.session.name, window_name)
+            else:
+                direction = "h" if action == "split-horizontal" else "v"
+                error = await split(self.session.host, self.session.name, direction)
+            if error:
+                self.query_one("#action-error", Static).update(error)
+                return
+            self.app.refresh_sessions()
+            self.dismiss(None)
+        elif event.button.id == "kill-pane":
+            try:
+                current = await pane_info(self.session.host, self.session.name)
+            except ManageError as error:
+                self.query_one("#action-error", Static).update(str(error))
+                return
+            if not self.confirming_pane or current != self.pane_confirmation:
+                command, self.pane_last = current
+                warning = "Kill active pane?"
+                if command:
+                    warning += f"\nRunning: {command}"
+                if self.pane_last:
+                    warning += "\nThis is the last pane; this ends the session."
+                self.query_one("#pane-warning", Static).update(warning)
+                event.button.label = "Confirm Kill pane"
+                self.confirming_pane = True
+                self.pane_confirmation = current
+                return
+            error = await kill_pane(self.session.host, self.session.name)
+            if error:
+                self.query_one("#action-error", Static).update(error)
+                return
+            if self.pane_last:
+                await self.app.killed_session(self.session)
+            else:
+                self.app.refresh_sessions()
             self.dismiss(None)
 
     def key_escape(self):
