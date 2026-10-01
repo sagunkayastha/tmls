@@ -40,6 +40,17 @@ def test_names():
     assert create.check_name("") and create.check_name("a:b") and create.check_name("a.b")
 
 
+async def test_auto_name_uses_git_root_for_nested_local_folder(tmp_path):
+    repo = tmp_path / "ph_forecast"
+    nested = repo / "src" / "models"
+    nested.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    assert await create.suggest_name(hosts.LOCAL, str(nested)) == "ph_forecast"
+    other = tmp_path / "scratch"
+    other.mkdir()
+    assert await create.suggest_name(hosts.LOCAL, str(other)) == "scratch"
+
+
 def test_argv_runs_locally_or_over_ssh():
     assert create.argv(hosts.LOCAL, "n", "~", "shell")[:2] == ["sh", "-c"]
     assert create.argv("nas", "n", "~", "shell")[:4] == ["ssh", "-o", "BatchMode=yes", "-o"]
@@ -110,6 +121,25 @@ async def test_form_offers_named_agent_presets(tmp_path, monkeypatch):
         await pilot.click("#create")
         await pilot.pause(.2)
     assert made == [("archbox", "home", "~", ("claude", "--model", "opus", "--permission-mode", "plan"))]
+
+
+async def test_form_follows_repo_name_until_name_is_edited(monkeypatch):
+    async def suggest(host, folder):
+        return "ph_forecast" if folder.endswith("/src") else create.default_name(folder)
+    monkeypatch.setattr(create, "suggest_name", suggest)
+    app = Host(hosts=["archbox"], host="archbox")
+    async with app.run_test(size=(100, 30)) as pilot:
+        form = app.screen
+        form.query_one("#folder", Input).value = "~/ph_forecast/src"
+        for _ in range(30):
+            await pilot.pause(.05)
+            if form.query_one("#name", Input).value == "ph_forecast":
+                break
+        assert form.query_one("#name", Input).value == "ph_forecast"
+        form.query_one("#name", Input).value = "my-agent"
+        form.query_one("#folder", Input).value = "~/other/src"
+        await pilot.pause(.5)
+        assert form.query_one("#name", Input).value == "my-agent"
 
 
 async def test_form_shows_errors_and_stays_open(monkeypatch):

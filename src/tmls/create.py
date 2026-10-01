@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shlex
+from functools import partial
 from pathlib import Path
 
 from textual.containers import Horizontal, Vertical
@@ -44,6 +45,24 @@ def _folder(folder):
     if folder == "~" or folder.startswith("~/"):
         return '"$HOME"' + ("/" + shlex.quote(folder[2:]) if folder[2:] else "")
     return shlex.quote(folder)
+
+
+async def suggest_name(host, folder):
+    """Use the host's git root when the folder is in a repository."""
+    command = f"git -C {_folder(folder)} rev-parse --show-toplevel 2>/dev/null"
+    argv = ["sh", "-c", command] if host == hosts.LOCAL else [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host, command]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return default_name(folder)
+    except OSError:
+        return default_name(folder)
+    return default_name(out.decode(errors="replace").strip()) if proc.returncode == 0 else default_name(folder)
 
 
 def script(name, folder, start):
@@ -100,6 +119,7 @@ class NewSession(ModalScreen):
         self.hosts, self.host = hosts, host
         self._auto_name = default_name("~")
         self.presets = load_presets()
+        self._name_timer = None
 
     def compose(self):
         with Vertical(id="form") as form:
@@ -131,6 +151,28 @@ class NewSession(ModalScreen):
             name = self.query_one("#name", Input)
             if name.value == self._auto_name:  # still the default: follow the folder
                 self._auto_name = name.value = default_name(event.value.strip())
+            self._queue_name_lookup()
+
+    def on_select_changed(self, event):
+        if event.select.id == "host":
+            self._queue_name_lookup()
+
+    def _queue_name_lookup(self):
+        folder = self.query_one("#folder", Input).value.strip() or "~"
+        host = self.query_one("#host", Select).value
+        if self._name_timer:
+            self._name_timer.stop()
+        self._name_timer = self.set_timer(
+            .25, lambda: self.run_worker(partial(self._suggest_name, folder, host),
+                                          group="auto-name", exclusive=True))
+
+    async def _suggest_name(self, folder, host):
+        result = await suggest_name(host, folder)
+        if (self.query_one("#folder", Input).value.strip() or "~") != folder or self.query_one("#host", Select).value != host:
+            return
+        name = self.query_one("#name", Input)
+        if name.value == self._auto_name:
+            self._auto_name = name.value = result
 
     async def on_button_pressed(self, event):
         if event.button.id == "cancel":
