@@ -214,6 +214,22 @@ async def test_ctrl_drag_then_ctrl_c_copies_terminal_text_without_interrupting()
         assert "GOT-INT" not in screen_text(term)
 
 
+async def test_ctrl_drag_copies_on_release_and_trims_trailing_spaces():
+    app = Host(["sh", "-c", "printf 'done  '; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: "done" in screen_text(term))
+        await pilot.mouse_down(term, offset=(0, 0), control=True)
+        await pilot.mouse_up(term, offset=(6, 0), control=True)
+        assert app.clipboard == "done"
+
+
+async def test_tmux_osc52_copy_trims_trailing_spaces_on_each_line():
+    app = Host(["sh", "-c", "printf '\\033]52;c;ZG9uZSAgCm5leHQgIA==\\007'; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        assert await wait_for(pilot, lambda: app.clipboard == "done\nnext")
+
+
 async def test_right_click_pastes_system_clipboard_into_child(tmp_path, monkeypatch):
     paste = tmp_path / "wl-paste"
     paste.write_text("#!/bin/sh\nprintf PASTED\n")

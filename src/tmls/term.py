@@ -36,6 +36,10 @@ BUTTONS = {1: 0, 2: 1, 3: 2}  # Textual left/middle/right -> xterm button codes
 OSC52 = re.compile(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)")
 
 
+def trim_copy(text):
+    return "\n".join(line.rstrip(" \t") for line in text.split("\n"))
+
+
 def key_to_bytes(key, character):
     if key in KEYS:
         return KEYS[key].encode()
@@ -165,7 +169,7 @@ class Terminal(Widget, can_focus=True):
             self._finish()
             return
         for text in self.clipboard.feed(data):
-            self.app.copy_to_clipboard(text)
+            self.app.copy_to_clipboard(trim_copy(text))
         self.stream.feed(data)
         self._dirty = True
 
@@ -207,20 +211,26 @@ class Terminal(Widget, can_focus=True):
         # Every key goes to the child, so tab/ctrl+c don't move focus or quit tmls.
         event.stop()
         event.prevent_default()
-        if event.key == "ctrl+c" and self._selection is not None:
-            start, end = sorted(self._selection)
-            if start != end:
-                lines = []
-                for y in range(start[0], end[0] + 1):
-                    left = start[1] if y == start[0] else 0
-                    right = end[1] if y == end[0] else self.vt.columns
-                    lines.append("".join(self.vt.buffer[y][x].data or " " for x in range(left, right)))
-                self.app.copy_to_clipboard("\n".join(lines))
-                self._selection = None
-                self.refresh()
-                return
+        if event.key == "ctrl+c" and self._copy_selection():
+            self._selection = None
+            self.refresh()
+            return
         if self.fd is not None and not self.exited:
             os.write(self.fd, key_to_bytes(event.key, event.character))
+
+    def _copy_selection(self):
+        if self._selection is None:
+            return False
+        start, end = sorted(self._selection)
+        if start == end:
+            return False
+        lines = []
+        for y in range(start[0], end[0] + 1):
+            left = start[1] if y == start[0] else 0
+            right = end[1] if y == end[0] else self.vt.columns
+            lines.append("".join(self.vt.buffer[y][x].data or " " for x in range(left, right)))
+        self.app.copy_to_clipboard(trim_copy("\n".join(lines)))
+        return True
 
     def on_paste(self, event: events.Paste):
         # kitty's ctrl+shift+v arrives as one Paste event, not as keys
@@ -287,6 +297,7 @@ class Terminal(Widget, can_focus=True):
             self.release_mouse()
             event.stop()
             self.refresh()
+            self._copy_selection()
             return
         if self._held is not None:
             self._mouse(event, self._held, press=False)
