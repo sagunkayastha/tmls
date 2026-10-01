@@ -75,6 +75,10 @@ command.
 - **Rename or kill**: click `⋯` at the end of a tmux session row. Rename changes the
   session name and reopens its tab under the new name. Kill always asks you to confirm,
   shows running commands in the warning, and closes the session's tab.
+- **Host colors**: a thin colored bar on each host header and its tabs helps distinguish
+  hosts. Colors are stable across restarts. To override one, put a named color in
+  `~/.config/tmls/host-colors.json`, for example `{"archbox": "green"}`. Available names:
+  `blue`, `teal`, `violet`, `green`, `amber`, `rose`.
 - **Ask**: sends a message to the shown session: type one, pick a saved prompt (one per
   line in `~/.config/tmls/prompts`; default "What's the progress?"), or resend one of the
   last ten you typed to its Claude. It goes in through tmux's paste buffer, then Enter.

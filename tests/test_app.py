@@ -2,7 +2,7 @@ import pytest
 from textual.widgets import ContentSwitcher, Input, Tabs, TextArea
 
 from tmls import app as tmls_app
-from tmls import hosts, local, manage, notifications
+from tmls import host_colors, hosts, local, manage, notifications
 from tmls import viewer
 from tmls.term import Terminal
 
@@ -77,6 +77,19 @@ async def test_lists_sessions_under_host_headers(fake_hosts):
         assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
         headers = [str(h.render()) for h in app.query(".host-label")]
         assert headers == ["box", "down · offline"]
+
+
+async def test_host_header_and_tab_share_color_without_changing_status(fake_hosts, monkeypatch):
+    monkeypatch.setattr(host_colors, "load", lambda: {"box": "green"})
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#host-box"))
+        header = app.query_one("#host-box")
+        assert str(header.render()) == "box"
+        await open_session(app, pilot, "alpha")
+        tab = app.query_one("#tab-box-alpha")
+        assert header.styles.border_left == tab.styles.border_left
+        assert name(tab) == "alpha ×"  # the status mark remains first
 
 
 async def test_click_opens_session_in_a_tab(fake_hosts):

@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import approve, create, hosts, local, manage, notifications, prompts, viewer
+from tmls import approve, create, host_colors, hosts, local, manage, notifications, prompts, viewer
 from tmls.term import Terminal
 from tmls.viewer import FileViewer
 
@@ -177,9 +177,10 @@ class CloseTab(Tab):
     class Closed(Tab.TabMessage):
         pass
 
-    def __init__(self, name, mark, **kw):
+    def __init__(self, name, mark, host_color, **kw):
         self.session_name = name
         super().__init__(self.text(mark), **kw)
+        self.styles.border_left = ("solid", host_color)
 
     def text(self, mark):
         return MARKS[mark] + f" {self.session_name} ×"
@@ -257,6 +258,7 @@ class Tmls(App):
         self.alerts = []         # [(HH:MM, Session, mark)], newest first
         self.unread = 0
         self.notifications = notifications.load()
+        self.host_colors = host_colors.load()
 
     def compose(self):
         with Horizontal():
@@ -333,7 +335,9 @@ class Tmls(App):
                                   "lists none", classes="host-label"))
         for h, online, sm in rows:
             label = hosts.label(h) if online else f"{hosts.label(h)} · offline"
-            header = [Static(label, classes="host-label")]
+            title = Static(label, classes="host-label", id=f"host-{slug(h, '')}".rstrip("-"))
+            title.styles.border_left = ("solid", self._host_color(h))
+            header = [title]
             if online and h != hosts.KITTY:
                 header.append(AddSession(h))
             widgets.append(Horizontal(*header, classes="host-header"))
@@ -358,9 +362,13 @@ class Tmls(App):
             # never share the space (a squeezed pyte screen drops its top rows)
             await self.query_one(ContentSwitcher).add_content(
                 Terminal(hosts.attach_argv(session.host, session.name), id=f"term-{key}"))
-            tab = CloseTab(session.name, self.marks.get(key, "idle"), id=f"tab-{key}")
+            tab = CloseTab(session.name, self.marks.get(key, "idle"), self._host_color(session.host),
+                           id=f"tab-{key}")
             await self.query_one(Tabs).add_tab(tab)
         self.query_one(Tabs).active = f"tab-{key}"
+
+    def _host_color(self, host):
+        return host_colors.color_for(host_colors.key_for(host), self.host_colors)
 
     async def on_close_tab_closed(self, event):
         key = event.tab.id.removeprefix("tab-")
