@@ -13,8 +13,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import approve, create, hosts, local, prompts
+from tmls import approve, create, hosts, local, prompts, viewer
 from tmls.term import Terminal
+from tmls.viewer import FileViewer
 
 REFRESH_SECONDS = 5
 
@@ -207,7 +208,13 @@ class Tmls(App):
     SessionRow.current { color: #ff8c00; background: $boost; }
     SessionList:focus SessionRow.cursor { border-left: outer $accent; padding-left: 1; }
     #bar { height: 3; }
-    #terms { height: 1fr; }
+    #workspace { height: 1fr; }
+    #terms { width: 1fr; height: 1fr; }
+    FileViewer { width: 50%; height: 1fr; border-left: solid $primary-darken-2; }
+    #viewer-header { height: 3; }
+    #viewer-title { width: 1fr; padding: 1 0 0 1; text-overflow: ellipsis; }
+    #viewer-close { min-width: 3; width: 3; }
+    #viewer-text { height: 1fr; }
     #bar Tabs { width: 1fr; }
     #bar Button { min-width: 8; margin-left: 1; }
     #quit { margin-left: 3; }
@@ -258,8 +265,9 @@ class Tmls(App):
                     yield Button("Quit", id="quit", variant="error")
                 yield VerticalScroll(id="alerts")  # floats over the terminal, so it never resizes it
                 yield VerticalScroll(id="ask")
-                with ContentSwitcher(id="terms", initial="empty"):
-                    yield Static("← pick a session", id="empty")
+                with Horizontal(id="workspace"):
+                    with ContentSwitcher(id="terms", initial="empty"):
+                        yield Static("← pick a session", id="empty")
 
     def on_mount(self):
         self.refresh_sessions()
@@ -456,6 +464,26 @@ class Tmls(App):
     def focus_terminal(self):
         if self.current:
             self.query_one(ContentSwitcher).visible_content.focus()
+
+    async def on_terminal_link_clicked(self, event):
+        if event.kind == "url":
+            open_url(event.target)
+            return
+        session = self.open_sessions.get(self.current)
+        if session is None:
+            return
+        try:
+            path, text = await viewer.load_file(session.host, session.name, event.target)
+        except viewer.ViewerError as error:
+            self.notify(f"{event.target}: {error}", severity="error")
+            return
+        for old in self.query(FileViewer):
+            await old.remove()
+        await self.query_one("#workspace").mount(FileViewer(session.host, path, event.line, text))
+
+    async def on_file_viewer_closed(self):
+        await self.query_one(FileViewer).remove()
+        self.focus_terminal()
 
     def on_button_pressed(self, event):
         if event.button.id == "quit":
