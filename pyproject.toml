@@ -8,6 +8,7 @@ dependencies = ["textual>=8.2", "pyte>=0.8.2"]
 [project.scripts]
 tmls = "tmls.app:main"
 ct = "tmls.ct:main"
+ag = "tmls.ag:main"
 
 [build-system]
 requires = ["hatchling"]

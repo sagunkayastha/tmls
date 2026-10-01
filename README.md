@@ -50,6 +50,12 @@ command.
   Copied text loses trailing spaces on each line. Pasting
   (kitty's Ctrl+Shift+V, or right-click for the system clipboard) goes to the session, as a
   bracketed paste when it asks for one.
+- **`ag`** (for agents): `ag ls` lists sessions on every host, `ag read NAME` prints the
+  end of a session's screen, and `ag send NAME "text" [--from ME --mode MODE]` messages a
+  Claude session by name (its own inbox socket, over ssh for remote hosts), a Codex thread by
+  its `/rename` name (`codex queue`), or any other tmux session (paste + Enter).
+  `HOST:NAME` picks the host. `--mode` states the sender's own permission mode; a Claude
+  that skips permission prompts holds messages from senders that don't say they do too.
 - **`ct`**: run instead of `claude` to start Claude inside a tmux session named after the
   folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
   it's plain `claude`.
@@ -138,7 +144,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 96 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 103 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License
