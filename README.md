@@ -74,7 +74,10 @@ command.
   `{"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"]}`.
 - **Rename or kill**: click `⋯` at the end of a tmux session row. Rename changes the
   session name and reopens its tab under the new name. Kill always asks you to confirm,
-  shows running commands in the warning, and closes the session's tab.
+  shows running commands in the warning, and closes the session's tab. The same menu can
+  create or rename the active window, split its pane side by side or top/bottom, and kill
+  the active pane with confirmation. New windows and panes start in that pane's folder;
+  the open tab follows tmux without reconnecting.
 - **Host colors**: a thin colored bar on each host header and its tabs helps distinguish
   hosts. Colors are stable across restarts. To override one, put a named color in
   `~/.config/tmls/host-colors.json`, for example `{"archbox": "green"}`. Available names:
