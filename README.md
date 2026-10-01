@@ -50,6 +50,9 @@ command.
   Copied text loses trailing spaces on each line. Pasting
   (kitty's Ctrl+Shift+V, or right-click for the system clipboard) goes to the session, as a
   bracketed paste when it asks for one.
+- **`ct`**: run instead of `claude` to start Claude inside a tmux session named after the
+  folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
+  it's plain `claude`.
 - **New session**: `+` on a host line opens a small form (host, folder, name, start a
   shell or `claude`). The session is created with `tmux new-session` in that folder and
   opens in a tab.
@@ -130,7 +133,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 81 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 85 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License
