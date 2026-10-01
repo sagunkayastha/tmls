@@ -3,7 +3,11 @@ name = "tmls"
 version = "0.1.0"
 description = "tmux sessions from every host in one TUI: list, attach in a tab, open in a window"
 requires-python = ">=3.12"
-dependencies = ["textual>=8.2", "pyte>=0.8.2"]
+dependencies = [
+    "textual>=8.2",
+    "pyte>=0.8.2",
+    "pillow>=11",
+]
 
 [project.scripts]
 tmls = "tmls.app:main"

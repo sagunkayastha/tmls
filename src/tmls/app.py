@@ -377,7 +377,8 @@ class Tmls(App):
             # add_content keeps it hidden until its tab is active, so the terminals
             # never share the space (a squeezed pyte screen drops its top rows)
             await self.query_one(ContentSwitcher).add_content(
-                Terminal(hosts.attach_argv(session.host, session.name), id=f"term-{key}"))
+                Terminal(hosts.attach_argv(session.host, session.name), host=session.host,
+                         id=f"term-{key}"))
             tab = CloseTab(session.name, self.marks.get(key, "idle"), self._host_color(session.host),
                            id=f"tab-{key}")
             await self.query_one(Tabs).add_tab(tab)

@@ -19,6 +19,8 @@ from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
 
+from tmls import hosts, image_paste
+
 KEYS = {
     "up": "\x1b[A", "down": "\x1b[B", "right": "\x1b[C", "left": "\x1b[D",
     "home": "\x1b[H", "end": "\x1b[F", "pageup": "\x1b[5~", "pagedown": "\x1b[6~",
@@ -152,9 +154,10 @@ class Terminal(Widget, can_focus=True):
             super().__init__()
             self.kind, self.target, self.line = kind, target, line
 
-    def __init__(self, argv, **kwargs):
+    def __init__(self, argv, host=hosts.LOCAL, **kwargs):
         super().__init__(**kwargs)
         self.argv = argv
+        self.host = host
         self.vt = VT(80, 24, self._reply)
         self.stream = pyte.ByteStream(self.vt)
         self.pid = None
@@ -291,10 +294,10 @@ class Terminal(Widget, can_focus=True):
         self.app.copy_to_clipboard(trim_copy("\n".join(lines)))
         return True
 
-    def on_paste(self, event: events.Paste):
+    async def on_paste(self, event: events.Paste):
         # kitty's ctrl+shift+v arrives as one Paste event, not as keys
         event.stop()
-        self._paste(event.text)
+        await self._paste_input(event.text)
 
     def _paste(self, text):
         if text and self.fd is not None and not self.exited:
@@ -376,20 +379,54 @@ class Terminal(Widget, can_focus=True):
         self._mouse(event, 65, press=True)
 
     async def _paste_clipboard(self):
-        command = (["wl-paste", "--no-newline"] if shutil.which("wl-paste") else
-                   ["xclip", "-selection", "clipboard", "-o"] if shutil.which("xclip") else None)
-        text, process = None, None
-        if command:
+        await self._paste_input(None)
+
+    async def _paste_input(self, text):
+        dropped = image_paste.dropped_image(text) if text else None
+        if dropped:
+            if self.host in {hosts.LOCAL, hosts.KITTY}:
+                self._paste(text)
+                return
             try:
-                process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
-                                                               stderr=asyncio.subprocess.DEVNULL)
-                output, _ = await asyncio.wait_for(process.communicate(), timeout=2)
-                if process.returncode == 0:
-                    text = output.decode(errors="replace")
-            except (OSError, asyncio.TimeoutError):
-                if process is not None and process.returncode is None:
-                    process.kill()
-        self._paste(self.app.clipboard if text is None else text)
+                data = await asyncio.to_thread(dropped.read_bytes)
+                path = await image_paste.store(self.host, data, dropped.suffix)
+            except (OSError, image_paste.ImageError) as error:
+                self.app.notify(f"Image copy failed: {error}", severity="error")
+                return
+            self._paste(path)
+            return
+        if text:
+            self._paste(text)
+            return
+        try:
+            image = await image_paste.clipboard_image()
+        except image_paste.ImageError as error:
+            self.app.notify(f"Image paste failed: {error}", severity="error")
+            return
+        if image is not None:
+            try:
+                path = await image_paste.store(self.host, image, ".png")
+            except image_paste.ImageError as error:
+                self.app.notify(f"Image copy failed: {error}", severity="error")
+                return
+            self._paste(path)
+            return
+        if text is not None:
+            self._paste(text)
+            return
+        command = (["wl-paste", "--no-newline"]
+                   if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste") else
+                   ["xclip", "-selection", "clipboard", "-o"]
+                   if os.environ.get("DISPLAY") and shutil.which("xclip") else None)
+        if command is None:
+            self.app.notify("Paste needs wl-paste or xclip.", severity="error")
+            return
+        try:
+            output = await image_paste._run(command, timeout=2)
+        except image_paste.ImageError as error:
+            self.app.notify(f"Paste failed: {error}", severity="error")
+            return
+        self._paste(output.decode(errors="replace"))
 
     def close(self):
         if self.pid is not None and not self.exited:

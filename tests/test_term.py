@@ -37,13 +37,14 @@ def test_color_names():
 
 
 class Host(App):
-    def __init__(self, argv):
+    def __init__(self, argv, host="local"):
         super().__init__()
         self.argv = argv
+        self.host = host
         self.links = []
 
     def compose(self):
-        yield Terminal(self.argv, id="t")
+        yield Terminal(self.argv, host=self.host, id="t")
 
     def on_terminal_link_clicked(self, event):
         self.links.append((event.kind, event.target, event.line))
@@ -303,3 +304,101 @@ async def test_right_click_paste_is_bracketed_when_the_child_asks(tmp_path, monk
         await pilot.click(term, offset=(2, 0), button=3)
         assert await wait_for(pilot, lambda: "033   [   2   0   0   ~   h   i 033   [   2   0   1   ~"
                               in " ".join(screen_text(term).split("\n")))
+
+
+async def test_drop_of_local_image_into_remote_terminal_copies_and_pastes_remote_path(tmp_path, monkeypatch):
+    from tmls import image_paste
+    image = tmp_path / "my photo.jpg"
+    image.write_bytes(b"jpeg bytes")
+    copied = []
+
+    async def store(host, data, suffix):
+        copied.append((host, data, suffix))
+        return "~/.cache/tmls/images/remote.jpg"
+
+    monkeypatch.setattr(image_paste, "store", store)
+    app = Host(["sleep", "5"], host="archbox")
+    async with app.run_test(size=(80, 10)) as pilot:
+        term = app.query_one(Terminal)
+        pasted = []
+        monkeypatch.setattr(term, "_paste", pasted.append)
+        term.post_message(events.Paste(image.as_uri()))
+        assert await wait_for(pilot, lambda: pasted)
+        assert copied == [("archbox", b"jpeg bytes", ".jpg")]
+        assert pasted == ["~/.cache/tmls/images/remote.jpg"]
+
+
+async def test_image_clipboard_pastes_path_without_enter(tmp_path, monkeypatch):
+    from tmls import image_paste
+    calls = []
+
+    async def clipboard_image():
+        return b"\x89PNG\r\n\x1a\nimage"
+
+    async def store(host, data, suffix):
+        calls.append((host, data, suffix))
+        return "~/.cache/tmls/images/capture.png"
+
+    monkeypatch.setattr(image_paste, "clipboard_image", clipboard_image)
+    monkeypatch.setattr(image_paste, "store", store)
+    app = Host(["sleep", "5"], host="archbox")
+    async with app.run_test(size=(80, 10)) as pilot:
+        term = app.query_one(Terminal)
+        pasted = []
+        monkeypatch.setattr(term, "_paste", pasted.append)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: pasted)
+        assert calls == [("archbox", b"\x89PNG\r\n\x1a\nimage", ".png")]
+        assert pasted == ["~/.cache/tmls/images/capture.png"]
+
+
+async def test_failed_image_copy_toasts_and_types_nothing(monkeypatch):
+    from tmls import image_paste
+
+    async def clipboard_image():
+        return b"PNG"
+
+    async def store(host, data, suffix):
+        raise image_paste.ImageError("ssh failed")
+
+    monkeypatch.setattr(image_paste, "clipboard_image", clipboard_image)
+    monkeypatch.setattr(image_paste, "store", store)
+    app = Host(["sleep", "5"], host="archbox")
+    async with app.run_test(size=(80, 10)) as pilot:
+        term = app.query_one(Terminal)
+        pasted = []
+        monkeypatch.setattr(term, "_paste", pasted.append)
+        await pilot.click(term, offset=(2, 0), button=3)
+        await pilot.pause(0.2)
+        assert pasted == []
+
+
+async def test_x11_text_clipboard_uses_xclip_even_if_wl_paste_is_installed(tmp_path, monkeypatch):
+    for name, output in (("wl-paste", "WRONG"), ("xclip", "RIGHT")):
+        command = tmp_path / name
+        command.write_text(f"#!/bin/sh\nprintf {output}\n")
+        command.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=5 2>/dev/null; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: term.pid is not None)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: "RIGHT" in screen_text(term))
+
+
+async def test_text_paste_event_keeps_its_text_when_clipboard_also_has_an_image(monkeypatch):
+    from tmls import image_paste
+
+    async def clipboard_image():
+        return b"PNG"
+
+    monkeypatch.setattr(image_paste, "clipboard_image", clipboard_image)
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=2 2>/dev/null; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: term.pid is not None)
+        term.post_message(events.Paste("ok"))
+        assert await wait_for(pilot, lambda: "ok" in screen_text(term))
