@@ -56,6 +56,9 @@ command.
 - **New session**: `+` on a host line opens a small form (host, folder, name, start a
   shell or `claude`). The session is created with `tmux new-session` in that folder and
   opens in a tab.
+- **Ask**: sends a message to the shown session: type one, pick a saved prompt (one per
+  line in `~/.config/tmls/prompts`; default "What's the progress?"), or resend one of the
+  last ten you typed to its Claude. It goes in through tmux's paste buffer, then Enter.
 - **🔔 Alerts**: every time a session turns `?`, `◆` or `✕`, tmls notes it. The bell
   shows how many are new; click it for the list (newest first) and click a line to jump to
   that session.
@@ -133,7 +136,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 85 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 92 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

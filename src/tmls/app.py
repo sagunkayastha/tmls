@@ -11,9 +11,9 @@ from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, ContentSwitcher, Static, Tab, Tabs
+from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import create, hosts, local
+from tmls import create, hosts, local, prompts
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
@@ -128,6 +128,19 @@ class AddSession(Static):
         self.app.push_screen(create.NewSession(names, self.host), self.app.created)
 
 
+class PromptLine(Static):
+    """A saved or earlier message in the Ask panel; a click sends it."""
+
+    def __init__(self, text):
+        first = text.splitlines()[0] if text.strip() else text
+        super().__init__(Text(f"  {first}" + (" …" if "\n" in text.strip() else ""), no_wrap=True,
+                              overflow="ellipsis"))
+        self.text = text
+
+    async def on_click(self):
+        await self.app.send_prompt(self.text)
+
+
 class CloseTab(Tab):
     """A tab whose last cell is an × that closes it."""
 
@@ -179,6 +192,10 @@ class Tmls(App):
     #alerts { overlay: screen; position: absolute; offset: 30 3; width: 60; height: auto; max-height: 14;
               background: $panel; border: round $accent; border-title-align: left; display: none; }
     AlertLine:hover { background: $boost; }
+    #ask { overlay: screen; position: absolute; offset: 20 3; width: 70; height: auto; max-height: 20;
+           background: $panel; border: round $accent; border-title-align: left; display: none; }
+    #ask .heading { color: $text-muted; text-style: bold; padding-top: 1; }
+    PromptLine:hover { background: $boost; }
     """
 
     def __init__(self, remotes=(), sketchpad=None):
@@ -206,12 +223,14 @@ class Tmls(App):
                 with Horizontal(id="bar"):
                     yield Tabs(id="tabs")
                     yield Button("🔔", id="alerts-button")
+                    yield Button("Ask", id="ask-button")
                     yield Button("Open", id="open", variant="success")
                     yield Button("Copy", id="copy", variant="primary")
                     if self.sketchpad:
                         yield Button("Sketch", id="sketch", variant="warning")
                     yield Button("Quit", id="quit", variant="error")
                 yield VerticalScroll(id="alerts")  # floats over the terminal, so it never resizes it
+                yield VerticalScroll(id="ask")
                 with ContentSwitcher(id="terms", initial="empty"):
                     yield Static("← pick a session", id="empty")
 
@@ -358,6 +377,39 @@ class Tmls(App):
             self.unread = 0
             self._show_unread()
 
+    async def toggle_ask(self):
+        panel = self.query_one("#ask")
+        session = self.open_sessions.get(self.current)
+        if panel.display or session is None:
+            panel.display = False
+            if session is None:
+                self.notify("Open a session's tab first.")
+            return
+        panel.border_title = f"Send to {session.name}"
+        panel.display = True
+        await panel.remove_children()
+        await panel.mount_all([Input(placeholder="type a message, Enter sends", id="ask-input"),
+                               Static("Saved", classes="heading"),
+                               *[PromptLine(p) for p in prompts.saved()],
+                               Static("Recent", classes="heading")])
+        self.query_one("#ask-input").focus()
+        earlier = await prompts.recent(session.host, session.name)
+        if panel.display:
+            await panel.mount_all([PromptLine(p) for p in earlier] or [Static("  none yet")])
+
+    async def on_input_submitted(self, event):
+        if event.input.id == "ask-input" and event.value.strip():
+            await self.send_prompt(event.value)
+
+    async def send_prompt(self, text):
+        session = self.open_sessions.get(self.current)
+        self.query_one("#ask").display = False
+        self.focus_terminal()
+        if session is None:
+            return
+        error = await prompts.send(session.host, session.name, text)
+        self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information")
+
     def action_focus_list(self):
         self.cursor = self.current
         box = self.query_one(SessionList)
@@ -371,6 +423,9 @@ class Tmls(App):
     def on_button_pressed(self, event):
         if event.button.id == "quit":
             self.exit()
+            return
+        if event.button.id == "ask-button":
+            self.run_worker(self.toggle_ask())
             return
         if event.button.id == "alerts-button":
             self.run_worker(self.toggle_alerts())

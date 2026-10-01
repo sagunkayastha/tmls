@@ -466,3 +466,41 @@ async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hos
         await pilot.click("#create")
         assert await wait_for(pilot, lambda: tab_names(app) == ["proj ×"])
     assert made == [("box", "proj", "~/proj", "shell")]
+
+
+async def test_ask_panel_sends_saved_recent_or_typed_messages_to_the_shown_session(fake_hosts, monkeypatch):
+    from textual.widgets import Input
+    from tmls import prompts
+    sent = []
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    async def recent(host, name):
+        return ["run the tests"]
+    monkeypatch.setattr(prompts, "send", send)
+    monkeypatch.setattr(prompts, "recent", recent)
+    monkeypatch.setattr(prompts, "saved", lambda: ["What's the progress?"])
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        await pilot.click("#ask-button")
+        assert await wait_for(pilot, lambda: len(app.query(tmls_app.PromptLine)) == 2)
+        assert app.query_one("#ask").border_title == "Send to alpha"
+        await pilot.click(app.query(tmls_app.PromptLine).first())
+        assert await wait_for(pilot, lambda: sent == [("box", "alpha", "What's the progress?")])
+        assert not app.query_one("#ask").display
+        await pilot.click("#ask-button")
+        assert await wait_for(pilot, lambda: app.query(tmls_app.PromptLine))
+        app.query_one("#ask-input", Input).value = "hello there"
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: sent[-1] == ("box", "alpha", "hello there"))
+
+
+async def test_ask_without_a_tab_just_hints(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.click("#ask-button")
+        await pilot.pause(0.2)
+        assert not app.query_one("#ask").display
