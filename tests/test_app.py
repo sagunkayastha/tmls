@@ -754,7 +754,7 @@ async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hos
     assert made == [("box", "proj", "~/proj", "shell")]
 
 
-async def test_ask_panel_sends_saved_recent_or_typed_messages_to_the_shown_session(fake_hosts, monkeypatch):
+async def test_ask_panel_sends_saved_recent_or_typed_messages_to_the_shown_session(clock_hosts, monkeypatch):
     from textual.widgets import Input
     from tmls import prompts
     sent = []
@@ -790,6 +790,163 @@ async def test_ask_without_a_tab_just_hints(fake_hosts):
         await pilot.click("#ask-button")
         await pilot.pause(0.2)
         assert not app.query_one("#ask").display
+
+
+async def test_working_ask_queues_typed_and_saved_messages_then_can_clear(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    monkeypatch.setattr(prompts, "send", send)
+    monkeypatch.setattr(prompts, "recent", lambda h, n: async_recent())
+    monkeypatch.setattr(prompts, "saved", lambda: ["check progress"])
+
+    async def async_recent():
+        return []
+
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-beta"))
+        await open_session(app, pilot, "beta")
+        await pilot.click("#ask-button")
+        app.query_one("#ask-input", Input).value = "first"
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: "1✉ ●" in rows(app)["beta"])
+        assert sent == []
+        await pilot.click("#ask-button")
+        assert app.query_one("#ask").border_title == "Send to beta · 1 queued"
+        await pilot.click(app.query(tmls_app.PromptLine).first())
+        assert await wait_for(pilot, lambda: "2✉ ●" in rows(app)["beta"])
+        assert sent == []
+        await pilot.click("#ask-button")
+        await pilot.click("#ask-clear")
+        assert await wait_for(pilot, lambda: "✉" not in rows(app)["beta"])
+        assert app.query_one("#ask").border_title == "Send to beta"
+        assert sent == []
+
+
+async def test_queue_releases_one_message_per_done_or_idle_change(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-beta"))
+        await open_session(app, pilot, "beta")
+        await app.send_prompt("one")
+        await app.send_prompt("two")
+        assert sent == []
+        await app.open_session(next(s for _, _, ss in app._results for s in ss if s.name == "alpha"))
+        assert await wait_for(pilot, lambda: app.current == "box-alpha")
+        clock_hosts["claude"]["beta"] = ("waiting", 3650)
+        clock_hosts["now"] = 3700
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("?"))
+        assert sent == []
+        clock_hosts["claude"]["beta"] = ("idle", 3710)
+        clock_hosts["now"] = 3720
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: sent == [("box", "beta", "one")])
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("◆"))
+        await pilot.click("#s-box-beta")  # ◆ → ○ from looking is still the same finished turn
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("○"))
+        assert sent == [("box", "beta", "one")]
+        app.refresh_sessions()
+        await pilot.pause(0.2)
+        assert sent == [("box", "beta", "one")]
+        clock_hosts["claude"]["beta"] = ("busy", 3730)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("●"))
+        clock_hosts["claude"]["beta"] = ("idle", 3750)
+        clock_hosts["now"] = 3800
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: sent == [("box", "beta", "one"), ("box", "beta", "two")])
+
+
+async def test_failed_transition_keeps_queue_until_a_later_turn(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+    state = {"status": "busy", "failed": False, "now": 3600}
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "beta", 1, False, state["now"], state["now"],
+                                    state["status"], state["now"] - 10, failed=state["failed"])]
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-beta"))
+        await open_session(app, pilot, "beta")
+        await app.send_prompt("retry after failure")
+        state.update(status="idle", failed=True, now=3700)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("✕"))
+        assert app.queue == {"box-beta": ["retry after failure"]} and sent == []
+        state.update(status="busy", failed=False, now=3720)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("●"))
+        state.update(status="idle", now=3740)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: sent == [("box", "beta", "retry after failure")])
+
+
+async def test_open_ask_title_tracks_delivery_count(clock_hosts, monkeypatch):
+    from tmls import prompts
+
+    async def send(host, name, text):
+        return None
+
+    async def recent(host, name):
+        return []
+
+    monkeypatch.setattr(prompts, "send", send)
+    monkeypatch.setattr(prompts, "recent", recent)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-beta"))
+        await open_session(app, pilot, "beta")
+        await app.send_prompt("one")
+        await app.send_prompt("two")
+        await pilot.click("#ask-button")
+        assert await wait_for(pilot, lambda: app.query_one("#ask").border_title ==
+                              "Send to beta · 2 queued")
+        clock_hosts["claude"]["beta"] = ("idle", 3650)
+        clock_hosts["now"] = 3700
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: app.queue.get("box-beta") == ["two"])
+        assert app.query_one("#ask").border_title == "Send to beta · 1 queued"
+
+
+async def test_failed_queue_keeps_messages_and_rename_moves_it(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-beta"))
+        await open_session(app, pilot, "beta")
+        await app.send_prompt("keep me")
+        old = app.open_sessions["box-beta"]
+        await app.renamed_session(old, "gamma")
+        assert app.queue == {"box-gamma": ["keep me"]}
+        await app.killed_session(hosts.Session("box", "gamma", 1, False, 0, 0))
+        assert app.queue == {}
+        assert sent == []
+        await pilot.pause(0.2)
 
 
 async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(clock_hosts, monkeypatch):
