@@ -1,13 +1,29 @@
 """New tmux session on a chosen host, in a chosen folder: the form and the command behind it."""
 import asyncio
+import json
 import os
 import shlex
+from pathlib import Path
 
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, RadioButton, RadioSet, Select, Static
 
 from tmls import hosts
+
+PRESETS = Path.home() / ".config" / "tmls" / "agent-presets.json"
+
+
+def load_presets():
+    try:
+        data = json.loads(PRESETS.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {name: tuple(argv) for name, argv in data.items()
+            if isinstance(name, str) and name and isinstance(argv, list) and argv
+            and all(isinstance(arg, str) and arg for arg in argv)}
 
 
 def default_name(folder):
@@ -36,10 +52,11 @@ def script(name, folder, start):
          f"tmux has-session -t {shlex.quote('=' + name)} 2>/dev/null && "
          f"{say(f'a session named {name} already exists')}; "
          f'tmux new-session -d -s {shlex.quote(name)} -c "$PWD"')
-    if start == "claude":
+    if start != "shell":
         # typed into the new session's own shell: a bare `tmux new … claude` runs without the
         # login PATH, where claude lives
-        s += f"; tmux send-keys -t {shlex.quote('=' + name + ':')} claude Enter"
+        command = "claude" if start == "claude" else shlex.join(start)
+        s += f"; tmux send-keys -t {shlex.quote('=' + name + ':')} {shlex.quote(command)} Enter"
     return s
 
 
@@ -82,6 +99,7 @@ class NewSession(ModalScreen):
         super().__init__()
         self.hosts, self.host = hosts, host
         self._auto_name = default_name("~")
+        self.presets = load_presets()
 
     def compose(self):
         with Vertical(id="form") as form:
@@ -101,6 +119,8 @@ class NewSession(ModalScreen):
                 with RadioSet(id="start"):
                     yield RadioButton("shell", value=True, id="shell")
                     yield RadioButton("claude", id="claude")
+                    for i, name in enumerate(self.presets):
+                        yield RadioButton(name, id=f"preset-{i}")
             yield Static("", id="error")
             with Horizontal(id="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -120,6 +140,10 @@ class NewSession(ModalScreen):
         folder = self.query_one("#folder", Input).value.strip() or "~"
         name = self.query_one("#name", Input).value.strip()
         start = "claude" if self.query_one("#claude", RadioButton).value else "shell"
+        for i, command in enumerate(self.presets.values()):
+            if self.query_one(f"#preset-{i}", RadioButton).value:
+                start = command
+                break
         error = check_name(name) or await create(host, name, folder, start)
         if error:
             self.query_one("#error", Static).update(error)
