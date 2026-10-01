@@ -108,7 +108,8 @@ class AlertLine(Static):
 
     def __init__(self, when, session, mark):
         text = Text(f"{when}  ") + MARKS[mark] + f" {session.name}  "
-        text += Text(session.waiting if mark == "waiting" and session.waiting else ALERT_TEXT[mark], style="dim")
+        reason = session.waiting if mark == "waiting" and session.waiting else ALERT_TEXT[mark]
+        text += Text(reason, style="dim")
         super().__init__(text)
         self.session = session
 
@@ -305,7 +306,8 @@ class Tmls(App):
 
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
-        listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s)) for s, m in sm]) for h, online, sm in rows]
+        listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s)) for s, m in sm])
+                   for h, online, sm in rows]
         marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
         for _, _, sm in rows:
             for s, m in sm:
