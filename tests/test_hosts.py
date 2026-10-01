@@ -48,6 +48,12 @@ def test_parse_waiting_reason_and_failed_reply():
                    "both": ("waiting", "input needed", False)}  # waiting on you beats the rest
 
 
+def test_parse_claude_conversation_title():
+    out = ("1000\nSeason-36:1:0:990\nplain:1:0:10\n---\n"
+           '{"name":"NERSC_Training","status":"idle","statusUpdatedAt":900000,"tmux":"Season-36:@1.%1"}\n')
+    assert {s.name: s.title for s in hosts.parse("nas", out)} == {"Season-36": "NERSC_Training", "plain": None}
+
+
 def test_list_argv_reads_host_clock_windows_and_claude():
     script = hosts.list_argv("nas")[-1]
     assert hosts.list_argv(hosts.LOCAL)[:2] == ["sh", "-c"]

@@ -43,6 +43,7 @@ class Session:
     kitty: object = None       # local.Window for KITTY sessions: click focuses it instead of attaching
     waiting: str | None = None  # what Claude waits on you for ("permission prompt", "input needed", ...)
     failed: bool = False        # Claude's newest reply is an API error
+    title: str | None = None    # Claude's name for the conversation (/rename, or one it made up)
 
 
 def parse(host, out):
@@ -72,7 +73,7 @@ def parse(host, out):
         # two Claudes in one session: waiting on you wins, then running, then the latest change
         if s.claude is None or rank(status, since) > rank(s.claude, s.claude_since):
             s.claude, s.claude_since = status, since
-            s.waiting, s.failed = c.get("waitingFor"), bool(c.get("failed"))
+            s.waiting, s.failed, s.title = c.get("waitingFor"), bool(c.get("failed")), c.get("name")
     return list(sessions.values())
 
 

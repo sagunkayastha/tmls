@@ -330,3 +330,17 @@ async def test_each_tab_shows_its_session_mark_in_front(clock_hosts):
         clock_hosts["now"] = 3700
         app.refresh_sessions()
         assert await wait_for(pilot, lambda: labels() == ["◆ beta ×", "○ alpha ×"])
+
+
+async def test_claude_rows_show_the_conversation_name_on_a_dim_second_line(clock_hosts, monkeypatch):
+    async def list_host(host):
+        return True, [hosts.Session(host, "Season-36", 1, False, 3600, 3600, "idle", 0, title="NERSC_Training"),
+                      hosts.Session(host, "notes", 1, False, 3600, 3600, "idle", 0, title="notes"),
+                      hosts.Session(host, "plain", 1, False, 0, 3600)]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        lines = {n: r.split("\n") for n, r in rows(app).items()}
+        assert lines["Season-36"][0].endswith("○") and lines["Season-36"][1].strip() == "NERSC_Training"
+        assert len(lines["notes"]) == 1 and len(lines["plain"]) == 1  # same name, or no Claude: one line

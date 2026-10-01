@@ -45,7 +45,12 @@ class SessionRow(Static):
     def __init__(self, session, mark):
         left = Text(session.name)
         left.truncate(ROW_WIDTH - 2, overflow="ellipsis", pad=True)
-        super().__init__(left + " " + MARKS[mark], id=f"s-{slug(session.host, session.name)}")
+        text = left + " " + MARKS[mark]
+        if session.title and session.title != session.name:
+            title = Text(f"  {session.title}", style="dim")
+            title.truncate(ROW_WIDTH, overflow="ellipsis")
+            text += Text("\n") + title
+        super().__init__(text, id=f"s-{slug(session.host, session.name)}")
         self.session = session
         if mark == "waiting":
             self.tooltip = session.waiting  # the row has no room for why
@@ -159,7 +164,7 @@ class Tmls(App):
 
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
-        listing = [(h, online, [(s.name, m, s.waiting) for s, m in sm]) for h, online, sm in rows]
+        listing = [(h, online, [(s.name, m, s.waiting, s.title) for s, m in sm]) for h, online, sm in rows]
         self.marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
