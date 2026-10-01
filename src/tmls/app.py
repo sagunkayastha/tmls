@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import approve, create, hosts, local, prompts, viewer
+from tmls import approve, create, hosts, local, notifications, prompts, viewer
 from tmls.term import Terminal
 from tmls.viewer import FileViewer
 
@@ -226,6 +226,9 @@ class Tmls(App):
     Approval .request { color: $text-muted; padding-left: 2; }
     Approval .answers { height: auto; padding-left: 2; }
     Approval Button { min-width: 6; margin-right: 1; }
+    #notify-controls { height: auto; }
+    #notify-controls Button { min-width: 14; margin-right: 1; }
+    #notify-focused { min-width: 22; }
     #ask { overlay: screen; position: absolute; offset: 20 3; width: 70; height: auto; max-height: 20;
            background: $panel; border: round $accent; border-title-align: left; display: none; }
     #ask .heading { color: $text-muted; text-style: bold; padding-top: 1; }
@@ -247,6 +250,7 @@ class Tmls(App):
         self.cursor = None       # slug of the row the keyboard is on in the list
         self.alerts = []         # [(HH:MM, Session, mark)], newest first
         self.unread = 0
+        self.notifications = notifications.load()
 
     def compose(self):
         with Horizontal():
@@ -394,10 +398,36 @@ class Tmls(App):
             self.refresh_sessions()
 
     def _alert(self, session, mark):
+        key = slug(session.host, session.name)
+        if self.notifications.silence_focused and (key == self.current or
+                                                   (session.kitty and session.kitty.focused)):
+            return
         self.alerts.insert(0, (time.strftime("%H:%M"), session, mark))
         del self.alerts[KEEP_ALERTS:]
         self.unread += 1
         self._show_unread()
+        if mark in notifications.SYMBOL and (self.notifications.desktop or self.notifications.sound):
+            self.run_worker(notifications.emit(self.notifications, session.host, session.name,
+                                               mark, session.waiting), group="notifications")
+
+    def _notification_controls(self):
+        settings = self.notifications
+        return Horizontal(
+            Button(f"Desktop {'ON' if settings.desktop else 'OFF'}", id="notify-desktop"),
+            Button(f"Sound {'ON' if settings.sound else 'OFF'}", id="notify-sound"),
+            Button(f"Silence focused {'ON' if settings.silence_focused else 'OFF'}",
+                   id="notify-focused"), id="notify-controls")
+
+    def _toggle_notification(self, key, button):
+        old = getattr(self.notifications, key)
+        setattr(self.notifications, key, not old)
+        try:
+            notifications.save(self.notifications)
+        except OSError as error:
+            setattr(self.notifications, key, old)
+            self.notify(f"Could not save notification switch: {error}", severity="error")
+        labels = {"desktop": "Desktop", "sound": "Sound", "silence_focused": "Silence focused"}
+        button.label = f"{labels[key]} {'ON' if getattr(self.notifications, key) else 'OFF'}"
 
     def _show_unread(self):
         self.query_one("#alerts-button").label = f"🔔{self.unread or ''}"
@@ -408,6 +438,7 @@ class Tmls(App):
         if panel.display:
             panel.border_title = "Alerts · click one to jump"
             await panel.remove_children()
+            await panel.mount(self._notification_controls())
             await panel.mount_all([AlertLine(*a) for a in self.alerts] or [Static(" nothing yet")])
             self.unread = 0
             self._show_unread()
@@ -486,6 +517,11 @@ class Tmls(App):
         self.focus_terminal()
 
     def on_button_pressed(self, event):
+        setting = {"notify-desktop": "desktop", "notify-sound": "sound",
+                   "notify-focused": "silence_focused"}.get(event.button.id)
+        if setting:
+            self._toggle_notification(setting, event.button)
+            return
         if event.button.id == "quit":
             self.exit()
             return
