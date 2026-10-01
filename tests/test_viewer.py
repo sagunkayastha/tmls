@@ -13,7 +13,9 @@ async def test_local_relative_file_uses_tmux_pane_cwd(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     tmux = bin_dir / "tmux"
-    tmux.write_text("#!/bin/sh\nprintf '%s\\n' \"$TMLS_TEST_CWD\"\n")
+    # answers only an exact target: "-t Season-36" would also match "Season-36b"
+    tmux.write_text("#!/bin/sh\ncase \"$*\" in *'-t =Season-36: '*) printf '%s\\n' \"$TMLS_TEST_CWD\";; "
+                    "*) exit 1;; esac\n")
     tmux.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("TMLS_TEST_CWD", str(repo))

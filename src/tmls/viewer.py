@@ -38,7 +38,7 @@ async def _run(argv):
 async def load_file(host, session, path):
     cwd = ""
     if not path.startswith(("/", "~/")):
-        query = ["tmux", "display", "-p", "-t", session, "#{pane_current_path}"]
+        query = ["tmux", "display", "-p", "-t", f"={session}:", "#{pane_current_path}"]
         argv = query if host == hosts.LOCAL else ["ssh", "-o", "BatchMode=yes", host, shlex.join(query)]
         cwd = (await _run(argv)).decode(errors="replace").strip()
     if host == hosts.LOCAL:
