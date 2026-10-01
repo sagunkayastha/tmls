@@ -44,7 +44,11 @@ def text(term):
 
 
 def tab_names(app):
-    return [t.label.plain for t in app.query_one(Tabs).query("Tab")]
+    return [name(t) for t in app.query_one(Tabs).query("Tab")]
+
+
+def name(tab):
+    return tab.label.plain[2:]  # drop the status mark in front
 
 
 async def click_x(pilot, app, name):
@@ -74,7 +78,7 @@ async def test_click_opens_session_in_a_tab(fake_hosts):
         term = app.query_one(ContentSwitcher).visible_content
         assert isinstance(term, Terminal)
         assert await wait_for(pilot, lambda: "attached-to-alpha" in text(term))
-        assert app.query_one(Tabs).active_tab.label.plain == "alpha ×"
+        assert name(app.query_one(Tabs).active_tab) == "alpha ×"
 
 
 async def test_tabs_switch_and_do_not_duplicate(fake_hosts):
@@ -85,10 +89,10 @@ async def test_tabs_switch_and_do_not_duplicate(fake_hosts):
         await open_session(app, pilot, "beta")
         tabs = app.query_one(Tabs)
         assert tab_names(app) == ["alpha ×", "beta ×"]
-        assert tabs.active_tab.label.plain == "beta ×"
+        assert name(tabs.active_tab) == "beta ×"
         await open_session(app, pilot, "alpha")
         assert tab_names(app) == ["alpha ×", "beta ×"]
-        assert tabs.active_tab.label.plain == "alpha ×"
+        assert name(tabs.active_tab) == "alpha ×"
         assert await wait_for(pilot, lambda: "attached-to-alpha" in text(app.query_one(ContentSwitcher).visible_content))
 
 
@@ -131,7 +135,7 @@ async def test_clicking_tab_body_switches_without_closing(fake_hosts):
         await pilot.click("#tab-box-alpha", offset=(1, 0))
         await pilot.pause(0.2)
         assert tab_names(app) == ["alpha ×", "beta ×"]
-        assert app.query_one(Tabs).active_tab.label.plain == "alpha ×"
+        assert name(app.query_one(Tabs).active_tab) == "alpha ×"
 
 
 async def test_x_closes_shown_tab_and_moves_to_neighbour(fake_hosts):
@@ -271,7 +275,7 @@ async def test_alt_shift_arrows_switch_tabs_even_from_the_terminal(fake_hosts):
         await wait_for(pilot, lambda: app.query("#s-box-alpha"))
         await open_session(app, pilot, "alpha")
         await open_session(app, pilot, "beta")
-        active = lambda: app.query_one(Tabs).active_tab.label.plain
+        active = lambda: name(app.query_one(Tabs).active_tab)
         assert active() == "beta ×" and isinstance(app.focused, Terminal)
         await pilot.press("alt+shift+left")
         assert await wait_for(pilot, lambda: active() == "alpha ×")
@@ -312,3 +316,17 @@ async def test_waiting_mark_with_reason_on_hover_and_failed_mark(clock_hosts, mo
         assert rows(app)["ask"].endswith("?") and rows(app)["broke"].endswith("✕")
         assert app.query_one("#s-box-ask").tooltip == "permission prompt"
         assert app.query_one("#s-box-broke").tooltip is None
+
+
+async def test_each_tab_shows_its_session_mark_in_front(clock_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await pilot.click("#s-box-beta")
+        await pilot.click("#s-box-alpha")
+        labels = lambda: [t.label.plain for t in app.query_one(Tabs).query("Tab")]
+        assert await wait_for(pilot, lambda: labels() == ["● beta ×", "○ alpha ×"])
+        clock_hosts["claude"]["beta"] = ("idle", 3650)  # finished while alpha is shown
+        clock_hosts["now"] = 3700
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: labels() == ["◆ beta ×", "○ alpha ×"])

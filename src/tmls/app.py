@@ -60,8 +60,15 @@ class CloseTab(Tab):
     class Closed(Tab.TabMessage):
         pass
 
-    def __init__(self, name, **kw):
-        super().__init__(f"{name} ×", **kw)
+    def __init__(self, name, mark, **kw):
+        self.session_name = name
+        super().__init__(self.text(mark), **kw)
+
+    def text(self, mark):
+        return MARKS[mark] + f" {self.session_name} ×"
+
+    def show_mark(self, mark):
+        self.label = self.text(mark)
 
     def _on_click(self, event):
         if event.x >= self.size.width - 2:  # the × (or the padding after it)
@@ -103,6 +110,7 @@ class Tmls(App):
         self.started = {}        # host -> host clock at first poll, minus QUIET: older output isn't news
         self.seen = {}           # slug -> host clock when its tab was last on screen
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
+        self.marks = {}          # slug -> last mark shown, for the tabs
 
     def compose(self):
         with Horizontal():
@@ -152,6 +160,9 @@ class Tmls(App):
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
         listing = [(h, online, [(s.name, m, s.waiting) for s, m in sm]) for h, online, sm in rows]
+        self.marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
+        for tab in self.query(CloseTab):
+            tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
         if listing == self._listing:
             return  # rebuilding would flicker and lose the scroll position
         self._listing = listing
@@ -185,7 +196,8 @@ class Tmls(App):
             # never share the space (a squeezed pyte screen drops its top rows)
             await self.query_one(ContentSwitcher).add_content(
                 Terminal(hosts.attach_argv(session.host, session.name), id=f"term-{key}"))
-            await self.query_one(Tabs).add_tab(CloseTab(session.name, id=f"tab-{key}"))
+            tab = CloseTab(session.name, self.marks.get(key, "idle"), id=f"tab-{key}")
+            await self.query_one(Tabs).add_tab(tab)
         self.query_one(Tabs).active = f"tab-{key}"
 
     async def on_close_tab_closed(self, event):
