@@ -333,7 +333,7 @@ async def test_image_clipboard_pastes_path_without_enter(tmp_path, monkeypatch):
     calls = []
 
     async def clipboard_image():
-        return b"\x89PNG\r\n\x1a\nimage"
+        return b"\x89PNG\r\n\x1a\nimage", ".png"
 
     async def store(host, data, suffix):
         calls.append((host, data, suffix))
@@ -356,7 +356,7 @@ async def test_failed_image_copy_toasts_and_types_nothing(monkeypatch):
     from tmls import image_paste
 
     async def clipboard_image():
-        return b"PNG"
+        return b"PNG", ".png"
 
     async def store(host, data, suffix):
         raise image_paste.ImageError("ssh failed")
@@ -402,3 +402,29 @@ async def test_text_paste_event_keeps_its_text_when_clipboard_also_has_an_image(
         assert await wait_for(pilot, lambda: term.pid is not None)
         term.post_message(events.Paste("ok"))
         assert await wait_for(pilot, lambda: "ok" in screen_text(term))
+
+
+async def test_right_click_without_clipboard_tools_uses_textual_clipboard(monkeypatch):
+    monkeypatch.setattr(term_module.shutil, "which", lambda name: None)
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=8 2>/dev/null; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        app.copy_to_clipboard("FALLBACK")
+        assert await wait_for(pilot, lambda: term.pid is not None)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: "FALLBACK" in screen_text(term))
+
+
+async def test_right_click_with_failing_wl_paste_uses_textual_clipboard(tmp_path, monkeypatch):
+    paste = tmp_path / "wl-paste"
+    paste.write_text("#!/bin/sh\nexit 1\n")
+    paste.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=8 2>/dev/null; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        app.copy_to_clipboard("FALLBACK")
+        assert await wait_for(pilot, lambda: term.pid is not None)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: "FALLBACK" in screen_text(term))

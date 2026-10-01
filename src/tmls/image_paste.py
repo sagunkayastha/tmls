@@ -1,18 +1,15 @@
 """Move pasted images to the host of the selected tmux session."""
 import asyncio
-import io
 import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from PIL import Image
-
 from tmls import hosts
 
 CACHE = Path.home() / ".cache" / "tmls" / "images"
-IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp")
+IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
@@ -52,33 +49,25 @@ async def _run(argv, stdin=None, timeout=10):
 
 
 async def clipboard_image():
-    """PNG bytes when the system clipboard offers an image, else None."""
+    """(image bytes, matching suffix) when the clipboard offers an image, else None."""
     wayland = bool(os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"))
     x11 = bool(os.environ.get("DISPLAY") and shutil.which("xclip"))
     if not wayland and not x11:
-        raise ImageError("install wl-paste or xclip to paste images")
+        return None
     probe = ["wl-paste", "--list-types"] if wayland else ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"]
     try:
         offered = (await _run(probe, timeout=2)).decode(errors="replace").splitlines()
-    except ImageError as error:
-        if "Nothing is copied" in str(error) or "target TARGETS not available" in str(error):
-            return None
-        raise
+    except ImageError:
+        return None
     mime = next((kind for kind in IMAGE_TYPES if kind in offered), None)
     if mime is None:
         return None
     command = ["wl-paste", "--type", mime] if wayland else [
         "xclip", "-selection", "clipboard", "-t", mime, "-o"]
-    data = await _run(command, timeout=3)
-    if mime == "image/png":
-        return data
     try:
-        with Image.open(io.BytesIO(data)) as image:
-            output = io.BytesIO()
-            image.convert("RGBA").save(output, format="PNG")
-            return output.getvalue()
-    except (OSError, ValueError) as error:
-        raise ImageError(f"couldn't decode clipboard image: {error}") from error
+        return await _run(command, timeout=3), IMAGE_TYPES[mime]
+    except ImageError:
+        return None
 
 
 async def store(host, data, suffix=".png"):

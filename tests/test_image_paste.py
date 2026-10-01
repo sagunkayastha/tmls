@@ -88,17 +88,13 @@ async def test_wayland_clipboard_reads_png_bytes_after_type_probe(monkeypatch):
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     monkeypatch.setattr(image_paste.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    assert await image_paste.clipboard_image() == b"\x89PNG\r\n\x1a\nimage"
+    assert await image_paste.clipboard_image() == (b"\x89PNG\r\n\x1a\nimage", ".png")
     assert calls == [("wl-paste", "--list-types"), ("wl-paste", "--type", "image/png")]
 
 
-async def test_x11_clipboard_converts_jpeg_to_png(monkeypatch):
-    from io import BytesIO
-    from PIL import Image
-
-    source = BytesIO()
-    Image.new("RGB", (2, 2), "red").save(source, format="JPEG")
-    outputs = [b"TARGETS\nimage/jpeg\n", source.getvalue()]
+async def test_x11_clipboard_keeps_jpeg_bytes_and_extension(monkeypatch):
+    jpeg = b"\xff\xd8\xffjpeg bytes"
+    outputs = [b"TARGETS\nimage/jpeg\n", jpeg]
 
     class Process:
         returncode = 0
@@ -113,4 +109,20 @@ async def test_x11_clipboard_converts_jpeg_to_png(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(image_paste.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    assert (await image_paste.clipboard_image()).startswith(b"\x89PNG\r\n\x1a\n")
+    assert await image_paste.clipboard_image() == (jpeg, ".jpg")
+
+
+async def test_bmp_clipboard_is_left_for_text_fallback(monkeypatch):
+    class Process:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return b"image/bmp\n", b""
+
+    async def spawn(*argv, **kwargs):
+        return Process()
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(image_paste.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    assert await image_paste.clipboard_image() is None

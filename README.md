@@ -89,7 +89,7 @@ command.
   still waiting. One message goes through tmux's paste buffer after each finished turn
   (◆ or ○). A permission prompt (?) or API error (✕) keeps the queue. Queues last only
   until tmls exits.
-- **Image paste**: right-click an image clipboard in a session to save a PNG under
+- **Image paste**: right-click an image clipboard in a session to save it under
   `~/.cache/tmls/images/` on that session's host and paste its path without Enter.
   Dropping one local `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp` file into a remote tab
   copies it there and pastes the remote path. Local dropped paths stay local. Text

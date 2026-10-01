@@ -400,12 +400,12 @@ class Terminal(Widget, can_focus=True):
             return
         try:
             image = await image_paste.clipboard_image()
-        except image_paste.ImageError as error:
-            self.app.notify(f"Image paste failed: {error}", severity="error")
-            return
+        except image_paste.ImageError:
+            image = None  # image detection is best-effort; text clipboard still works
         if image is not None:
             try:
-                path = await image_paste.store(self.host, image, ".png")
+                data, suffix = image
+                path = await image_paste.store(self.host, data, suffix)
             except image_paste.ImageError as error:
                 self.app.notify(f"Image copy failed: {error}", severity="error")
                 return
@@ -419,14 +419,14 @@ class Terminal(Widget, can_focus=True):
                    ["xclip", "-selection", "clipboard", "-o"]
                    if os.environ.get("DISPLAY") and shutil.which("xclip") else None)
         if command is None:
-            self.app.notify("Paste needs wl-paste or xclip.", severity="error")
+            self._paste(self.app.clipboard)
             return
         try:
             output = await image_paste._run(command, timeout=2)
-        except image_paste.ImageError as error:
-            self.app.notify(f"Paste failed: {error}", severity="error")
-            return
-        self._paste(output.decode(errors="replace"))
+        except image_paste.ImageError:
+            self._paste(self.app.clipboard)
+        else:
+            self._paste(output.decode(errors="replace"))
 
     def close(self):
         if self.pid is not None and not self.exited:
