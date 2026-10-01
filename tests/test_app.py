@@ -1,8 +1,8 @@
 import pytest
-from textual.widgets import ContentSwitcher, Tabs, TextArea
+from textual.widgets import ContentSwitcher, Input, Tabs, TextArea
 
 from tmls import app as tmls_app
-from tmls import hosts, local, notifications
+from tmls import hosts, local, manage, notifications
 from tmls import viewer
 from tmls.term import Terminal
 
@@ -88,6 +88,49 @@ async def test_click_opens_session_in_a_tab(fake_hosts):
         assert isinstance(term, Terminal)
         assert await wait_for(pilot, lambda: "attached-to-alpha" in text(term))
         assert name(app.query_one(Tabs).active_tab) == "alpha ×"
+
+
+async def test_row_menu_renames_an_open_session_and_reattaches(fake_hosts, monkeypatch):
+    called = []
+    async def rename(host, old, new):
+        called.append((host, old, new))
+    monkeypatch.setattr(manage, "rename", rename)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        row = app.query_one("#s-box-alpha")
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 0))
+        assert isinstance(app.screen, manage.SessionActions)
+        app.screen.query_one("#new-name", Input).value = "renamed"
+        await pilot.click("#rename-session")
+        assert await wait_for(pilot, lambda: "box-renamed" in app.open_sessions)
+        assert called == [("box", "alpha", "renamed")]
+        assert "box-alpha" not in app.open_sessions
+        assert name(app.query_one(Tabs).active_tab) == "renamed ×"
+
+
+async def test_kill_requires_confirmation_warns_about_process_and_closes_tab(fake_hosts, monkeypatch):
+    killed = []
+    async def commands(host, name):
+        return ["claude"]
+    async def kill(host, name):
+        killed.append((host, name))
+    monkeypatch.setattr(manage, "running_commands", commands)
+    monkeypatch.setattr(manage, "kill", kill)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        row = app.query_one("#s-box-alpha")
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 0))
+        await pilot.click("#kill-session")
+        assert "claude" in str(app.screen.query_one("#kill-warning").render())
+        assert killed == []
+        await pilot.pause(.2)
+        await pilot.click("#kill-session")
+        assert await wait_for(pilot, lambda: "box-alpha" not in app.open_sessions), (killed, app.screen)
+        assert killed == [("box", "alpha")]
 
 
 async def test_url_link_opens_external_browser(fake_hosts, monkeypatch):
