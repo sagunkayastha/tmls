@@ -168,7 +168,8 @@ class NewSession(ModalScreen):
 
     async def _suggest_name(self, folder, host):
         result = await suggest_name(host, folder)
-        if (self.query_one("#folder", Input).value.strip() or "~") != folder or self.query_one("#host", Select).value != host:
+        now_folder = self.query_one("#folder", Input).value.strip() or "~"
+        if now_folder != folder or self.query_one("#host", Select).value != host:
             return
         name = self.query_one("#name", Input)
         if name.value == self._auto_name:
