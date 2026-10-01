@@ -61,7 +61,9 @@ command.
   last ten you typed to its Claude. It goes in through tmux's paste buffer, then Enter.
 - **🔔 Alerts**: every time a session turns `?`, `◆` or `✕`, tmls notes it. The bell
   shows how many are new; click it for the list (newest first) and click a line to jump to
-  that session.
+  that session. Claude sessions sitting at a permission prompt are listed on top with the
+  request and **Yes** / **No**, which send `1` or Esc. tmls checks that the same request is
+  still on screen first.
 - **Open** puts the same attach command in a new terminal window (`$TERMINAL`, else
   kitty, else `x-terminal-emulator`).
 - **Copy** puts the attach command on the clipboard, for example
@@ -136,7 +138,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 92 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 96 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

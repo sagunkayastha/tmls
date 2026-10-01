@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import create, hosts, local, prompts
+from tmls import approve, create, hosts, local, prompts
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
@@ -141,6 +141,29 @@ class PromptLine(Static):
         await self.app.send_prompt(self.text)
 
 
+class Approval(Vertical):
+    """A permission prompt in the alerts panel, answered without opening the session."""
+
+    def __init__(self, session, shown):
+        super().__init__()
+        self.session, self.shown = session, shown
+
+    def compose(self):
+        yield Static(Text("? ", style="bold #e5c07b") + f"{self.session.name} · permission prompt")
+        yield Static("\n".join(self.shown[:8]), classes="request")
+        with Horizontal(classes="answers"):
+            yield Button("Yes", classes="yes", variant="success")
+            yield Button("No", classes="no", variant="error")
+
+    async def on_button_pressed(self, event):
+        event.stop()
+        yes = event.button.has_class("yes")
+        error = await approve.answer(self.session.host, self.session.name, self.shown, yes)
+        self.app.notify(error or f"{'Approved' if yes else 'Denied'} in {self.session.name}.",
+                        severity="error" if error else "information")
+        await self.remove()
+
+
 class CloseTab(Tab):
     """A tab whose last cell is an × that closes it."""
 
@@ -192,6 +215,10 @@ class Tmls(App):
     #alerts { overlay: screen; position: absolute; offset: 30 3; width: 60; height: auto; max-height: 14;
               background: $panel; border: round $accent; border-title-align: left; display: none; }
     AlertLine:hover { background: $boost; }
+    Approval { height: auto; border-bottom: dashed $accent; padding-bottom: 1; }
+    Approval .request { color: $text-muted; padding-left: 2; }
+    Approval .answers { height: auto; padding-left: 2; }
+    Approval Button { min-width: 6; margin-right: 1; }
     #ask { overlay: screen; position: absolute; offset: 20 3; width: 70; height: auto; max-height: 20;
            background: $panel; border: round $accent; border-title-align: left; display: none; }
     #ask .heading { color: $text-muted; text-style: bold; padding-top: 1; }
@@ -376,6 +403,16 @@ class Tmls(App):
             await panel.mount_all([AlertLine(*a) for a in self.alerts] or [Static(" nothing yet")])
             self.unread = 0
             self._show_unread()
+            await self._show_approvals(panel)
+
+    async def _show_approvals(self, panel):
+        """Sessions at a permission prompt right now, with the live request and Yes/No."""
+        asking = [s for _, _, ss in self._results for s in ss
+                  if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"]
+        shown = await asyncio.gather(*(approve.current(s.host, s.name) for s in asking))
+        boxes = [Approval(s, req) for s, req in zip(asking, shown) if req]
+        if boxes and panel.display:
+            await panel.mount_all(boxes, before=0)
 
     async def toggle_ask(self):
         panel = self.query_one("#ask")

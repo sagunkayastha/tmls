@@ -504,3 +504,31 @@ async def test_ask_without_a_tab_just_hints(fake_hosts):
         await pilot.click("#ask-button")
         await pilot.pause(0.2)
         assert not app.query_one("#ask").display
+
+
+async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(clock_hosts, monkeypatch):
+    from tmls import approve
+    answered = []
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590, waiting="permission prompt"),
+                      hosts.Session(host, "quiz", 1, False, 3600, 3600, "waiting", 3590, waiting="input needed")]
+
+    async def current(host, name):
+        return ["Bash command", "touch /tmp/x"]
+
+    async def answer(host, name, shown, yes):
+        answered.append((host, name, shown, yes))
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(approve, "current", current)
+    monkeypatch.setattr(approve, "answer", answer)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await pilot.click("#alerts-button")
+        assert await wait_for(pilot, lambda: len(app.query(tmls_app.Approval)) == 1)  # not "input needed"
+        box = app.query_one(tmls_app.Approval)
+        assert "touch /tmp/x" in str(box.query_one(".request").render())
+        await pilot.click(box.query_one(".yes"))
+        assert await wait_for(pilot, lambda: answered == [("box", "ask", ["Bash command", "touch /tmp/x"], True)])
+        assert await wait_for(pilot, lambda: not app.query(tmls_app.Approval))
