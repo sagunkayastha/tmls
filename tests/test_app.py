@@ -401,3 +401,36 @@ async def test_enter_on_the_shown_session_goes_back_to_its_terminal(fake_hosts):
         await open_session(app, pilot, "alpha")
         await pilot.press("alt+shift+up", "enter")
         assert await wait_for(pilot, lambda: isinstance(app.focused, Terminal))
+
+
+async def test_alerts_collect_marks_that_need_you_and_jump_to_the_session(clock_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        bell = app.query_one("#alerts-button")
+        assert str(bell.label) == "🔔"  # what's already there at startup isn't news
+        clock_hosts["claude"]["beta"] = ("idle", 3650)  # finished
+        clock_hosts["claude"]["alpha"] = ("busy", 3690)  # started: not an alert
+        clock_hosts["now"] = 3700
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: str(bell.label) == "🔔1")
+        await pilot.click("#alerts-button")
+        lines = app.query(tmls_app.AlertLine)
+        assert app.query_one("#alerts").display and [l.session.name for l in lines] == ["beta"]
+        assert "◆ beta" in str(lines.first().render())
+        assert str(bell.label) == "🔔"  # seen
+        await pilot.click(lines.first())
+        assert await wait_for(pilot, lambda: name(app.query_one(Tabs).active_tab) == "beta ×")
+        assert not app.query_one("#alerts").display
+
+
+async def test_alerts_panel_does_not_resize_the_terminal(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        term = app.query_one(Terminal)
+        before = term.size
+        await pilot.click("#alerts-button")
+        await pilot.pause(0.2)
+        assert app.query_one("#alerts").display and term.size == before  # floats over it

@@ -50,6 +50,9 @@ command.
   Copied text loses trailing spaces on each line. Pasting
   (kitty's Ctrl+Shift+V, or right-click for the system clipboard) goes to the session, as a
   bracketed paste when it asks for one.
+- **🔔 Alerts**: every time a session turns `?`, `◆` or `✕`, tmls notes it. The bell
+  shows how many are new; click it for the list (newest first) and click a line to jump to
+  that session.
 - **Open** puts the same attach command in a new terminal window (`$TERMINAL`, else
   kitty, else `x-terminal-emulator`).
 - **Copy** puts the attach command on the clipboard, for example
@@ -124,7 +127,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 69 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 71 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

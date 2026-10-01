@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 from rich.text import Text
 from textual.app import App
@@ -96,6 +97,25 @@ class SessionList(VerticalScroll):
         self.app.focus_terminal()
 
 
+ALERTS = {"waiting", "done", "failed"}  # marks that need you
+ALERT_TEXT = {"waiting": "waiting", "done": "done", "failed": "API error"}
+KEEP_ALERTS = 50
+
+
+class AlertLine(Static):
+    """One line in the alerts panel; a click jumps to its session."""
+
+    def __init__(self, when, session, mark):
+        text = Text(f"{when}  ") + MARKS[mark] + f" {session.name}  "
+        text += Text(session.waiting if mark == "waiting" and session.waiting else ALERT_TEXT[mark], style="dim")
+        super().__init__(text)
+        self.session = session
+
+    async def on_click(self):
+        self.app.query_one("#alerts").display = False
+        await self.app.open_session(self.session)
+
+
 class CloseTab(Tab):
     """A tab whose last cell is an × that closes it."""
 
@@ -141,6 +161,9 @@ class Tmls(App):
     #bar Button { min-width: 8; margin-left: 1; }
     #quit { margin-left: 3; }
     #empty { padding: 2 4; color: $text-muted; }
+    #alerts { overlay: screen; position: absolute; offset: 30 3; width: 60; height: auto; max-height: 14;
+              background: $panel; border: round $accent; border-title-align: left; display: none; }
+    AlertLine:hover { background: $boost; }
     """
 
     def __init__(self, remotes=(), sketchpad=None):
@@ -156,6 +179,8 @@ class Tmls(App):
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
         self.marks = {}          # slug -> last mark shown, for the tabs
         self.cursor = None       # slug of the row the keyboard is on in the list
+        self.alerts = []         # [(HH:MM, Session, mark)], newest first
+        self.unread = 0
 
     def compose(self):
         with Horizontal():
@@ -165,11 +190,13 @@ class Tmls(App):
             with Vertical(id="right"):
                 with Horizontal(id="bar"):
                     yield Tabs(id="tabs")
+                    yield Button("🔔", id="alerts-button")
                     yield Button("Open", id="open", variant="success")
                     yield Button("Copy", id="copy", variant="primary")
                     if self.sketchpad:
                         yield Button("Sketch", id="sketch", variant="warning")
                     yield Button("Quit", id="quit", variant="error")
+                yield VerticalScroll(id="alerts")  # floats over the terminal, so it never resizes it
                 with ContentSwitcher(id="terms", initial="empty"):
                     yield Static("← pick a session", id="empty")
 
@@ -205,7 +232,13 @@ class Tmls(App):
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
         listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s)) for s, m in sm]) for h, online, sm in rows]
-        self.marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
+        marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
+        for _, _, sm in rows:
+            for s, m in sm:
+                old = self.marks.get(slug(s.host, s.name))
+                if m in ALERTS and old is not None and old != m:  # unknown before: not news
+                    self._alert(s, m)
+        self.marks = marks
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
         if listing == self._listing:
@@ -281,6 +314,25 @@ class Tmls(App):
             row.set_class(key == self.current, "current")
             row.set_class(key == self.cursor, "cursor")
 
+    def _alert(self, session, mark):
+        self.alerts.insert(0, (time.strftime("%H:%M"), session, mark))
+        del self.alerts[KEEP_ALERTS:]
+        self.unread += 1
+        self._show_unread()
+
+    def _show_unread(self):
+        self.query_one("#alerts-button").label = f"🔔{self.unread or ''}"
+
+    async def toggle_alerts(self):
+        panel = self.query_one("#alerts")
+        panel.display = not panel.display
+        if panel.display:
+            panel.border_title = "Alerts · click one to jump"
+            await panel.remove_children()
+            await panel.mount_all([AlertLine(*a) for a in self.alerts] or [Static(" nothing yet")])
+            self.unread = 0
+            self._show_unread()
+
     def action_focus_list(self):
         self.cursor = self.current
         box = self.query_one(SessionList)
@@ -294,6 +346,9 @@ class Tmls(App):
     def on_button_pressed(self, event):
         if event.button.id == "quit":
             self.exit()
+            return
+        if event.button.id == "alerts-button":
+            self.run_worker(self.toggle_alerts())
             return
         if event.button.id == "sketch":
             open_url(self.sketchpad)
