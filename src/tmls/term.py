@@ -30,6 +30,7 @@ ARROWS = {"up": "A", "down": "B", "right": "C", "left": "D"}
 MODIFIERS = {"shift": 2, "alt": 3, "ctrl": 5, "ctrl+shift": 6}
 # pyte keeps DEC private modes shifted left by 5
 MOUSE_CLICKS, MOUSE_DRAGS, MOUSE_ANY, MOUSE_SGR = (m << 5 for m in (1000, 1002, 1003, 1006))
+BRACKETED_PASTE = 2004 << 5  # the child wants pastes wrapped so it doesn't run them as typed keys
 BUTTONS = {1: 0, 2: 1, 3: 2}  # Textual left/middle/right -> xterm button codes
 OSC52 = re.compile(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)")
 
@@ -203,6 +204,15 @@ class Terminal(Widget, can_focus=True):
         event.prevent_default()
         if self.fd is not None and not self.exited:
             os.write(self.fd, key_to_bytes(event.key, event.character))
+
+    def on_paste(self, event: events.Paste):
+        # kitty's ctrl+shift+v arrives as one Paste event, not as keys
+        event.stop()
+        if self.fd is not None and not self.exited:
+            text = event.text
+            if BRACKETED_PASTE in self.vt.mode:
+                text = f"\x1b[200~{text}\x1b[201~"
+            os.write(self.fd, text.encode())
 
     @property
     def mouse_mode(self):

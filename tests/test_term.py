@@ -5,7 +5,9 @@ from textual.app import App
 
 import pyte
 
-from tmls.term import VT, Clipboard, Terminal, color, key_to_bytes, mouse_bytes
+from textual import events
+
+from tmls.term import BRACKETED_PASTE, VT, Clipboard, Terminal, color, key_to_bytes, mouse_bytes
 
 
 def test_special_keys():
@@ -170,3 +172,24 @@ async def test_child_copy_reaches_the_clipboard():
     app = Host(["sh", "-c", "printf '\\033]52;c;Y29waWVk\\007'; sleep 5"])
     async with app.run_test(size=(60, 10)) as pilot:
         assert await wait_for(pilot, lambda: app.clipboard == "copied")
+
+
+async def test_paste_reaches_the_child_bracketed_when_it_asks():
+    # kitty's ctrl+shift+v arrives as a Paste event; tmux turns on bracketed paste (?2004h)
+    script = "printf '\\033[?2004h'; stty raw -echo; dd bs=1 count=14 2>/dev/null | od -An -c; sleep 5"
+    app = Host(["sh", "-c", script])
+    async with app.run_test(size=(80, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: BRACKETED_PASTE in term.vt.mode)
+        term.post_message(events.Paste("hi"))
+        assert await wait_for(pilot, lambda: "033   [   2   0   0   ~   h   i 033   [   2   0   1   ~"
+                              in " ".join(screen_text(term).split("\n")))
+
+
+async def test_plain_paste_without_bracketed_mode():
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=2 2>/dev/null | od -An -c; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        await wait_for(pilot, lambda: term.pid is not None)
+        term.post_message(events.Paste("ok"))
+        assert await wait_for(pilot, lambda: "o   k" in screen_text(term))
