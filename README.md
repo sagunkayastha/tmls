@@ -89,6 +89,11 @@ command.
   still waiting. One message goes through tmux's paste buffer after each finished turn
   (◆ or ○). A permission prompt (?) or API error (✕) keeps the queue. Queues last only
   until tmls exits.
+- **Image paste**: right-click an image clipboard in a session to save it under
+  `~/.cache/tmls/images/` on that session's host and paste its path without Enter.
+  Dropping one local `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp` file into a remote tab
+  copies it there and pastes the remote path. Local dropped paths stay local. Text
+  paste still works as before. This uses `wl-paste` on Wayland or `xclip` on X11.
 - **🔔 Alerts**: every time a session turns `?`, `◆` or `✕`, tmls notes it. The bell
   shows how many are new; click it for the list (newest first) and click a line to jump to
   that session. Claude sessions sitting at a permission prompt are listed on top with the
