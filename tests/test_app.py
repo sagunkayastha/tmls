@@ -446,3 +446,23 @@ async def test_a_redraw_during_the_local_lookup_does_not_crash(clock_hosts, monk
     monkeypatch.setattr(local, "list_sessions", interleaved)
     async with app.run_test(size=(120, 30)) as pilot:
         assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+
+
+async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hosts, monkeypatch):
+    from tmls import create
+    made = []
+
+    async def fake(host, name, folder, start):
+        made.append((host, name, folder, start))
+    monkeypatch.setattr(create, "create", fake)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#add-box"))
+        assert not app.query("#add-down")  # offline: nowhere to create
+        await pilot.click("#add-box")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, create.NewSession))
+        app.screen.query_one("#folder").value = "~/proj"
+        await pilot.pause()
+        await pilot.click("#create")
+        assert await wait_for(pilot, lambda: tab_names(app) == ["proj ×"])
+    assert made == [("box", "proj", "~/proj", "shell")]

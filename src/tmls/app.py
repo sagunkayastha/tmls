@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Static, Tab, Tabs
 
-from tmls import hosts, local
+from tmls import create, hosts, local
 from tmls.term import Terminal
 
 REFRESH_SECONDS = 5
@@ -116,6 +116,18 @@ class AlertLine(Static):
         await self.app.open_session(self.session)
 
 
+class AddSession(Static):
+    """The + on a host line: a new tmux session there."""
+
+    def __init__(self, host):
+        super().__init__("+", id=f"add-{slug(host, '')}".rstrip("-"))
+        self.host = host
+
+    def on_click(self):
+        names = [h for h, online, _ in self.app._results if online and h != hosts.KITTY]
+        self.app.push_screen(create.NewSession(names, self.host), self.app.created)
+
+
 class CloseTab(Tab):
     """A tab whose last cell is an × that closes it."""
 
@@ -149,7 +161,10 @@ class Tmls(App):
     CSS = """
     #left { width: 28; border-right: solid $primary-darken-2; }
     #title { padding: 0 1; text-style: bold; }
-    .host-label { padding: 1 1 0 1; color: $text-muted; text-style: bold; }
+    .host-label { padding: 1 1 0 1; color: $text-muted; text-style: bold; width: 1fr; }
+    .host-header { height: auto; }
+    AddSession { padding: 1 2 0 0; width: auto; color: $success; text-style: bold; }
+    AddSession:hover { color: $text; }
     SessionRow { padding: 0 1 0 2; }
     SessionRow:hover { background: $boost; }
     SessionRow.open { text-style: bold; }
@@ -253,7 +268,10 @@ class Tmls(App):
                                   "lists none", classes="host-label"))
         for h, online, sm in rows:
             label = hosts.label(h) if online else f"{hosts.label(h)} · offline"
-            widgets.append(Static(label, classes="host-label"))
+            header = [Static(label, classes="host-label")]
+            if online and h != hosts.KITTY:
+                header.append(AddSession(h))
+            widgets.append(Horizontal(*header, classes="host-header"))
             widgets.extend(SessionRow(s, m) for s, m in sm)
         await box.mount_all(widgets)
         self._mark_rows()
@@ -314,6 +332,12 @@ class Tmls(App):
             row.set_class(key in self.open_sessions, "open")
             row.set_class(key == self.current, "current")
             row.set_class(key == self.cursor, "cursor")
+
+    def created(self, result):
+        if result:  # (host, name): the session exists now
+            host, name = result
+            self.run_worker(self.open_session(hosts.Session(host, name, 1, False, 0, 0)))
+            self.refresh_sessions()
 
     def _alert(self, session, mark):
         self.alerts.insert(0, (time.strftime("%H:%M"), session, mark))
