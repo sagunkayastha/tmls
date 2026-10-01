@@ -43,8 +43,9 @@ command.
   `×` on a tab detaches it; the session keeps running.
 - **Mouse in the terminal**: the wheel scrolls back through tmux's history, and a drag
   selects and copies to your clipboard (needs `set -g mouse on` in tmux). Shift+drag
-  still gives your terminal's own selection. Ctrl+drag selects text in tmls; Ctrl+C
-  copies that selection, or interrupts the session when nothing is selected. Pasting
+  still gives your terminal's own selection. Ctrl+drag selects and copies text on
+  release; Ctrl+C copies the selection again, or interrupts when nothing is selected.
+  Copied text loses trailing spaces on each line. Pasting
   (kitty's Ctrl+Shift+V, or right-click for the system clipboard) goes to the session, as a
   bracketed paste when it asks for one.
 - **Open** puts the same attach command in a new terminal window (`$TERMINAL`, else
@@ -121,7 +122,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 64 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 66 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License
