@@ -49,11 +49,12 @@ def fill_style(pct):
 
 
 class SessionRow(Static):
-    def __init__(self, session, mark):
+    def __init__(self, session, mark, queued=0):
+        count = f"{queued}✉ " if queued else ""
         left = Text(session.name)
-        left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2),
+        left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2) - len(count),
                       overflow="ellipsis", pad=True)
-        text = left + (" ⋯ " if session.host != hosts.KITTY else " ") + MARKS[mark]
+        text = left + (" ⋯ " if session.host != hosts.KITTY else " ") + count + MARKS[mark]
         title = session.title if session.title != session.name else None
         pct = hosts.context_pct(session)
         if title or pct is not None:
@@ -254,6 +255,8 @@ class Tmls(App):
         self.seen = {}           # slug -> host clock when its tab was last on screen
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
         self.marks = {}          # slug -> last mark shown, for the tabs
+        self.queue = {}          # slug -> messages waiting for the next completed turn
+        self._sending = set()    # slugs with a queued send in progress
         self.cursor = None       # slug of the row the keyboard is on in the list
         self.alerts = []         # [(HH:MM, Session, mark)], newest first
         self.unread = 0
@@ -313,15 +316,28 @@ class Tmls(App):
 
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
-        listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s)) for s, m in sm])
+        listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s),
+                                len(self.queue.get(slug(s.host, s.name), ()))) for s, m in sm])
                    for h, online, sm in rows]
         marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
+        previous = self.marks
         for _, _, sm in rows:
             for s, m in sm:
-                old = self.marks.get(slug(s.host, s.name))
+                old = previous.get(slug(s.host, s.name))
                 if m in ALERTS and old is not None and old != m:  # unknown before: not news
                     self._alert(s, m)
         self.marks = marks
+        for _, _, sm in rows:
+            for s, m in sm:
+                key = slug(s.host, s.name)
+                old = previous.get(key)
+                if old is not None and old != m and self.queue.get(key):
+                    if m in {"done", "idle"} and old not in {"done", "idle"} and key not in self._sending:
+                        self._sending.add(key)
+                        self.run_worker(self._deliver_queued(s), group=f"queue-{key}")
+                    elif m == "failed":
+                        self.notify(f"{s.name} failed; {len(self.queue[key])} queued message(s) kept.",
+                                    severity="warning")
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
         if listing == self._listing:
@@ -341,7 +357,7 @@ class Tmls(App):
             if online and h != hosts.KITTY:
                 header.append(AddSession(h))
             widgets.append(Horizontal(*header, classes="host-header"))
-            widgets.extend(SessionRow(s, m) for s, m in sm)
+            widgets.extend(SessionRow(s, m, len(self.queue.get(slug(s.host, s.name), ()))) for s, m in sm)
         await box.mount_all(widgets)
         self._mark_rows()
 
@@ -392,12 +408,15 @@ class Tmls(App):
                 self.query_one(Tabs).active = f"tab-{selected}"
         if old in self.seen:
             self.seen[new] = self.seen.pop(old)
+        if old in self.queue:
+            self.queue[new] = self.queue.pop(old)
         if self.cursor == old:
             self.cursor = new
         self.refresh_sessions()
 
     async def killed_session(self, session):
         key = slug(session.host, session.name)
+        self.queue.pop(key, None)
         if key in self.open_sessions:
             await self._close_tab(key)
         if self.cursor == key:
@@ -503,10 +522,11 @@ class Tmls(App):
             if session is None:
                 self.notify("Open a session's tab first.")
             return
-        panel.border_title = f"Send to {session.name}"
+        self._ask_title(session)
         panel.display = True
         await panel.remove_children()
         await panel.mount_all([Input(placeholder="type a message, Enter sends", id="ask-input"),
+                               Button("Clear queue", id="ask-clear"),
                                Static("Saved", classes="heading"),
                                *[PromptLine(p) for p in prompts.saved()],
                                Static("Recent", classes="heading")])
@@ -525,8 +545,42 @@ class Tmls(App):
         self.focus_terminal()
         if session is None:
             return
+        key = slug(session.host, session.name)
+        if self.marks.get(key) == "running":
+            pending = self.queue.setdefault(key, [])
+            pending.append(text)
+            self.notify(f"Queued for {session.name} ({len(pending)} waiting).")
+            await self._render_rows()
+            return
         error = await prompts.send(session.host, session.name, text)
         self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information")
+
+    def _ask_title(self, session):
+        count = len(self.queue.get(slug(session.host, session.name), ()))
+        self.query_one("#ask").border_title = (f"Send to {session.name} · {count} queued" if count
+                                               else f"Send to {session.name}")
+
+    async def _deliver_queued(self, session):
+        key = slug(session.host, session.name)
+        try:
+            pending = self.queue.get(key)
+            if not pending or self.marks.get(key) not in {"done", "idle"}:
+                return
+            message = pending[0]
+            error = await prompts.send(session.host, session.name, message)
+            if error:
+                self.notify(f"Could not send queued message to {session.name}: {error}", severity="error")
+                return
+            if self.queue.get(key) is pending and pending and pending[0] == message:
+                pending.pop(0)
+                if not pending:
+                    self.queue.pop(key)
+                if self.query_one("#ask").display and self.current == key:
+                    self._ask_title(session)
+                await self._render_rows()
+            self.notify(f"Sent queued message to {session.name}.")
+        finally:
+            self._sending.discard(key)
 
     def action_focus_list(self):
         self.cursor = self.current
@@ -559,6 +613,13 @@ class Tmls(App):
         self.focus_terminal()
 
     def on_button_pressed(self, event):
+        if event.button.id == "ask-clear":
+            session = self.open_sessions.get(self.current)
+            if session:
+                self.queue.pop(slug(session.host, session.name), None)
+                self._ask_title(session)
+                self.run_worker(self._render_rows(), group="render")
+            return
         setting = {"notify-desktop": "desktop", "notify-sound": "sound",
                    "notify-focused": "silence_focused"}.get(event.button.id)
         if setting:
