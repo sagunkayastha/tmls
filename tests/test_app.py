@@ -2,7 +2,7 @@ import pytest
 from textual.widgets import ContentSwitcher, Tabs
 
 from tmls import app as tmls_app
-from tmls import hosts, local
+from tmls import hosts, local, notifications
 from tmls.term import Terminal
 
 
@@ -12,6 +12,14 @@ def no_local_claude(monkeypatch):
     async def none():
         return []
     monkeypatch.setattr(local, "list_sessions", none)
+
+
+@pytest.fixture(autouse=True)
+def no_real_notifications(monkeypatch, tmp_path):
+    monkeypatch.setattr(notifications, "CONFIG", tmp_path / "notifications.json")
+    async def none(*args):
+        pass
+    monkeypatch.setattr(notifications, "emit", none)
 
 
 @pytest.fixture
@@ -434,6 +442,48 @@ async def test_alerts_panel_does_not_resize_the_terminal(fake_hosts):
         await pilot.click("#alerts-button")
         await pilot.pause(0.2)
         assert app.query_one("#alerts").display and term.size == before  # floats over it
+
+
+async def test_notification_switches_in_bell_panel_persist(fake_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await pilot.click("#alerts-button")
+        assert "Desktop ON" in str(app.query_one("#notify-desktop").label)
+        assert "Sound OFF" in str(app.query_one("#notify-sound").label)
+        assert "Silence focused ON" in str(app.query_one("#notify-focused").label)
+        await pilot.click("#notify-desktop")
+        await pilot.click("#notify-sound")
+        await pilot.click("#notify-focused")
+        assert not app.notifications.desktop
+        assert app.notifications.sound
+        assert not app.notifications.silence_focused
+        assert notifications.load() == app.notifications
+
+
+async def test_notification_switches_and_focused_suppression_hook_into_alerts(fake_hosts, monkeypatch):
+    emitted = []
+    async def emit(*args):
+        emitted.append(args)
+    monkeypatch.setattr(notifications, "emit", emit)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        alpha = next(s for _, _, ss in app._results for s in ss if s.name == "alpha")
+        beta = next(s for _, _, ss in app._results for s in ss if s.name == "beta")
+        app._alert(alpha, "done")
+        assert app.alerts == [] and app.unread == 0
+        app._alert(beta, "waiting")
+        assert await wait_for(pilot, lambda: len(emitted) == 1)
+        assert emitted[0][1:4] == ("box", "beta", "waiting")
+        assert [mark for _, _, mark in app.alerts] == ["waiting"]
+        app._alert(beta, "failed")
+        assert [mark for _, _, mark in app.alerts] == ["failed", "waiting"]
+        assert len(emitted) == 1  # ✕ stays in the inbox only
+        app.notifications.silence_focused = False
+        app._alert(alpha, "done")
+        assert await wait_for(pilot, lambda: len(emitted) == 2)
 
 
 async def test_a_redraw_during_the_local_lookup_does_not_crash(clock_hosts, monkeypatch):

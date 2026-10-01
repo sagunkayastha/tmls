@@ -63,7 +63,10 @@ command.
   shows how many are new; click it for the list (newest first) and click a line to jump to
   that session. Claude sessions sitting at a permission prompt are listed on top with the
   request and **Yes** / **No**, which send `1` or Esc. tmls checks that the same request is
-  still on screen first.
+  still on screen first. The panel has separate **Desktop**, **Sound**, and **Silence focused**
+  switches, saved in `~/.config/tmls/notifications.json`. Desktop alerts use `notify-send`
+  for `?` and `◆`; Sound uses `canberra-gtk-play` (off by default). Silence focused is on
+  by default and skips alerts for the tab you are viewing.
 - **Open** puts the same attach command in a new terminal window (`$TERMINAL`, else
   kitty, else `x-terminal-emulator`).
 - **Copy** puts the attach command on the clipboard, for example
