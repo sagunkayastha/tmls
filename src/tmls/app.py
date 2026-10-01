@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 
 from rich.text import Text
 from textual.app import App
@@ -13,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import approve, create, hosts, local, notifications, prompts, viewer
+from tmls import approve, create, hosts, local, manage, notifications, prompts, viewer
 from tmls.term import Terminal
 from tmls.viewer import FileViewer
 
@@ -50,8 +51,9 @@ def fill_style(pct):
 class SessionRow(Static):
     def __init__(self, session, mark):
         left = Text(session.name)
-        left.truncate(ROW_WIDTH - 2, overflow="ellipsis", pad=True)
-        text = left + " " + MARKS[mark]
+        left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2),
+                      overflow="ellipsis", pad=True)
+        text = left + (" ⋯ " if session.host != hosts.KITTY else " ") + MARKS[mark]
         title = session.title if session.title != session.name else None
         pct = hosts.context_pct(session)
         if title or pct is not None:
@@ -65,8 +67,11 @@ class SessionRow(Static):
         if mark == "waiting":
             self.tooltip = session.waiting  # the row has no room for why
 
-    async def on_click(self):
-        await self.app.open_session(self.session)
+    async def on_click(self, event):
+        if self.session.host != hosts.KITTY and event.x >= ROW_WIDTH - 4:
+            self.app.push_screen(manage.SessionActions(self.session))
+        else:
+            await self.app.open_session(self.session)
 
 
 class SessionList(VerticalScroll):
@@ -359,10 +364,37 @@ class Tmls(App):
 
     async def on_close_tab_closed(self, event):
         key = event.tab.id.removeprefix("tab-")
+        await self._close_tab(key)
+
+    async def _close_tab(self, key):
         del self.open_sessions[key]
-        await self.query_one(Tabs).remove_tab(event.tab)  # activates a neighbour, or clears
+        await self.query_one(Tabs).remove_tab(f"tab-{key}")  # activates a neighbour, or clears
         await self.query_one(f"#term-{key}").remove()     # unmounting hangs up its client
         self._mark_rows()
+
+    async def renamed_session(self, session, new_name):
+        old = slug(session.host, session.name)
+        new = slug(session.host, new_name)
+        selected = self.current
+        was_open = old in self.open_sessions
+        if was_open:
+            await self._close_tab(old)
+            await self.open_session(replace(session, name=new_name))
+            if selected != old and selected in self.open_sessions:
+                self.query_one(Tabs).active = f"tab-{selected}"
+        if old in self.seen:
+            self.seen[new] = self.seen.pop(old)
+        if self.cursor == old:
+            self.cursor = new
+        self.refresh_sessions()
+
+    async def killed_session(self, session):
+        key = slug(session.host, session.name)
+        if key in self.open_sessions:
+            await self._close_tab(key)
+        if self.cursor == key:
+            self.cursor = None
+        self.refresh_sessions()
 
     def on_tabs_cleared(self):
         self.current = None
