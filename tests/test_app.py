@@ -434,3 +434,15 @@ async def test_alerts_panel_does_not_resize_the_terminal(fake_hosts):
         await pilot.click("#alerts-button")
         await pilot.pause(0.2)
         assert app.query_one("#alerts").display and term.size == before  # floats over it
+
+
+async def test_a_redraw_during_the_local_lookup_does_not_crash(clock_hosts, monkeypatch):
+    # a tab switch can redraw while _refresh is still waiting on the kitty lookup
+    app = tmls_app.Tmls()
+
+    async def interleaved():
+        await app._render_rows()
+        return []
+    monkeypatch.setattr(local, "list_sessions", interleaved)
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))

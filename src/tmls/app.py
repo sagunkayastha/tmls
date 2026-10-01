@@ -210,13 +210,14 @@ class Tmls(App):
     async def _refresh(self):
         names = hosts.hosts(self.remotes)
         results = await asyncio.gather(*(hosts.list_host(h) for h in names))
-        self._results = [(h, online, ss) for h, (online, ss) in zip(names, results)]
+        found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
         kitty = await local.list_sessions()
         if kitty:
-            self._results.append((hosts.KITTY, True, kitty))
-        for h, _, ss in self._results:
+            found.append((hosts.KITTY, True, kitty))
+        for h, _, ss in found:
             if ss:
                 self.started.setdefault(h, ss[0].now - hosts.QUIET)
+        self._results = found  # only now: a redraw while awaiting must not see hosts without `started`
         await self._render_rows(bool(self._results))
 
     def _mark(self, s):
