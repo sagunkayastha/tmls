@@ -41,19 +41,24 @@ def test_to_sessions_keeps_interactive_claude_outside_tmux():
 
 def test_to_sessions_carries_waiting_reason_and_failed():
     files = [{"pid": 1, "name": "a", "kind": "interactive", "status": "waiting", "waitingFor": "input needed"},
-             {"pid": 2, "name": "b", "kind": "interactive", "status": "idle", "failed": True}]
+             {"pid": 2, "name": "b", "kind": "interactive", "status": "idle", "failed": True,
+              "model": "claude-opus-5-5", "context": 5000}]
     got = local.to_sessions(files, {}, {}, now=100)
-    assert [(s.waiting, s.failed) for s in got] == [("input needed", False), (None, True)]
+    assert [(s.waiting, s.failed, s.model, s.context) for s in got] == [
+        ("input needed", False, None, 0), (None, True, "claude-opus-5-5", 5000)]
 
 
-def test_last_reply_failed_reads_the_newest_assistant_line(tmp_path):
+def test_last_reply_reads_failure_and_context_from_the_newest_assistant_lines(tmp_path):
     t = tmp_path / "s.jsonl"
     dumps = lambda d: json.dumps(d, separators=(",", ":"))  # compact, like Claude's transcripts
-    ok = dumps({"type": "assistant", "message": {"content": 'said "isApiErrorMessage":true'}})
-    err = dumps({"type": "assistant", "isApiErrorMessage": True})
+    usage = {"input_tokens": 2, "cache_creation_input_tokens": 3000, "cache_read_input_tokens": 581674}
+    ok = dumps({"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": usage,
+                                                 "content": 'said "isApiErrorMessage":true'}})
+    err = dumps({"type": "assistant", "isApiErrorMessage": True, "message": {"model": "<synthetic>"}})
     user = dumps({"type": "user", "message": {"content": "retry"}})
     t.write_text(f"{err}\n{ok}\n{user}\n")
-    assert not local.last_reply_failed(t)  # an old error, and a reply that only quotes the field
+    # an old error, and a reply that only quotes the field
+    assert local.last_reply(t) == {"failed": False, "model": "claude-opus-5-5", "context": 584676}
     t.write_text(f"{ok}\n{err}\n{user}\n")
-    assert local.last_reply_failed(t)
-    assert not local.last_reply_failed(tmp_path / "missing.jsonl")
+    assert local.last_reply(t) == {"failed": True, "model": "claude-opus-5-5", "context": 584676}
+    assert local.last_reply(tmp_path / "missing.jsonl") == {}

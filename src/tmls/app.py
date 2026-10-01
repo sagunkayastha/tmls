@@ -41,15 +41,23 @@ MARKS = {"running": Text("●", style="bold #4ebf71"), "waiting": Text("?", styl
          "idle": Text("○", style="dim")}
 
 
+def fill_style(pct):
+    return "bold #e06c75" if pct >= 90 else "bold #ff8c00" if pct >= 70 else "dim"
+
+
 class SessionRow(Static):
     def __init__(self, session, mark):
         left = Text(session.name)
         left.truncate(ROW_WIDTH - 2, overflow="ellipsis", pad=True)
         text = left + " " + MARKS[mark]
-        if session.title and session.title != session.name:
-            title = Text(f"  {session.title}", style="dim")
-            title.truncate(ROW_WIDTH, overflow="ellipsis")
-            text += Text("\n") + title
+        title = session.title if session.title != session.name else None
+        pct = hosts.context_pct(session)
+        if title or pct is not None:
+            second = Text(f"  {title or ''}", style="dim")
+            second.truncate(ROW_WIDTH - 5, overflow="ellipsis", pad=True)
+            if pct is not None:
+                second += Text(f"{pct:>4}%", style=fill_style(pct))
+            text += Text("\n") + second
         super().__init__(text, id=f"s-{slug(session.host, session.name)}")
         self.session = session
         if mark == "waiting":
@@ -164,7 +172,7 @@ class Tmls(App):
 
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
-        listing = [(h, online, [(s.name, m, s.waiting, s.title) for s, m in sm]) for h, online, sm in rows]
+        listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s)) for s, m in sm]) for h, online, sm in rows]
         self.marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))

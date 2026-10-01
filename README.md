@@ -34,7 +34,9 @@ command.
   monitor or background shell still going, is running. Any other session counts as
   running while it has printed something in the last 30 seconds. Open tabs show the
   same mark in front of the name. A Claude session whose conversation has its own name
-  (`/rename`, or one Claude made up) shows it on a dim second line.
+  (`/rename`, or one Claude made up) shows it on a dim second line, ending in how full its
+  context is (`58%`; orange from 70%, red from 90%). Claude Code doesn't save its context
+  limit, so tmls assumes 1M for Claude 5 models and 200k for older ones.
 - **Attach in a tab**: click a session and it runs `tmux attach` (over `ssh -t` for
   remote hosts) in an embedded terminal. Every key goes to the session, including
   Ctrl+C and Tab. Open several and switch with the tab bar or **Alt+Shift+Left/Right**.
@@ -119,7 +121,7 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 ## Development
 
 ```sh
-uv run pytest        # 61 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 64 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License

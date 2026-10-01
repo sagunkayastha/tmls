@@ -1,6 +1,7 @@
 """Find tmux sessions on this machine and on remote hosts reached over ssh."""
 import asyncio
 import json
+import re
 import shlex
 import shutil
 import socket
@@ -19,15 +20,18 @@ QUIET = 30  # seconds without output before a non-Claude session counts as finis
 # session; its status line redraws every minute, so output alone can't tell busy from idle.
 # Only live pids' .json files: stale ones outlive crashes, and the .key files next to them are secrets.
 RUNNING = {"busy", "shell"}  # "shell": the turn is over but a monitor or background shell still runs
-# "failed" after a session's file: the newest reply in its transcript is an API error. [^\\] skips
-# the field quoted inside a message, where JSON escapes its quotes (doubled for ugrep). The final
-# `true`: a false test last would fail the whole listing.
+# After each session's file, from the newest replies in its transcript: "failed" when the newest is
+# an API error, and "usage" with the model and token counts of the newest real one (context fill).
+# [^\\] skips fields quoted inside a message, where JSON escapes the quotes (doubled for ugrep).
+# The final `true`: a false test last would fail the whole listing.
 CLAUDE = ('echo ---; for f in "$HOME"/.claude/sessions/*.json; do p=${f##*/}; '
           'kill -0 "${p%.json}" 2>/dev/null || continue; cat "$f"; echo; '
           'i=$(sed -n \'s/.*"sessionId":"\\([^"]*\\)".*/\\1/p\' "$f"); '
-          'for t in "$HOME"/.claude/projects/*/"$i".jsonl; do [ -f "$t" ] && tail -c 300000 "$t" '
-          '| grep \'[^\\\\]"type":"assistant"\' | tail -n 1 '
-          '| grep -q \'[^\\\\]"isApiErrorMessage":true\' && echo failed; done; done; true')
+          'for t in "$HOME"/.claude/projects/*/"$i".jsonl; do [ -f "$t" ] || continue; '
+          'a=$(tail -c 300000 "$t" | grep \'[^\\\\]"type":"assistant"\'); '
+          'printf "%s\\n" "$a" | tail -n 1 | grep -q \'[^\\\\]"isApiErrorMessage":true\' && echo failed; '
+          'echo usage $(printf "%s\\n" "$a" | grep -v \'[^\\\\]"isApiErrorMessage":true\' | tail -n 1 '
+          '| grep -o \'"model":"[^"]*"\\|"[a-z_]*input_tokens":[0-9]*\' | head -n 4); done; done; true')
 
 
 @dataclass
@@ -44,6 +48,8 @@ class Session:
     waiting: str | None = None  # what Claude waits on you for ("permission prompt", "input needed", ...)
     failed: bool = False        # Claude's newest reply is an API error
     title: str | None = None    # Claude's name for the conversation (/rename, or one it made up)
+    model: str | None = None    # model of Claude's newest reply
+    context: int = 0            # tokens in context at Claude's newest reply
 
 
 def parse(host, out):
@@ -61,6 +67,9 @@ def parse(host, out):
         if line == "failed" and files:
             files[-1]["failed"] = True
             continue
+        if line.startswith("usage") and files:
+            files[-1].update(usage(line))
+            continue
         try:
             files.append(json.loads(line))
         except ValueError:
@@ -74,7 +83,27 @@ def parse(host, out):
         if s.claude is None or rank(status, since) > rank(s.claude, s.claude_since):
             s.claude, s.claude_since = status, since
             s.waiting, s.failed, s.title = c.get("waitingFor"), bool(c.get("failed")), c.get("name")
+            s.model, s.context = c.get("model"), c.get("context", 0)
     return list(sessions.values())
+
+
+def usage(line):
+    """{"model", "context"} from a `usage "model":"…" "input_tokens":N …` line."""
+    fields = dict(re.findall(r'"(\w+)":"?([^"\s]*)"?', line))
+    if "model" not in fields:
+        return {}
+    tokens = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    return {"model": fields["model"], "context": sum(int(fields.get(k) or 0) for k in tokens)}
+
+
+def context_pct(s):
+    """How full Claude's context is, in percent, or None without a reply. Claude Code doesn't save
+    the window; Claude 5 models run with 1M, older ones with 200k (unless opted in to 1M)."""
+    if not s.model:
+        return None
+    m = re.match(r"claude-[a-z]+-(\d+)", s.model)
+    limit = 1_000_000 if m and int(m.group(1)) >= 5 else 200_000
+    return min(100, s.context * 100 // limit)
 
 
 def rank(status, since):

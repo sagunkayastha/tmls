@@ -57,7 +57,8 @@ def to_sessions(files, windows, parents, now):
         names.add(name)
         out.append(hosts.Session(hosts.KITTY, name, 1, False, 0, now, f.get("status"),
                                  f.get("statusUpdatedAt", 0) // 1000, find_window(f["pid"], parents, windows),
-                                 f.get("waitingFor"), bool(f.get("failed"))))
+                                 f.get("waitingFor"), bool(f.get("failed")),
+                                 model=f.get("model"), context=f.get("context", 0)))
     return out
 
 
@@ -80,19 +81,38 @@ def _files():
         except (OSError, ValueError):
             continue
         if isinstance(f.get("pid"), int) and _alive(f["pid"]):
-            f["failed"] = any(last_reply_failed(t) for t in PROJECTS.glob(f"*/{f.get('sessionId')}.jsonl"))
+            for t in PROJECTS.glob(f"*/{f.get('sessionId')}.jsonl"):
+                f.update(last_reply(t))
             out.append(f)
     return out
 
 
-def last_reply_failed(transcript):
-    """Is the newest reply in a Claude transcript an API error? (hosts.CLAUDE does this remotely.)"""
+def last_reply(transcript):
+    """{"failed", "model", "context"} from a Claude transcript's newest replies, as hosts.CLAUDE
+    reports them remotely: failed if the newest is an API error, the rest from the newest real one."""
     try:
         with open(transcript, "rb") as fh:
             fh.seek(max(0, fh.seek(0, 2) - 300_000))
             lines = fh.read().decode(errors="replace").splitlines()
     except OSError:
-        return False
+        return {}
+    out = {}
+    for line in reversed(lines):
+        if '"type":"assistant"' not in line:
+            continue
+        try:
+            reply = json.loads(line)
+        except ValueError:
+            break  # cut off by the seek
+        failed = reply.get("isApiErrorMessage") is True
+        out.setdefault("failed", failed)
+        if not failed:
+            u = reply.get("message", {}).get("usage", {})
+            out["model"] = reply["message"].get("model")
+            out["context"] = sum(u.get(k, 0) for k in
+                                 ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            break
+    return out
     for line in reversed(lines):
         if '"type":"assistant"' in line:
             try:

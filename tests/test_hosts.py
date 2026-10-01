@@ -54,12 +54,30 @@ def test_parse_claude_conversation_title():
     assert {s.name: s.title for s in hosts.parse("nas", out)} == {"Season-36": "NERSC_Training", "plain": None}
 
 
+def test_parse_context_use_from_the_newest_reply():
+    # "usage" after a session file: model and token counts of its newest real reply
+    out = ("1000\nwork:1:0:990\n---\n"
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"work:@1.%1"}\n'
+           'usage "model":"claude-opus-5-5" "input_tokens":2 "cache_creation_input_tokens":3000 '
+           '"cache_read_input_tokens":581674\n')
+    s, = hosts.parse("nas", out)
+    assert (s.model, s.context) == ("claude-opus-5-5", 584676)
+    assert hosts.context_pct(s) == 58
+
+
+def test_context_limit_by_model():
+    pct = lambda model, used: hosts.context_pct(hosts.Session("h", "x", 1, False, 0, 0, model=model, context=used))
+    assert pct("claude-sonnet-5-5", 900_000) == 90       # Claude 5 models run with 1M
+    assert pct("claude-haiku-4-5-20251001", 150_000) == 75  # older ones 200k
+    assert pct(None, 0) is None                             # no reply yet, or not Claude
+
+
 def test_list_argv_reads_host_clock_windows_and_claude():
     script = hosts.list_argv("nas")[-1]
     assert hosts.list_argv(hosts.LOCAL)[:2] == ["sh", "-c"]
     assert "date +%s" in script and "list-windows -a" in script and ".claude/sessions/" in script
     assert ".key" not in script
-    assert '"isApiErrorMessage":true' in script and ".claude/projects/" in script
+    assert '"isApiErrorMessage":true' in script and ".claude/projects/" in script and "echo usage" in script
 
 
 def S(activity=0, now=100, claude=None, since=0, failed=False):

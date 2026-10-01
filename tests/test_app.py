@@ -344,3 +344,19 @@ async def test_claude_rows_show_the_conversation_name_on_a_dim_second_line(clock
         lines = {n: r.split("\n") for n, r in rows(app).items()}
         assert lines["Season-36"][0].endswith("○") and lines["Season-36"][1].strip() == "NERSC_Training"
         assert len(lines["notes"]) == 1 and len(lines["plain"]) == 1  # same name, or no Claude: one line
+
+
+async def test_context_fill_shows_at_the_end_of_the_second_line(clock_hosts, monkeypatch):
+    async def list_host(host):
+        return True, [hosts.Session(host, "Season-36", 1, False, 3600, 3600, "idle", 0, title="NERSC_Training",
+                                    model="claude-opus-5-5", context=754_000),
+                      hosts.Session(host, "notes", 1, False, 3600, 3600, "idle", 0, title="notes",
+                                    model="claude-opus-5-5", context=50_000)]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        lines = {n: r.split("\n") for n, r in rows(app).items()}
+        assert lines["Season-36"][1].startswith("  NERSC_Train") and lines["Season-36"][1].endswith(" 75%")
+        assert len(lines["Season-36"][1]) == tmls_app.ROW_WIDTH
+        assert lines["notes"][1].strip() == "5%"  # same name as tmux: the line only holds the meter
