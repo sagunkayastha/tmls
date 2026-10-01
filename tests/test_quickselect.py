@@ -29,3 +29,12 @@ def test_hints_stop_at_26_and_skip_non_links():
 def test_copy_keeps_an_explicit_line_one_but_not_a_plain_path():
     hits = candidates(["README.md:1 README.md"])
     assert [hit.copy_text for hit in hits] == ["README.md:1", "README.md"]
+
+
+def test_a_full_screen_without_targets_is_quick():
+    # Alt+Shift+S runs this on the key press; scanning every cell of every row took ~300 ms
+    import time
+    rows = [("plain words without targets here " * 7)[:200]] * 60
+    start = time.perf_counter()
+    assert candidates(rows) == []
+    assert time.perf_counter() - start < 0.05
