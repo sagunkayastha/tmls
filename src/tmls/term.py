@@ -15,6 +15,7 @@ import pyte
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
+from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
 
@@ -34,6 +35,35 @@ MOUSE_CLICKS, MOUSE_DRAGS, MOUSE_ANY, MOUSE_SGR = (m << 5 for m in (1000, 1002, 
 BRACKETED_PASTE = 2004 << 5  # the child wants pastes wrapped so it doesn't run them as typed keys
 BUTTONS = {1: 0, 2: 1, 3: 2}  # Textual left/middle/right -> xterm button codes
 OSC52 = re.compile(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)")
+URL = re.compile(r"""https?://[^\s<>"'`]+""")
+FILE_LINE = re.compile(
+    r"(?P<path>[A-Za-z0-9._~/+-]*[A-Za-z0-9_~-]\.[A-Za-z0-9]+|"
+    r"[A-Za-z0-9._~+-]*/[A-Za-z0-9._~/+-]+):(?P<line>\d+)(?::\d+)?"
+)
+
+
+def link_at(rows, x, y):
+    """Return (kind, target, line) for the visible link under a screen cell."""
+    if not 0 <= y < len(rows) or not 0 <= x < len(rows[y]):
+        return None
+    row = rows[y]
+    if y + 1 < len(rows) and row and row[-1] != " " and rows[y + 1][:1].strip():
+        row += rows[y + 1]
+    urls = list(URL.finditer(row))
+    for match in urls:
+        value = match.group()
+        while value and value[-1] in ".,;:!?)]}'\"":
+            if value[-1] == ")" and value.count("(") >= value.count(")"):
+                break
+            value = value[:-1]
+        if match.start() <= x < match.start() + len(value):
+            return "url", value, None
+    for match in FILE_LINE.finditer(row):
+        if any(match.start() < url.end() and match.end() > url.start() for url in urls):
+            continue
+        if match.start() <= x < match.end():
+            return "file", match.group("path"), int(match.group("line"))
+    return None
 
 
 def trim_copy(text):
@@ -116,6 +146,11 @@ class VT(pyte.Screen):
 class Terminal(Widget, can_focus=True):
     DEFAULT_CSS = "Terminal { height: 1fr; }"
     ALLOW_SELECT = False  # drags go to the child (tmux selects and copies); shift+drag is kitty's
+
+    class LinkClicked(Message):
+        def __init__(self, kind, target, line):
+            super().__init__()
+            self.kind, self.target, self.line = kind, target, line
 
     def __init__(self, argv, **kwargs):
         super().__init__(**kwargs)
@@ -297,6 +332,12 @@ class Terminal(Widget, can_focus=True):
             self.release_mouse()
             event.stop()
             self.refresh()
+            if self._selection[0] == self._selection[1]:
+                self._selection = None
+                found = link_at(self.vt.display, event.x, event.y)
+                if found:
+                    self.post_message(self.LinkClicked(*found))
+                return
             self._copy_selection()
             return
         if self._held is not None:

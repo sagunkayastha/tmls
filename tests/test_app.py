@@ -1,8 +1,9 @@
 import pytest
-from textual.widgets import ContentSwitcher, Tabs
+from textual.widgets import ContentSwitcher, Tabs, TextArea
 
 from tmls import app as tmls_app
 from tmls import hosts, local
+from tmls import viewer
 from tmls.term import Terminal
 
 
@@ -79,6 +80,96 @@ async def test_click_opens_session_in_a_tab(fake_hosts):
         assert isinstance(term, Terminal)
         assert await wait_for(pilot, lambda: "attached-to-alpha" in text(term))
         assert name(app.query_one(Tabs).active_tab) == "alpha ×"
+
+
+async def test_url_link_opens_external_browser(fake_hosts, monkeypatch):
+    opened = []
+    monkeypatch.setattr(tmls_app, "open_url", opened.append)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        app.query_one(Terminal).post_message(Terminal.LinkClicked("url", "https://example.com", None))
+        assert await wait_for(pilot, lambda: opened == ["https://example.com"])
+        assert not app.query("#file-viewer")
+
+
+async def test_file_link_opens_read_only_viewer_beside_terminal(fake_hosts, monkeypatch):
+    async def load_file(host, session, path):
+        return "/tmp/term.py", "\n".join(f"line {n}" for n in range(1, 101))
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        term = app.query_one(Terminal)
+        term.post_message(Terminal.LinkClicked("file", "src/term.py", 40))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        pane = app.query_one("#file-viewer")
+        area = pane.query_one(TextArea)
+        assert area.read_only
+        assert await wait_for(pilot, lambda: area.cursor_location == (39, 0))
+        assert "line 40" in area.text
+        assert term.has_focus
+        assert pane.size.width >= 35
+        assert app.query_one("#terms").size.width >= 35
+
+
+async def test_file_viewer_closes_with_button_or_escape_and_restores_focus(fake_hosts, monkeypatch):
+    async def load_file(host, session, path):
+        return "/tmp/term.py", "line 1\nline 2\n"
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        term = app.query_one(Terminal)
+        term.post_message(Terminal.LinkClicked("file", "term.py", 2))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        await pilot.click("#viewer-close")
+        assert await wait_for(pilot, lambda: not app.query("#file-viewer"))
+        assert term.has_focus
+        term.post_message(Terminal.LinkClicked("file", "term.py", 2))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        app.query_one("#viewer-text", TextArea).focus()
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: not app.query("#file-viewer"))
+        assert term.has_focus
+
+
+async def test_second_file_replaces_viewer_and_tab_switch_keeps_it(fake_hosts, monkeypatch):
+    async def load_file(host, session, path):
+        return f"/tmp/{path}", path
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        term = app.query_one(Terminal)
+        term.post_message(Terminal.LinkClicked("file", "first.py", 1))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        term.post_message(Terminal.LinkClicked("file", "second.py", 1))
+        assert await wait_for(pilot, lambda: "second.py" in app.query_one(TextArea).text)
+        assert len(app.query("#file-viewer")) == 1
+        await open_session(app, pilot, "beta")
+        assert app.query_one("#file-viewer")
+        assert "second.py" in app.query_one(TextArea).text
+
+
+async def test_file_read_error_notifies_without_opening_viewer(fake_hosts, monkeypatch):
+    async def load_file(host, session, path):
+        raise viewer.ViewerError("binary file")
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    app = tmls_app.Tmls()
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        app.query_one(Terminal).post_message(Terminal.LinkClicked("file", "bad.bin", 1))
+        assert await wait_for(pilot, lambda: notices)
+        assert "binary file" in notices[-1]
+        assert not app.query("#file-viewer")
 
 
 async def test_tabs_switch_and_do_not_duplicate(fake_hosts):

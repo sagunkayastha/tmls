@@ -50,6 +50,9 @@ command.
   Copied text loses trailing spaces on each line. Pasting
   (kitty's Ctrl+Shift+V, or right-click for the system clipboard) goes to the session, as a
   bracketed paste when it asks for one.
+- **Links in the terminal**: Ctrl+click a URL to open it in your normal browser, or a
+  `file:line` path to read that file beside the terminal. A URL printed by a remote host
+  with `localhost` still opens on this laptop's `localhost`.
 - **`ct`**: run instead of `claude` to start Claude inside a tmux session named after the
   folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
   it's plain `claude`.

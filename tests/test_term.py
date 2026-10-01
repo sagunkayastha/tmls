@@ -7,6 +7,7 @@ import pyte
 
 from textual import events
 
+from tmls import term as term_module
 from tmls.term import BRACKETED_PASTE, VT, Clipboard, Terminal, color, key_to_bytes, mouse_bytes
 
 
@@ -39,9 +40,13 @@ class Host(App):
     def __init__(self, argv):
         super().__init__()
         self.argv = argv
+        self.links = []
 
     def compose(self):
         yield Terminal(self.argv, id="t")
+
+    def on_terminal_link_clicked(self, event):
+        self.links.append((event.kind, event.target, event.line))
 
 
 async def wait_for(pilot, cond, timeout=5):
@@ -146,6 +151,26 @@ def test_mouse_bytes_sgr():
     assert mouse_bytes(2, 0, 0, press=True, meta=True, ctrl=True) == b"\x1b[<26;1;1M"
 
 
+def test_link_at_url_keeps_balanced_parens_and_trims_sentence_punctuation():
+    row = "See (https://example.com/a(b))., next"
+    assert term_module.link_at([row], row.index("example"), 0) == ("url", "https://example.com/a(b)", None)
+    assert term_module.link_at([row], row.index("next"), 0) is None
+
+
+def test_link_at_file_line_with_column_and_no_false_port_or_time():
+    row = "src/tmls/term.py:214:5  10:30  host:22"
+    assert term_module.link_at([row], row.index("term.py") + 2, 0) == ("file", "src/tmls/term.py", 214)
+    assert term_module.link_at([row], row.index("10:30") + 1, 0) is None
+    assert term_module.link_at([row], row.index("host:22") + 1, 0) is None
+
+
+def test_link_at_wrapped_url_and_ignores_file_shape_inside_url():
+    rows = ["go https://example.com/src/term.py:2", "14 now"]
+    assert term_module.link_at(rows, rows[0].index("example"), 0) == (
+        "url", "https://example.com/src/term.py:214", None)
+    assert term_module.link_at(["https://example.com/file.py:9"], 22, 0)[0] == "url"
+
+
 def test_clipboard_catches_osc52_even_when_split():
     clip = Clipboard()
     assert clip.feed(b"hi \x1b]52;c;aGVs") == []
@@ -222,6 +247,27 @@ async def test_ctrl_drag_copies_on_release_and_trims_trailing_spaces():
         await pilot.mouse_down(term, offset=(0, 0), control=True)
         await pilot.mouse_up(term, offset=(6, 0), control=True)
         assert app.clipboard == "done"
+
+
+async def test_ctrl_click_url_posts_link_without_copying():
+    app = Host(["sh", "-c", "printf 'https://example.com'; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: "https://example.com" in screen_text(term))
+        await pilot.click(term, offset=(10, 0), control=True)
+        assert app.links == [("url", "https://example.com", None)]
+        assert app.clipboard == ""
+
+
+async def test_ctrl_drag_over_url_remains_a_selection():
+    app = Host(["sh", "-c", "printf 'https://example.com'; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: "https://example.com" in screen_text(term))
+        await pilot.mouse_down(term, offset=(0, 0), control=True)
+        await pilot.mouse_up(term, offset=(5, 0), control=True)
+        assert app.links == []
+        assert app.clipboard == "https"
 
 
 async def test_tmux_osc52_copy_trims_trailing_spaces_on_each_line():
