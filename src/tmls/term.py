@@ -5,6 +5,7 @@ import fcntl
 import os
 import pty
 import re
+import shutil
 import signal
 import struct
 import termios
@@ -122,6 +123,8 @@ class Terminal(Widget, can_focus=True):
         self._dirty = False
         self.clipboard = Clipboard()
         self._held = None  # xterm code of the button held down, for drags
+        self._selection = None
+        self._selecting = False
 
     def on_mount(self):
         self.set_interval(1 / 30, self._flush)
@@ -187,7 +190,9 @@ class Terminal(Widget, can_focus=True):
         segments, run, run_style = [], [], None
         for x in range(self.vt.columns):
             ch = row[x]
-            s = style(ch.fg, ch.bg, ch.bold, ch.italics, ch.underscore, ch.reverse != (show_cursor and x == cur.x))
+            selected = self._selection is not None and min(self._selection) <= (y, x) < max(self._selection)
+            s = style(ch.fg, ch.bg, ch.bold, ch.italics, ch.underscore,
+                      ch.reverse ^ (show_cursor and x == cur.x) ^ selected)
             if s is not run_style and run:
                 segments.append(Segment("".join(run), run_style))
                 run = []
@@ -201,6 +206,18 @@ class Terminal(Widget, can_focus=True):
         # Every key goes to the child, so tab/ctrl+c don't move focus or quit tmls.
         event.stop()
         event.prevent_default()
+        if event.key == "ctrl+c" and self._selection is not None:
+            start, end = sorted(self._selection)
+            if start != end:
+                lines = []
+                for y in range(start[0], end[0] + 1):
+                    left = start[1] if y == start[0] else 0
+                    right = end[1] if y == end[0] else self.vt.columns
+                    lines.append("".join(self.vt.buffer[y][x].data or " " for x in range(left, right)))
+                self.app.copy_to_clipboard("\n".join(lines))
+                self._selection = None
+                self.refresh()
+                return
         if self.fd is not None and not self.exited:
             os.write(self.fd, key_to_bytes(event.key, event.character))
 
@@ -217,17 +234,48 @@ class Terminal(Widget, can_focus=True):
                                           event.shift, event.meta, event.ctrl))
 
     def on_mouse_down(self, event):
+        if event.button == 3:
+            event.stop()
+            asyncio.create_task(self._paste_clipboard())
+            return
+        if event.button == 1 and event.ctrl:
+            point = (max(0, min(event.y, self.vt.lines - 1)),
+                     max(0, min(event.x, self.vt.columns)))
+            self._selection = (point, point)
+            self._selecting = True
+            self.capture_mouse()
+            event.stop()
+            self.refresh()
+            return
         if event.button in BUTTONS:
+            self._selection = None
+            self.refresh()
             self._held = BUTTONS[event.button]
             self.capture_mouse()  # keep getting the drag when it leaves the widget
             self._mouse(event, self._held, press=True)
 
     def on_mouse_move(self, event):
+        if self._selecting:
+            self._selection = (self._selection[0],
+                               (max(0, min(event.y, self.vt.lines - 1)),
+                                max(0, min(event.x, self.vt.columns))))
+            event.stop()
+            self.refresh()
+            return
         modes = self.vt.mode
         if self._held is not None and modes & {MOUSE_DRAGS, MOUSE_ANY}:
             self._mouse(event, self._held, press=True, drag=True)
 
     def on_mouse_up(self, event):
+        if self._selecting:
+            self._selection = (self._selection[0],
+                               (max(0, min(event.y, self.vt.lines - 1)),
+                                max(0, min(event.x, self.vt.columns))))
+            self._selecting = False
+            self.release_mouse()
+            event.stop()
+            self.refresh()
+            return
         if self._held is not None:
             self._mouse(event, self._held, press=False)
             self._held = None
@@ -238,6 +286,25 @@ class Terminal(Widget, can_focus=True):
 
     def on_mouse_scroll_down(self, event):
         self._mouse(event, 65, press=True)
+
+    async def _paste_clipboard(self):
+        command = (["wl-paste", "--no-newline"] if shutil.which("wl-paste") else
+                   ["xclip", "-selection", "clipboard", "-o"] if shutil.which("xclip") else None)
+        data = None
+        if command:
+            try:
+                process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
+                                                               stderr=asyncio.subprocess.DEVNULL)
+                output, _ = await asyncio.wait_for(process.communicate(), timeout=2)
+                if process.returncode == 0:
+                    data = output
+            except (OSError, asyncio.TimeoutError):
+                if 'process' in locals() and process.returncode is None:
+                    process.kill()
+        if data is None:
+            data = self.app.clipboard.encode()
+        if data and self.fd is not None and not self.exited:
+            os.write(self.fd, data)
 
     def close(self):
         if self.pid is not None and not self.exited:

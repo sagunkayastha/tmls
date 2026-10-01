@@ -129,6 +129,12 @@ def test_device_attribute_queries_get_no_reply():
     assert replies == []
 
 
+def test_terminal_keeps_child_reverse_video_without_a_selection():
+    term = Terminal(["true"])
+    term.stream.feed(b"\x1b[7mREVERSED\x1b[0m")
+    assert next(iter(term.render_line(0))).style.reverse is True
+
+
 def test_mouse_bytes_sgr():
     # 1-based cells; M = press/drag, m = release; drag adds 32, wheel is 64/65; shift 4, alt 8, ctrl 16
     assert mouse_bytes(0, 0, 0, press=True) == b"\x1b[<0;1;1M"
@@ -170,3 +176,29 @@ async def test_child_copy_reaches_the_clipboard():
     app = Host(["sh", "-c", "printf '\\033]52;c;Y29waWVk\\007'; sleep 5"])
     async with app.run_test(size=(60, 10)) as pilot:
         assert await wait_for(pilot, lambda: app.clipboard == "copied")
+
+
+async def test_ctrl_drag_then_ctrl_c_copies_terminal_text_without_interrupting():
+    app = Host(["sh", "-c", "printf 'hello world'; trap 'echo GOT-INT' INT; while true; do sleep 0.1; done"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        term.focus()
+        assert await wait_for(pilot, lambda: "hello world" in screen_text(term))
+        await pilot.mouse_down(term, offset=(0, 0), control=True)
+        await pilot.mouse_up(term, offset=(5, 0), control=True)
+        await pilot.press("ctrl+c")
+        assert app.clipboard == "hello"
+        assert "GOT-INT" not in screen_text(term)
+
+
+async def test_right_click_pastes_system_clipboard_into_child(tmp_path, monkeypatch):
+    paste = tmp_path / "wl-paste"
+    paste.write_text("#!/bin/sh\nprintf PASTED\n")
+    paste.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    app = Host(["sh", "-c", "stty raw -echo; dd bs=1 count=6 2>/dev/null; sleep 5"])
+    async with app.run_test(size=(60, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: term.pid is not None)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: "PASTED" in screen_text(term))
