@@ -225,8 +225,10 @@ class Terminal(Widget, can_focus=True):
     def on_paste(self, event: events.Paste):
         # kitty's ctrl+shift+v arrives as one Paste event, not as keys
         event.stop()
-        if self.fd is not None and not self.exited:
-            text = event.text
+        self._paste(event.text)
+
+    def _paste(self, text):
+        if text and self.fd is not None and not self.exited:
             if BRACKETED_PASTE in self.vt.mode:
                 text = f"\x1b[200~{text}\x1b[201~"
             os.write(self.fd, text.encode())
@@ -300,21 +302,18 @@ class Terminal(Widget, can_focus=True):
     async def _paste_clipboard(self):
         command = (["wl-paste", "--no-newline"] if shutil.which("wl-paste") else
                    ["xclip", "-selection", "clipboard", "-o"] if shutil.which("xclip") else None)
-        data = None
+        text, process = None, None
         if command:
             try:
                 process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
                                                                stderr=asyncio.subprocess.DEVNULL)
                 output, _ = await asyncio.wait_for(process.communicate(), timeout=2)
                 if process.returncode == 0:
-                    data = output
+                    text = output.decode(errors="replace")
             except (OSError, asyncio.TimeoutError):
-                if 'process' in locals() and process.returncode is None:
+                if process is not None and process.returncode is None:
                     process.kill()
-        if data is None:
-            data = self.app.clipboard.encode()
-        if data and self.fd is not None and not self.exited:
-            os.write(self.fd, data)
+        self._paste(self.app.clipboard if text is None else text)
 
     def close(self):
         if self.pid is not None and not self.exited:

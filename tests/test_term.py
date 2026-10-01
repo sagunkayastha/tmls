@@ -225,3 +225,19 @@ async def test_right_click_pastes_system_clipboard_into_child(tmp_path, monkeypa
         assert await wait_for(pilot, lambda: term.pid is not None)
         await pilot.click(term, offset=(2, 0), button=3)
         assert await wait_for(pilot, lambda: "PASTED" in screen_text(term))
+
+
+async def test_right_click_paste_is_bracketed_when_the_child_asks(tmp_path, monkeypatch):
+    # unbracketed, a multi-line paste into a shell or Claude runs line by line
+    paste = tmp_path / "wl-paste"
+    paste.write_text("#!/bin/sh\nprintf hi\n")
+    paste.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    script = "printf '\\033[?2004h'; stty raw -echo; dd bs=1 count=14 2>/dev/null | od -An -c; sleep 5"
+    app = Host(["sh", "-c", script])
+    async with app.run_test(size=(80, 10)) as pilot:
+        term = app.query_one(Terminal)
+        assert await wait_for(pilot, lambda: BRACKETED_PASTE in term.vt.mode)
+        await pilot.click(term, offset=(2, 0), button=3)
+        assert await wait_for(pilot, lambda: "033   [   2   0   0   ~   h   i 033   [   2   0   1   ~"
+                              in " ".join(screen_text(term).split("\n")))
