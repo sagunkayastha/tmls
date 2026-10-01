@@ -59,6 +59,9 @@ command.
 - **Links in the terminal**: Ctrl+click a URL to open it in your normal browser, or a
   `file:line` path to read that file beside the terminal. A URL printed by a remote host
   with `localhost` still opens on this laptop's `localhost`.
+- **Quick select**: Alt+Shift+S labels URLs, file paths and commit hashes visible in the
+  terminal. Press a label letter to copy it, Shift+letter to open a URL or file, or Esc
+  to cancel. The labels go away after the choice.
 - **`ct`**: run instead of `claude` to start Claude inside a tmux session named after the
   folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
   it's plain `claude`.

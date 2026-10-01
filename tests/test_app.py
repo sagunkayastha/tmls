@@ -102,6 +102,27 @@ async def test_url_link_opens_external_browser(fake_hosts, monkeypatch):
         assert not app.query("#file-viewer")
 
 
+async def test_quick_select_copies_a_hash_and_opens_an_external_url(fake_hosts, monkeypatch):
+    opened = []
+    copied = []
+    monkeypatch.setattr(tmls_app, "open_url", opened.append)
+    app = tmls_app.Tmls()
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await open_session(app, pilot, "alpha")
+        term = app.query_one(Terminal)
+        term.stream.feed(b"\r\nhttps://example.com\r\ncommit 85388e9\r\n")
+        await pilot.press("alt+shift+s")
+        assert [h.target for h in term.quick_hits] == ["https://example.com", "85388e9"]
+        first = term.quick_hits[0]
+        assert "".join(segment.text for segment in term.render_line(first.y))[:first.x + 1].endswith("a")
+        await pilot.press("b")
+        assert copied == ["85388e9"] and not term.quick_hits
+        await pilot.press("alt+shift+s", "shift+a")
+        assert opened == ["https://example.com"] and not term.quick_hits
+
+
 async def test_file_link_opens_read_only_viewer_beside_terminal(fake_hosts, monkeypatch):
     async def load_file(host, session, path):
         return "/tmp/term.py", "\n".join(f"line {n}" for n in range(1, 101))

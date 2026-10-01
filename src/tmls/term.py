@@ -165,6 +165,7 @@ class Terminal(Widget, can_focus=True):
         self._held = None  # xterm code of the button held down, for drags
         self._selection = None
         self._selecting = False
+        self.quick_hits = []
 
     def on_mount(self):
         self.set_interval(1 / 30, self._flush)
@@ -233,11 +234,14 @@ class Terminal(Widget, can_focus=True):
             selected = self._selection is not None and min(self._selection) <= (y, x) < max(self._selection)
             s = style(ch.fg, ch.bg, ch.bold, ch.italics, ch.underscore,
                       ch.reverse ^ (show_cursor and x == cur.x) ^ selected)
+            label = next((hit.label for hit in self.quick_hits if (hit.y, hit.x) == (y, x)), None)
+            if label:
+                s = Style(color="black", bgcolor="#e5c07b", bold=True)
             if s is not run_style and run:
                 segments.append(Segment("".join(run), run_style))
                 run = []
             run_style = s
-            run.append(ch.data or " ")
+            run.append(label or ch.data or " ")
         if run:
             segments.append(Segment("".join(run), run_style))
         return Strip(segments)
@@ -246,6 +250,26 @@ class Terminal(Widget, can_focus=True):
         # Every key goes to the child, so tab/ctrl+c don't move focus or quit tmls.
         event.stop()
         event.prevent_default()
+        if event.key in {"alt+shift+s", "shift+alt+s"}:
+            from tmls.quickselect import candidates
+            self.quick_hits = [] if self.quick_hits else candidates(self.vt.display)
+            self.refresh()
+            if self.quick_hits:
+                self.app.notify("a–z copies · Shift+a–z opens · Esc cancels")
+            else:
+                self.app.notify("No URL, file or hash on screen.")
+            return
+        if self.quick_hits:
+            key = (event.character or event.key.rsplit("+", 1)[-1]).lower()
+            chosen = next((hit for hit in self.quick_hits if hit.label == key), None)
+            self.quick_hits = []
+            self.refresh()
+            if chosen:
+                if (event.key.startswith("shift+") or (event.character or "").isupper()) and chosen.kind != "hash":
+                    self.post_message(self.LinkClicked(chosen.kind, chosen.target, chosen.line))
+                else:
+                    self.app.copy_to_clipboard(chosen.copy_text)
+            return
         if event.key == "ctrl+c" and self._copy_selection():
             self._selection = None
             self.refresh()
