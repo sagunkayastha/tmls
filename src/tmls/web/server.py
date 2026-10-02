@@ -5,6 +5,7 @@ from pathlib import Path
 from aiohttp import web
 
 from tmls import hosts
+from tmls.web import events
 
 STATIC = Path(__file__).parent / "static"
 
@@ -17,6 +18,7 @@ def make_app(auth_file, hosts_list):
     app = web.Application()
     app["auth_file"], app["hosts"] = auth_file, hosts_list
     app.router.add_get("/healthz", healthz)
+    events.setup(app)
     return app
 
 
