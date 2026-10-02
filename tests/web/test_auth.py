@@ -37,7 +37,7 @@ async def test_page_redirects_to_login_then_logs_in(aiohttp_client, tmp_path):
     response = await client.get("/", allow_redirects=False)
     assert response.status == 302 and response.headers["Location"] == "/login"
     response = await client.post("/login", data={"username": "me", "password": "bad"}, allow_redirects=False)
-    assert response.status == 401
+    assert response.status == 302 and response.headers["Location"] == "/login?error=1"
     response = await client.post("/login", data={"username": "me", "password": "pw"}, allow_redirects=False)
     assert response.status == 302 and auth.COOKIE in response.cookies
     assert (await client.get("/", allow_redirects=False)).status == 200

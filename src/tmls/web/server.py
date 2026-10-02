@@ -62,7 +62,7 @@ async def login(request):
     data = await request.post()
     user, password = str(data.get("username", "")), str(data.get("password", ""))
     if not auth.check_login(creds, user, password):
-        return web.Response(status=401, text="wrong username or password")
+        raise web.HTTPFound("/login?error=1")  # the form shows the message
     response = web.HTTPFound("/")
     response.set_cookie(auth.COOKIE, auth.make_cookie(creds["secret"], user),
                         max_age=auth.SESSION_TTL, httponly=True, samesite="Lax", path="/",
