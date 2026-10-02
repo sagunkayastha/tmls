@@ -44,7 +44,7 @@ async def test_first_message_is_every_row(aiohttp_client, monkeypatch):
     await asyncio.sleep(0.2)
     ws = await client.ws_connect("/api/events")
     first = await next_kind(ws, "rows")
-    assert sorted(r["name"] for r in first["set"]) == ["a", "b"] and first["gone"] == []
+    assert sorted(r["name"] for r in first["set"]) == ["a", "b"] and first["gone"] == [] and first["full"]
     assert {r["line"] for r in first["set"]} == {"last line"}
 
 

@@ -24,14 +24,22 @@ async def poll_once(app):
     state, names = app["state"], app["hosts"]
     found = [(h, *r) for h, r in zip(names, await asyncio.gather(*(_list(h) for h in names)))]
     lines, extras = app["lines"], {}
+    screens, prompts_up = {}, {}  # fetched in parallel: one slow host mustn't hold up the rest
     for host, online, sessions in found:
         for s in sessions:
             app["now"][host] = s.now
             k = rows.key(host, s.name)
             if not s.claude and lines.get(k, (None,))[0] != s.activity:  # plain tmux: only on new output
-                lines[k] = (s.activity, await _screen(host, s.name))
-            shown = await approve.current(host, s.name) if s.claude == "waiting" else None
-            extras[k] = {"line": lines.get(k, (None, None))[1], "shown": shown}
+                screens[k] = (s.activity, _screen(host, s.name))
+            if s.claude == "waiting":
+                prompts_up[k] = approve.current(host, s.name)
+    for (k, (activity, _)), text in zip(screens.items(), await asyncio.gather(*(c for _, c in screens.values()))):
+        lines[k] = (activity, text)
+    shown = dict(zip(prompts_up, await asyncio.gather(*prompts_up.values())))
+    for host, online, sessions in found:
+        for s in sessions:
+            k = rows.key(host, s.name)
+            extras[k] = {"line": lines.get(k, (None, None))[1], "shown": shown.get(k)}
     old_rows, old_marks = dict(state.rows), dict(state.marks)
     new = rows.build(state, found, extras)
     await broadcast(app, {"t": "rows", **rows.diff(old_rows, new)})
@@ -61,9 +69,10 @@ async def handle_events(request):
     app = request.app
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
-    await ws.send_json({"t": "rows", "set": list(app["state"].rows.values()), "gone": []})
-    app["sockets"].add(ws)
+    snapshot = list(app["state"].rows.values())
+    app["sockets"].add(ws)  # before the await below, so no poll tick can slip past this client
     try:
+        await ws.send_json({"t": "rows", "full": True, "set": snapshot, "gone": []})
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break

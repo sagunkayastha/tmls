@@ -43,17 +43,22 @@ function attach(key) {
   const ws = new WebSocket(wsUrl(`/api/term?host=${encodeURIComponent(row.host)}&name=${encodeURIComponent(row.name)}`));
   ws.binaryType = "arraybuffer";
   sock = ws;
-  ws.onopen = () => { retries = 0; overlay(null); refit(); term.focus(); };
+  ws.onopen = () => { overlay(null); refit(); term.focus(); };
   ws.onmessage = (e) => {
     if (typeof e.data === "string") {
       const msg = JSON.parse(e.data);
       if (msg.t === "exit") { ws.onclose = null; overlay("session ended", true); }
       return;
     }
+    retries = 0;  // only real output counts: the server accepts, then closes, sockets it refuses
     term.write(new Uint8Array(e.data));
   };
   ws.onclose = (e) => {
     if (e.code === 4401) { location.href = "/login"; return; }
+    if (e.code === 4403 || e.code === 4404) {  // refused for good: retrying can't help
+      overlay(e.code === 4403 ? "refused: this page's address doesn't match the server (proxy Host header?)" : "no such session", true);
+      return;
+    }
     if (sock !== ws) return;
     if (retries >= 5) { overlay("session ended", true); return; }
     retries += 1;
@@ -197,6 +202,7 @@ function connectEvents() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.t === "rows") {
+      if (msg.full) rows.clear();  // a (re)connect sends everything: drop sessions that ended meanwhile
       for (const key of msg.gone) rows.delete(key);
       for (const row of msg.set) rows.set(row.key, row);
       if (!current) {
@@ -263,7 +269,13 @@ function showSketch() {
     const frame = document.createElement("iframe");
     frame.src = url;
     frame.allow = "clipboard-read; clipboard-write; display-capture";
-    box.replaceChildren(frame);
+    const link = document.createElement("a");  // if sketchpad's login doesn't reach the frame
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.className = "sketch-open";
+    link.textContent = "Open sketchpad in a new tab ↗";
+    box.replaceChildren(link, frame);
     box.dataset.url = url;
   }
   $("term").hidden = true;

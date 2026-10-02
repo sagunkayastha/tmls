@@ -54,7 +54,11 @@ async def _run(argv, stdin=None):
             *argv, stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         out, _ = await asyncio.wait_for(proc.communicate(stdin), timeout=10)
-    except (OSError, asyncio.TimeoutError):
+    except asyncio.TimeoutError:
+        proc.kill()  # a hung ssh would otherwise be left behind on every call
+        await proc.wait()
+        return None, "couldn't reach the host"
+    except OSError:
         return None, "couldn't reach the host"
     return proc.returncode, out.decode(errors="replace")
 
