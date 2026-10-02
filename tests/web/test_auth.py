@@ -31,7 +31,8 @@ def test_login_against_sketchpad_credentials(tmp_path):
     assert not auth.check_login(auth.load(path), "me", "bad")
 
 
-async def test_page_redirects_to_login_then_logs_in(aiohttp_client, tmp_path):
+async def test_page_redirects_to_login_then_logs_in(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "FAIL_DELAY", 0)
     write_creds(tmp_path / "auth.json")
     client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
     response = await client.get("/", allow_redirects=False)
@@ -96,3 +97,29 @@ async def test_page_is_never_cached(aiohttp_client, tmp_path):
     client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
     await client.post("/login", data={"username": "me", "password": "pw"})
     assert (await client.get("/")).headers["Cache-Control"] == "no-store"
+
+
+async def test_logged_out_api_gets_401_not_a_redirect(aiohttp_client, tmp_path):
+    write_creds(tmp_path / "auth.json")
+    client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
+    response = await client.post("/api/approve", json={}, allow_redirects=False)
+    assert response.status == 401 and (await response.json())["error"] == "login"
+
+
+async def test_repeated_wrong_passwords_lock_out(aiohttp_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "FAIL_DELAY", 0)
+    write_creds(tmp_path / "auth.json")
+    client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
+    for _ in range(server.MAX_FAILS):
+        await client.post("/login", data={"username": "me", "password": "bad"}, allow_redirects=False)
+    response = await client.post("/login", data={"username": "me", "password": "pw"}, allow_redirects=False)
+    assert response.status == 429 and auth.COOKIE not in response.cookies
+
+
+def test_sketchpad_cookie_is_not_a_tmls_cookie():
+    # same secret and format as sketchpad: a sketchpad cookie must not log in to tmls
+    import base64, hashlib, hmac
+    payload = base64.urlsafe_b64encode(b"9999999999|me").decode()
+    sketchpad = payload + "." + hmac.new(b"k", payload.encode(), hashlib.sha256).hexdigest()
+    assert auth.verify_cookie("k", sketchpad) is None
+    assert auth.verify_cookie("k", auth.make_cookie("k", "me")) == "me"

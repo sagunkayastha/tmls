@@ -1,5 +1,7 @@
 """tmls in a browser: one big terminal, status rows, approve, sketch."""
 import argparse
+import asyncio
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -9,6 +11,9 @@ from tmls.web import auth, events, term
 
 STATIC = Path(__file__).parent / "static"
 PUBLIC = ("/healthz", "/login")
+FAIL_DELAY = 1         # seconds after a wrong password
+MAX_FAILS = 5          # wrong passwords from one address before a lockout
+LOCKOUT = 300          # seconds
 
 
 def logged_in(request):
@@ -35,6 +40,8 @@ async def require_login(request, handler):
     if not logged_in(request):
         if websocket:
             return await _refuse_ws(request, 4401)
+        if request.path.startswith("/api/"):  # fetch would follow a redirect and look successful
+            return web.json_response({"ok": False, "error": "login"}, status=401)
         raise web.HTTPFound("/login")
     if (websocket or request.method != "GET") and not auth.same_origin(request):
         if websocket:
@@ -57,13 +64,24 @@ async def login_page(request):
 
 
 async def login(request):
+    """The password is a shell login: wrong ones cost a second, and five in a row from one
+    address lock it out for five minutes. scrypt runs off the event loop so terminals keep going."""
     creds = auth.load(request.app["auth_file"])
     if not creds:
         return web.Response(status=401, text="no credentials: set a sketchpad password first")
+    fails, now = request.app["fails"], time.monotonic()
+    count, since = fails.get(request.remote, (0, now))
+    if now - since > LOCKOUT:
+        count, since = 0, now
+    if count >= MAX_FAILS:
+        return web.Response(status=429, text="too many wrong passwords; try again in a few minutes")
     data = await request.post()
     user, password = str(data.get("username", "")), str(data.get("password", ""))
-    if not auth.check_login(creds, user, password):
+    if not await asyncio.to_thread(auth.check_login, creds, user, password):
+        fails[request.remote] = (count + 1, since)
+        await asyncio.sleep(FAIL_DELAY)
         raise web.HTTPFound("/login?error=1")  # the form shows the message
+    fails.pop(request.remote, None)
     response = web.HTTPFound("/")
     response.set_cookie(auth.COOKIE, auth.make_cookie(creds["secret"], user),
                         max_age=auth.SESSION_TTL, httponly=True, samesite="Lax", path="/",
@@ -118,7 +136,7 @@ async def config(request):
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
-    app["attach_argv"], app["ptys"] = hosts.attach_argv, set()
+    app["attach_argv"], app["ptys"], app["fails"] = hosts.attach_argv, set(), {}
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)
     app.router.add_get("/login", login_page)

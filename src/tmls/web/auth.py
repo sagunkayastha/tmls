@@ -32,7 +32,8 @@ def check_login(creds, user, password):
 
 
 def _sign(secret, payload):
-    return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    # "tmls|": sketchpad signs the same format with the same secret; its cookies must not work here
+    return hmac.new(secret.encode(), b"tmls|" + payload.encode(), hashlib.sha256).hexdigest()
 
 
 def make_cookie(secret, user, now=None):

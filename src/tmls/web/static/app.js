@@ -153,6 +153,7 @@ function rowEl(row) {
 async function answer(row, yes) {
   const r = await fetch("/api/approve", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ host: row.host, name: row.name, shown: row.shown, yes }) });
+  if (r.status === 401) { location.href = "/login"; return; }
   if (!r.ok) toast((await r.json().catch(() => ({}))).error || `approve failed (${r.status})`);
 }
 
