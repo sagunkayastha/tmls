@@ -4,7 +4,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tmls import hosts
+from tmls import approve, hosts
 from tmls.web import auth, events
 
 STATIC = Path(__file__).parent / "static"
@@ -76,6 +76,24 @@ async def logout(request):
     raise response
 
 
+async def approve_prompt(request):
+    """Yes/No on a waiting row. approve.answer re-reads the prompt and sends nothing if it changed.
+    Only configured hosts: a host string goes to ssh, so "-oProxyCommand=..." must never get there."""
+    try:
+        data = await request.json()
+        host, name, shown, yes = (data[field] for field in ("host", "name", "shown", "yes"))
+        if (not isinstance(host, str) or not isinstance(name, str) or not name
+                or not isinstance(shown, list) or not all(isinstance(line, str) for line in shown)
+                or not isinstance(yes, bool) or host not in (*request.app["hosts"], hosts.LOCAL)):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid approval request"}, status=400)
+    error = await approve.answer(host, name, shown, yes)
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=409)
+    return web.json_response({"ok": True})
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
@@ -84,6 +102,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_get("/login", login_page)
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)
+    app.router.add_post("/api/approve", approve_prompt)
     events.setup(app)
     return app
 

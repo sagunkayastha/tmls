@@ -1,1 +1,37 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>tmls</title></head><body>tmls web</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmls</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <button id="tab-terminal" class="tab on">Terminal</button>
+  <button id="tab-sketch" class="tab">Sketch</button>
+  <span id="title">pick a session</span>
+  <span class="grow"></span>
+  <button id="zoom-out" title="Smaller (Ctrl −)">A−</button>
+  <button id="zoom-in" title="Bigger (Ctrl =)">A+</button>
+  <span id="zoom-size">14px</span>
+  <button id="bell" title="Alerts">🔔<span id="bell-count"></span></button>
+  <form method="post" action="/logout"><button id="logout" title="Log out">⎋</button></form>
+</header>
+<div id="alerts" hidden></div>
+<main>
+  <section id="pane">
+    <div id="term"></div>
+    <div id="sketch" hidden></div>
+    <div id="overlay" hidden><p id="overlay-text"></p><button id="reattach" hidden>Reattach</button></div>
+    <p id="empty">Pick a session on the right.</p>
+  </section>
+  <aside id="rows"></aside>
+</main>
+<div id="toast" hidden></div>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
