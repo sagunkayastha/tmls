@@ -101,10 +101,11 @@ async def terminal(request):
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     host, name = request.query.get("host"), request.query.get("name")
-    if host not in (*request.app["hosts"], hosts.LOCAL) or not name:
+    if host not in (*request.app["hosts"], hosts.LOCAL) or not name or "\0" in name:
         await ws.close(code=4404)
     else:
-        await term.bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"])
+        await term.bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],
+                          peaks=request.app.get("term_queued"))  # tests watch buffering
     return ws
 
 

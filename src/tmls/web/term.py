@@ -1,6 +1,5 @@
 """Bridge one browser WebSocket to one tmux attach client in a pty."""
 import asyncio
-import errno
 import fcntl
 import json
 import os
@@ -10,6 +9,8 @@ import struct
 import termios
 
 from aiohttp import WSMsgType
+
+HIGH_WATER = 1 << 20  # queued output that pauses the pty until the browser catches up
 
 
 def set_size(fd, cols, rows):
@@ -42,13 +43,14 @@ async def reap(pid):
         pass
 
 
-async def bridge(ws, argv, cols=80, rows=24, ptys=None):
+async def bridge(ws, argv, cols=80, rows=24, ptys=None, peaks=None):
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ["TERM"] = "xterm-256color"
+        # Whatever happens, the child never returns into the server's code.
         try:
+            os.environ["TERM"] = "xterm-256color"
             os.execvp(argv[0], argv)
-        except OSError:
+        finally:
             os._exit(127)
     if ptys is not None:
         ptys.add(pid)
@@ -56,7 +58,8 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None):
     os.set_blocking(fd, False)
     set_size(fd, cols, rows)
     output = asyncio.Queue()
-    closed = False
+    closed = paused = False
+    queued = peak = 0  # bytes waiting for the browser
     pending = bytearray()  # typed or pasted input the pty hasn't taken yet
 
     def flush():
@@ -71,22 +74,29 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None):
         loop.remove_writer(fd)
 
     def read_ready():
-        nonlocal closed
+        nonlocal closed, paused, queued, peak
         try:
             chunk = os.read(fd, 65536)
-        except OSError as error:
-            if error.errno not in (errno.EIO, errno.EBADF):
-                chunk = b""
-            else:
-                chunk = b""
+        except BlockingIOError:  # spurious wakeup: nothing to read yet
+            return
+        except OSError:  # EIO: the child closed its side
+            chunk = b""
         if chunk:
             output.put_nowait(chunk)
+            queued += len(chunk)
+            if peaks is not None and queued > peak:
+                peak = queued
+                peaks.append(peak)
+            if queued > HIGH_WATER:  # a slow or stalled browser: let tmux wait instead of us buffering
+                paused = True
+                loop.remove_reader(fd)
         elif not closed:
             closed = True
             loop.remove_reader(fd)
             output.put_nowait(None)
 
     async def send_output():
+        nonlocal paused, queued
         while True:
             chunk = await output.get()
             if chunk is None:
@@ -94,6 +104,10 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None):
                 await ws.close()
                 return
             await ws.send_bytes(chunk)
+            queued -= len(chunk)
+            if paused and queued < HIGH_WATER // 2:
+                paused = False
+                loop.add_reader(fd, read_ready)
 
     async def read_input():
         async for msg in ws:
@@ -121,10 +135,11 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None):
         for task in (sender, receiver):
             if task and not task.done():
                 task.cancel()
+            if task:
                 try:
                     await task
-                except asyncio.CancelledError:
-                    pass
+                except (asyncio.CancelledError, ConnectionError, RuntimeError):
+                    pass  # the browser went away mid-send
         os.close(fd)
         await reap(pid)
         if ptys is not None:

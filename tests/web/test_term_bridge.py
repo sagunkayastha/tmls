@@ -8,7 +8,7 @@ from aiohttp import WSMsgType
 import pytest
 
 from tmls import hosts
-from tmls.web import server
+from tmls.web import server, term
 
 pytestmark = pytest.mark.filterwarnings("ignore:This process.*multi-threaded.*forkpty:DeprecationWarning")
 
@@ -26,6 +26,7 @@ async def client(aiohttp_client, monkeypatch, tmp_path):
     monkeypatch.setattr(hosts, "list_host", offline)
     app = server.make_app(tmp_path / "auth.json", ["box"])
     app["poll_interval"] = 100
+    app["term_queued"] = []
     attach = {"fn": None}
     app["attach_argv"] = lambda host, name: attach["fn"](host, name)
     browser = await aiohttp_client(app)
@@ -129,3 +130,21 @@ async def test_big_paste_is_not_dropped(client):
     await ws.send_json({"t": "in", "d": "x" * 200000})
     assert b"200000" in await output_until(ws, b"200000", timeout=10)
     await ws.close()
+
+
+async def test_stalled_reader_pauses_the_pty(client):
+    """A browser that stops reading must not make the server buffer output without limit."""
+    browser, app, attach = client
+    attach["fn"] = lambda _host, _name: ["sh", "-c", "exec yes"]
+    ws = await browser.ws_connect("/api/term?host=box&name=alpha", max_msg_size=0)
+    await asyncio.sleep(1.5)  # read nothing meanwhile
+    assert max(app["term_queued"]) <= 2 * term.HIGH_WATER
+    await ws.close()
+
+
+async def test_nul_in_name_is_refused(client):
+    browser, app, attach = client
+    attach["fn"] = lambda _host, n: ["sh", "-c", "echo $0", n]
+    ws = await browser.ws_connect("/api/term?host=box&name=a%00b")
+    await ws.receive()
+    assert ws.close_code == 4404 and not app["ptys"]
