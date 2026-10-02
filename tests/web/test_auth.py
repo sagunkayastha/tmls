@@ -89,3 +89,10 @@ async def test_config_lists_sketchpad_urls(aiohttp_client, tmp_path):
     client = await aiohttp_client(app)
     await client.post("/login", data={"username": "me", "password": "pw"})
     assert await (await client.get("/api/config")).json() == {"sketchpad": ["http://lan:8790", "https://sketchpad.example"]}
+
+
+async def test_page_is_never_cached(aiohttp_client, tmp_path):
+    write_creds(tmp_path / "auth.json")
+    client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
+    await client.post("/login", data={"username": "me", "password": "pw"})
+    assert (await client.get("/")).headers["Cache-Control"] == "no-store"

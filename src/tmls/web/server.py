@@ -48,7 +48,8 @@ async def healthz(request):
 
 
 async def page(request):
-    return web.FileResponse(STATIC / "index.html")
+    # no-store: after logout, Back or a revisit must ask the server (and get the login page)
+    return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
 
 async def login_page(request):
