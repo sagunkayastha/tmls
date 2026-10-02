@@ -5,7 +5,7 @@ from pathlib import Path
 from aiohttp import web
 
 from tmls import approve, hosts
-from tmls.web import auth, events
+from tmls.web import auth, events, term
 
 STATIC = Path(__file__).parent / "static"
 PUBLIC = ("/healthz", "/login")
@@ -94,15 +94,29 @@ async def approve_prompt(request):
     return web.json_response({"ok": True})
 
 
+async def terminal(request):
+    """One pty running `tmux attach` per open terminal (login and Origin: see require_login)."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    host, name = request.query.get("host"), request.query.get("name")
+    if host not in (*request.app["hosts"], hosts.LOCAL) or not name:
+        await ws.close(code=4404)
+    else:
+        await term.bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"])
+    return ws
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
+    app["attach_argv"], app["ptys"] = hosts.attach_argv, set()
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)
     app.router.add_get("/login", login_page)
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)
     app.router.add_post("/api/approve", approve_prompt)
+    app.router.add_get("/api/term", terminal)
     app.router.add_static("/static", STATIC)
     events.setup(app)
     return app
