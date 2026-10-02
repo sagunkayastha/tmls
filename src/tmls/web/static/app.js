@@ -232,12 +232,47 @@ window.addEventListener("pageshow", (e) => {
 function showTerminal() {
   $("sketch").hidden = true;
   $("term").hidden = false;
+  $("empty").hidden = Boolean(current);
   $("tab-terminal").classList.add("on");
   $("tab-sketch").classList.remove("on");
   refit();
 }
-function showSketch() { /* Task 7 */ }
+let sketchUrls = [];
+fetch("/api/config").then((r) => r.json()).then((c) => {
+  sketchUrls = c.sketchpad || [];
+  if (!sketchUrls.length) { $("tab-sketch").disabled = true; $("tab-sketch").title = "Add sketchpad's URL to ~/.config/tmls/sketchpad"; }
+}).catch(() => {});
+
+function sketchUrl() {
+  const row = rows.get(current);
+  // Same scheme as this page: an https page can't frame an http one.
+  const base = sketchUrls.find((u) => u.startsWith(location.protocol)) || null;
+  if (!base) return null;
+  return row ? `${base}${base.includes("?") ? "&" : "?"}target=${encodeURIComponent(`${row.host}/${row.name}`)}` : base;
+}
+
+function showSketch() {
+  const url = sketchUrl();
+  if (!url) {  // no address with this page's scheme: open sketchpad by itself instead
+    if (sketchUrls[0]) window.open(sketchUrls[0], "_blank", "noopener");
+    return;
+  }
+  const box = $("sketch");
+  if (box.dataset.url !== url) {
+    const frame = document.createElement("iframe");
+    frame.src = url;
+    frame.allow = "clipboard-read; clipboard-write; display-capture";
+    box.replaceChildren(frame);
+    box.dataset.url = url;
+  }
+  $("term").hidden = true;
+  box.hidden = false;
+  $("empty").hidden = true;
+  $("tab-sketch").classList.add("on");
+  $("tab-terminal").classList.remove("on");
+}
 $("tab-terminal").onclick = showTerminal;
+$("tab-sketch").onclick = showSketch;
 
 setFont(fontSize);
 connectEvents();

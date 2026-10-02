@@ -107,6 +107,12 @@ async def terminal(request):
     return ws
 
 
+async def config(request):
+    """Sketchpad's addresses (~/.config/tmls/sketchpad, one per line: home first, then away);
+    the page uses the one whose scheme matches its own, so https never frames http."""
+    return web.json_response({"sketchpad": request.app.get("sketchpad", [])})
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
@@ -118,6 +124,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/logout", logout)
     app.router.add_post("/api/approve", approve_prompt)
     app.router.add_get("/api/term", terminal)
+    app.router.add_get("/api/config", config)
     app.router.add_static("/static", STATIC)
     events.setup(app)
     return app
@@ -128,4 +135,6 @@ def main(argv=None):
     parser.add_argument("--bind", action="append", required=True, help="address to listen on (repeatable)")
     parser.add_argument("--port", type=int, default=8794)
     args = parser.parse_args(argv)
-    web.run_app(make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config())), host=args.bind, port=args.port)
+    app = make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config()))
+    app["sketchpad"] = hosts.read_config(hosts.SKETCHPAD)
+    web.run_app(app, host=args.bind, port=args.port)

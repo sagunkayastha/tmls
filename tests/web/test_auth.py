@@ -80,3 +80,12 @@ async def test_logged_in_websocket_gets_rows(aiohttp_client, tmp_path):
     await client.post("/login", data={"username": "me", "password": "pw"})
     ws = await client.ws_connect("/api/events")
     assert (await ws.receive_json())["t"] == "rows"
+
+
+async def test_config_lists_sketchpad_urls(aiohttp_client, tmp_path):
+    write_creds(tmp_path / "auth.json")
+    app = server.make_app(tmp_path / "auth.json", [])
+    app["sketchpad"] = ["http://lan:8790", "https://sketchpad.example"]
+    client = await aiohttp_client(app)
+    await client.post("/login", data={"username": "me", "password": "pw"})
+    assert await (await client.get("/api/config")).json() == {"sketchpad": ["http://lan:8790", "https://sketchpad.example"]}
