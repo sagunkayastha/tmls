@@ -95,8 +95,9 @@ async def approve_prompt(request):
 
 
 async def terminal(request):
-    """One pty running `tmux attach` per open terminal (login and Origin: see require_login)."""
-    ws = web.WebSocketResponse()
+    """One pty running `tmux attach` per open terminal (login and Origin: see require_login).
+    The heartbeat notices a browser that vanished without closing (laptop asleep, Wi-Fi gone)."""
+    ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     host, name = request.query.get("host"), request.query.get("name")
     if host not in (*request.app["hosts"], hosts.LOCAL) or not name:

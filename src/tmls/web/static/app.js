@@ -189,8 +189,10 @@ $("bell").onclick = () => {
 };
 
 // ---- live rows ----
+let events = null;
 function connectEvents() {
   const ws = new WebSocket(wsUrl("/api/events"));
+  events = ws;
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.t === "rows") {
@@ -209,9 +211,22 @@ function connectEvents() {
   };
   ws.onclose = (e) => {
     if (e.code === 4401) { location.href = "/login"; return; }
-    setTimeout(connectEvents, 2000);
+    if (events === ws) setTimeout(connectEvents, 2000);
   };
 }
+
+// Leaving the page must hang up its tmux client, even when Chrome keeps the page in its
+// back-forward cache with sockets open; coming back from that cache reconnects.
+window.addEventListener("pagehide", () => {
+  clearTimeout(retryTimer);
+  if (sock) { sock.onclose = null; sock.close(); sock = null; }
+  if (events) { const ws = events; events = null; ws.close(); }
+});
+window.addEventListener("pageshow", (e) => {
+  if (!e.persisted) return;
+  connectEvents();
+  if (current) { retries = 0; attach(current); }
+});
 
 // ---- sketch (Task 7 fills this in) ----
 function showTerminal() {
