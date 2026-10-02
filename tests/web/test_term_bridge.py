@@ -4,13 +4,22 @@ import json
 import os
 import secrets
 
-from aiohttp import WSMsgType
+from aiohttp import WSMsgType, web
 import pytest
 
 from tmls import hosts
 from tmls.web import server, term
 
 pytestmark = pytest.mark.filterwarnings("ignore:This process.*multi-threaded.*forkpty:DeprecationWarning")
+
+
+def test_setup_registers_terminal_route():
+    app = web.Application()
+    term.setup(app)
+    assert any(route.method == "GET" and route.resource.canonical == "/api/term"
+               for route in app.router.routes())
+    assert app["attach_argv"] is hosts.attach_argv
+    assert app["ptys"] == set()
 
 
 @pytest.fixture

@@ -8,9 +8,28 @@ import signal
 import struct
 import termios
 
-from aiohttp import WSMsgType
+from aiohttp import WSMsgType, web
+
+from tmls import hosts
 
 HIGH_WATER = 1 << 20  # queued output that pauses the pty until the browser catches up
+
+
+async def terminal(request):
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+    host, name = request.query.get("host"), request.query.get("name")
+    if host not in (*request.app["hosts"], hosts.LOCAL) or not name or "\0" in name:
+        await ws.close(code=4404)
+    else:
+        await bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],
+                     peaks=request.app.get("term_queued"))
+    return ws
+
+
+def setup(app):
+    app["attach_argv"], app["ptys"] = hosts.attach_argv, set()
+    app.router.add_get("/api/term", terminal)
 
 
 def set_size(fd, cols, rows):

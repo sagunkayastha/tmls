@@ -113,20 +113,6 @@ async def approve_prompt(request):
     return web.json_response({"ok": True})
 
 
-async def terminal(request):
-    """One pty running `tmux attach` per open terminal (login and Origin: see require_login).
-    The heartbeat notices a browser that vanished without closing (laptop asleep, Wi-Fi gone)."""
-    ws = web.WebSocketResponse(heartbeat=30)
-    await ws.prepare(request)
-    host, name = request.query.get("host"), request.query.get("name")
-    if host not in (*request.app["hosts"], hosts.LOCAL) or not name or "\0" in name:
-        await ws.close(code=4404)
-    else:
-        await term.bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],
-                          peaks=request.app.get("term_queued"))  # tests watch buffering
-    return ws
-
-
 async def config(request):
     """Sketchpad's addresses (~/.config/tmls/sketchpad, one per line: home first, then away);
     the page uses the one whose scheme matches its own, so https never frames http."""
@@ -136,14 +122,14 @@ async def config(request):
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
-    app["attach_argv"], app["ptys"], app["fails"] = hosts.attach_argv, set(), {}
+    app["fails"] = {}
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)
     app.router.add_get("/login", login_page)
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)
     app.router.add_post("/api/approve", approve_prompt)
-    app.router.add_get("/api/term", terminal)
+    term.setup(app)
     app.router.add_get("/api/config", config)
     app.router.add_static("/static", STATIC)
     events.setup(app)
