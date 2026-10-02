@@ -1,4 +1,4 @@
-:root {
+:root { color-scheme: dark;
   --bg: #15191f; --panel: #1d222a; --line: #2c333d; --text: #e6e6e6; --dim: #8a929c;
   --accent: #ff8c00; --run: #4ebf71; --wait: #e5c07b; --fail: #e06c75;
 }
@@ -43,3 +43,4 @@ main { flex: 1; display: flex; min-height: 0; }
 #alerts .none { padding: 6px 12px; color: var(--dim); }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel);
          border: 1px solid var(--fail); border-radius: 8px; padding: 8px 14px; z-index: 9; }
+.xterm-viewport { scrollbar-color: var(--line) transparent; }

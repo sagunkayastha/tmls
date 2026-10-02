@@ -103,6 +103,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)
     app.router.add_post("/api/approve", approve_prompt)
+    app.router.add_static("/static", STATIC)
     events.setup(app)
     return app
 
