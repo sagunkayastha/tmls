@@ -34,6 +34,10 @@ async def test_rename_validates_and_uses_exact_tmux_target(private_tmux):
 async def test_kill_only_exact_session_and_detect_running_command(private_tmux):
     subprocess.run(["tmux", "new-session", "-d", "-s", "alpha", "sleep", "120"], check=True)
     subprocess.run(["tmux", "new-session", "-d", "-s", "alphabet"], check=True)
+    # until exec, a new pane reports its fork's name (sh, tmux) instead of its command
+    assert await wait_tmux(["tmux", "display", "-p", "-t", "=alpha:", "#{pane_current_command}"], "sleep")
+    assert await wait_tmux(["tmux", "display", "-p", "-t", "=alphabet:", "#{pane_current_command}"],
+                           subprocess.check_output(["tmux", "show", "-gv", "default-shell"], text=True).strip().rsplit("/", 1)[-1])
     assert "sleep" in await manage.running_commands(hosts.LOCAL, "alpha")
     assert await manage.running_commands(hosts.LOCAL, "alphabet") == []
     assert await manage.kill(hosts.LOCAL, "alpha") is None

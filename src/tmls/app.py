@@ -69,7 +69,7 @@ class SessionRow(Static):
             self.tooltip = session.waiting  # the row has no room for why
 
     async def on_click(self, event):
-        if self.session.host != hosts.KITTY and event.x >= ROW_WIDTH - 4:
+        if self.session.host != hosts.KITTY and event.y == 0 and event.x >= ROW_WIDTH - 4:
             self.app.push_screen(manage.SessionActions(self.session))
         else:
             await self.app.open_session(self.session)

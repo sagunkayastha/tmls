@@ -989,3 +989,38 @@ async def test_desktop_notifications_name_the_host_as_the_sidebar_does(fake_host
         await wait_for(pilot, lambda: app.query("#s-box-alpha"))
         app._alert(hosts.Session("box", "beta", 1, False, 0, 0), "done")
         assert await wait_for(pilot, lambda: emitted and emitted[0][1] == "label-of-box")
+
+
+async def test_click_on_second_line_right_end_opens_the_session_not_the_menu(clock_hosts, monkeypatch):
+    async def list_host(host):
+        return True, [hosts.Session(host, "Season-36", 1, False, 3600, 3600, "idle", 0, title="NERSC_Training")]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    opened = []
+    async def open_session(session):
+        opened.append(session.name)
+    app = tmls_app.Tmls()
+    monkeypatch.setattr(app, "open_session", open_session)
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        row = app.query_one(tmls_app.SessionRow)
+        await pilot.click(row, offset=(tmls_app.ROW_WIDTH - 4, 1))
+        await pilot.pause()
+        assert not isinstance(app.screen, manage.SessionActions)
+        assert opened == ["Season-36"]
+
+
+async def test_enter_in_the_name_field_renames(fake_hosts, monkeypatch):
+    called = []
+    async def rename(host, old, new):
+        called.append((host, old, new))
+    monkeypatch.setattr(manage, "rename", rename)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#s-box-alpha"))
+        await pilot.click("#s-box-alpha", offset=(tmls_app.ROW_WIDTH - 4, 0))
+        assert isinstance(app.screen, manage.SessionActions)
+        app.screen.query_one("#new-name", Input).value = "renamed"
+        app.screen.query_one("#new-name", Input).focus()
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: called == [("box", "alpha", "renamed")])
+        assert await wait_for(pilot, lambda: not isinstance(app.screen, manage.SessionActions))
