@@ -217,5 +217,10 @@ class SessionActions(ModalScreen):
                 self.app.refresh_sessions()
             self.dismiss(None)
 
+    async def on_input_submitted(self, event):
+        event.stop()
+        target = {"new-name": "#rename-session", "window-name": "#rename-window"}[event.input.id]
+        self.query_one(target, Button).press()
+
     def key_escape(self):
         self.dismiss(None)
