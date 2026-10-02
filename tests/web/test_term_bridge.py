@@ -148,3 +148,14 @@ async def test_nul_in_name_is_refused(client):
     ws = await browser.ws_connect("/api/term?host=box&name=a%00b")
     await ws.receive()
     assert ws.close_code == 4404 and not app["ptys"]
+
+
+async def test_malformed_frames_are_ignored(client):
+    browser, app, attach = client
+    attach["fn"] = lambda _host, _name: ["sh", "-c", "exec cat"]
+    ws = await browser.ws_connect("/api/term?host=box&name=alpha")
+    for bad in ["[1]", "3", "null", '{"t": "in", "d": 5}', '{"t": "size", "cols": "x"}', "not json"]:
+        await ws.send_str(bad)
+    await ws.send_json({"t": "in", "d": "still-here\n"})
+    assert b"still-here" in await output_until(ws, b"still-here")
+    await ws.close()

@@ -120,7 +120,7 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None, peaks=None):
                     flush()
                 elif data.get("t") == "size":
                     set_size(fd, int(data["cols"]), int(data["rows"]))
-            except (ValueError, TypeError, KeyError, BlockingIOError, OSError):
+            except (ValueError, TypeError, KeyError, AttributeError, OSError):  # junk frames are ignored
                 continue
 
     sender = receiver = None
@@ -138,8 +138,10 @@ async def bridge(ws, argv, cols=80, rows=24, ptys=None, peaks=None):
             if task:
                 try:
                     await task
-                except (asyncio.CancelledError, ConnectionError, RuntimeError):
-                    pass  # the browser went away mid-send
+                except asyncio.CancelledError:
+                    pass
+                except Exception as error:  # the browser went away mid-send, or a bug: still clean up
+                    print(f"tmls-web terminal: {error!r}")
         os.close(fd)
         await reap(pid)
         if ptys is not None:
