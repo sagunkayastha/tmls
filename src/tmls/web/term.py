@@ -16,6 +16,8 @@ HIGH_WATER = 1 << 20  # queued output that pauses the pty until the browser catc
 
 
 async def terminal(request):
+    """One pty running `tmux attach` per open terminal (login and Origin: see server.require_login).
+    The heartbeat notices a browser that vanished without closing (laptop asleep, Wi-Fi gone)."""
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     host, name = request.query.get("host"), request.query.get("name")
@@ -23,7 +25,7 @@ async def terminal(request):
         await ws.close(code=4404)
     else:
         await bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],
-                     peaks=request.app.get("term_queued"))
+                     peaks=request.app.get("term_queued"))  # tests watch buffering
     return ws
 
 
