@@ -352,6 +352,7 @@ document.addEventListener("click", (e) => {
 
 // ---- live rows ----
 let events = null;
+let listShown = false;         // the phone's drawer opens by itself only on the first listing, not on every reconnect
 function connectEvents() {
   const ws = new WebSocket(wsUrl("/api/events"));
   events = ws;
@@ -365,7 +366,7 @@ function connectEvents() {
       if (!current) {
         const saved = store.get("tmls-current");
         if (saved && rows.has(saved)) select(saved);
-        else if (msg.full && phone.matches) openRows(true);  // a phone shows the list first
+        else if (msg.full && phone.matches && !listShown) { listShown = true; openRows(true); }  // a phone shows the list first, once
       }
       drawRows();
       drawTitle();
