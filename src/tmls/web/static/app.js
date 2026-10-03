@@ -486,5 +486,16 @@ function showSketch() {
 $("tab-terminal").onclick = showTerminal;
 $("tab-sketch").onclick = showSketch;
 
+// The Android app (user agent "TmlsApp/<n>") gets a button that asks it to check for an update;
+// it intercepts /app/update itself. Browsers never see the button.
+if (navigator.userAgent.includes("TmlsApp/")) {
+  const b = document.createElement("button");
+  b.id = "app-update";
+  b.textContent = "⟳ App";
+  b.title = "Check for an app update";
+  b.onclick = () => { location.href = "/app/update"; };
+  $("logout").closest("form").before(b);
+}
+
 setFont(fontSize);
 connectEvents();

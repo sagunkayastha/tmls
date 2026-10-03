@@ -184,10 +184,36 @@ async def config(request):
                               "presets": list(create.load_presets())})
 
 
+APK_DIR = Path.home() / ".config" / "tmls" / "apk"
+APK_TYPE = "application/vnd.android.package-archive"
+
+
+async def app_manifest(request):
+    """What the Android app's updater reads: versionCode, versionName, size, sha256, written by
+    android/make.sh next to the APK. Never cached, so each new build is seen at once."""
+    path = request.app["apk_dir"] / "latest.json"
+    if not path.is_file():
+        return web.json_response({"ok": False, "error": "no app published"}, status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "no-store", "Content-Type": "application/json"})
+
+
+async def app_apk(request):
+    path = request.app["apk_dir"] / "tmls.apk"
+    if not path.is_file():
+        return web.json_response({"ok": False, "error": "no app published"}, status=404)
+    return web.FileResponse(path, headers={"Content-Type": APK_TYPE,
+                                           "Content-Disposition": 'attachment; filename="tmls.apk"'})
+
+
+async def app_update(request):
+    # The app intercepts this link and checks for an update; a browser just lands on the page.
+    raise web.HTTPSeeOther("/")
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
-    app["fails"], app["trusted_proxies"] = {}, set()
+    app["fails"], app["trusted_proxies"], app["apk_dir"] = {}, set(), APK_DIR
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)
     app.router.add_get("/login", login_page)
@@ -198,6 +224,9 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/api/suggest-name", suggest_name)
     term.setup(app)
     app.router.add_get("/api/config", config)
+    app.router.add_get("/app/latest.json", app_manifest)
+    app.router.add_get("/app/tmls.apk", app_apk)
+    app.router.add_get("/app/update", app_update)
     app.router.add_static("/static", STATIC)
     events.setup(app)
     return app
@@ -216,12 +245,14 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, default=8794)
     parser.add_argument("--trust-proxy", action="append", default=[], metavar="ADDR|CIDR", type=_network,
                         help="a reverse proxy (or its network) whose X-Forwarded-For names the client (repeatable)")
+    parser.add_argument("--apk-dir", type=Path, default=APK_DIR, metavar="DIR",
+                        help="where android/make.sh publishes tmls.apk and latest.json for the app's updater")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     app = make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config()))
-    app["trusted_proxies"] = set(args.trust_proxy)
+    app["trusted_proxies"], app["apk_dir"] = set(args.trust_proxy), args.apk_dir
     app["sketchpad"] = hosts.read_config(hosts.SKETCHPAD)
     web.run_app(app, host=args.bind, port=args.port)
