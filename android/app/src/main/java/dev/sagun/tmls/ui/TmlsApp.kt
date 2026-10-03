@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imeAnimationSource
 import androidx.compose.foundation.layout.imeAnimationTarget
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -64,6 +66,7 @@ private val Bg = Color(BG)
 /** Back after this long away: the phone may have moved between home and away, so ask again. */
 private const val RECHECK_AFTER_MS = 60_000L
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onLeave: () -> Unit) {
     var screen by remember { mutableStateOf<Screen>(Screen.Loading) }
@@ -108,7 +111,9 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
                 val keyboard = rememberKeyboard()
                 Column(
                     Modifier.fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
+                        // The bars' stable size: Samsung's navigation inset animates 0 -> 15 dp as the
+                        // keyboard hides, and following it relaid the page 3-4 more times.
+                        .windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout))
                         .padding(bottom = keyboard.settledDp),
                 ) {
                     UpdateBanner(updater)
@@ -168,7 +173,7 @@ private fun rememberKeyboard(): Keyboard {
     val ime = WindowInsets.ime
     val source = WindowInsets.imeAnimationSource
     val target = WindowInsets.imeAnimationTarget
-    val bars = WindowInsets.navigationBars
+    val bars = WindowInsets.navigationBarsIgnoringVisibility
     fun px(insets: WindowInsets) = insets.getBottom(density)
     // Above the navigation bar, which the base padding already leaves room for.
     fun settledPx(): Int {
