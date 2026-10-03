@@ -22,6 +22,13 @@ const term = new Terminal({ fontSize, cursorBlink: true, scrollback: 5000,
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open($("term"));
+// WebGL draws the terminal on the GPU: a full redraw (tmux resizing, scrolling) costs a fraction
+// of the DOM renderer's. Without WebGL, or if the GPU drops the context, the DOM renderer stays.
+try {
+  const webgl = new WebglAddon.WebglAddon();
+  webgl.onContextLoss(() => webgl.dispose());
+  term.loadAddon(webgl);
+} catch (e) { /* the DOM renderer it is */ }
 let sock = null, retries = 0, retryTimer = null;
 
 function sendSize() {
@@ -109,6 +116,9 @@ function openRows(open) {
 }
 $("menu").onclick = () => openRows(!$("rows").classList.contains("open"));
 $("shade").onclick = () => openRows(false);
+// The Android app resizes the page once per keyboard move, not every frame; while the keyboard
+// slides it reports how far it is above the page's bottom, and the key bar rides on top of it.
+window.tmlsKeyboard = (px) => { $("keys").style.transform = px > 0 ? `translateY(${-px}px)` : ""; };
 // The Android app's Back button: close what is open, and on a phone go from a session back to the
 // list. False means nothing was left to close, and the app leaves.
 window.tmlsBack = () => {

@@ -10,7 +10,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeAnimationSource
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -35,6 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import dev.sagun.tmls.Reach
@@ -97,12 +105,17 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
             val web = screen as? Screen.Web
             var painted by remember(web) { mutableStateOf(false) }
             if (web != null) key(web) {
-                // safeDrawing includes the keyboard, animated frame by frame as it slides.
-                Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                val keyboard = rememberKeyboard()
+                Column(
+                    Modifier.fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime))
+                        .padding(bottom = keyboard.settledDp),
+                ) {
                     UpdateBanner(updater)
                     WebScreen(
                         web.url,
                         Modifier.fillMaxSize(),
+                        keyboardOffsetDp = { keyboard.slidingDp },
                         onPainted = { painted = true },
                         onSignedIn = updater::checkNow,
                         onUpdateRequested = updater::checkManual,
@@ -133,6 +146,42 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
                 }
             }
         } }
+    }
+}
+
+/**
+ * The keyboard, split so the page is resized once per keyboard move instead of every frame (each
+ * WebView resize makes Chromium re-raster the whole page: 12-25 ms frames on the Samsung).
+ * [settledDp]: how much the page is shortened — while opening it stays at the old size until the
+ * keyboard is fully up; while closing it takes the new size at once. [slidingDp]: how far the
+ * keyboard currently reaches above that, which the page's key bar follows with a transform.
+ */
+private class Keyboard(private val settled: () -> Float, private val sliding: () -> Float) {
+    val settledDp: Dp get() = settled().dp
+    val slidingDp: Float get() = sliding()
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun rememberKeyboard(): Keyboard {
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime
+    val source = WindowInsets.imeAnimationSource
+    val target = WindowInsets.imeAnimationTarget
+    val bars = WindowInsets.navigationBars
+    fun px(insets: WindowInsets) = insets.getBottom(density)
+    // Above the navigation bar, which the base padding already leaves room for.
+    fun settledPx(): Int {
+        val from = px(source)
+        val to = px(target)
+        val now = if (from != to) minOf(from, to) else px(ime)
+        return (now - px(bars)).coerceAtLeast(0)
+    }
+    return remember(density) {
+        Keyboard(
+            settled = { with(density) { settledPx().toDp().value } },
+            sliding = { with(density) { (px(ime) - px(bars) - settledPx()).coerceAtLeast(0).toDp().value } },
+        )
     }
 }
 

@@ -10,6 +10,11 @@ if [ "$mode" = test ]; then
   "${gradle[@]}" -PtmlsVersionCode=1 -PtmlsVersionName=dev testDebugUnitTest lintDebug
   exit 0
 fi
+if [ "$mode" = profile ]; then
+  "${gradle[@]}" -PtmlsVersionCode=1 -PtmlsVersionName=dev assembleProfile
+  cp "$TMLS_BUILD_DIR/app/outputs/apk/profile/app-profile.apk" out/tmls-debug.apk
+  exit 0
+fi
 if [ "$mode" = debug ]; then
   "${gradle[@]}" -PtmlsVersionCode=1 -PtmlsVersionName=dev assembleDebug
   cp "$TMLS_BUILD_DIR/app/outputs/apk/debug/app-debug.apk" out/tmls-debug.apk

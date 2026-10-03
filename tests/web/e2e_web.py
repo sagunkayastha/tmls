@@ -25,7 +25,7 @@ def check(name, cond):
 
 
 def term_text(page):
-    return page.evaluate("document.querySelector('.xterm-rows').textContent")
+    return page.evaluate("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })()")
 
 
 def app_checks(browser, desktop):
@@ -62,7 +62,7 @@ def mobile_checks(browser, desktop):
     m.wait_for_function("!document.getElementById('rows').classList.contains('open')")
     check("phone: picking a session closes the drawer", True)
     check("phone: the terminal gets the full width", m.evaluate("document.getElementById('pane').offsetWidth") >= 380)
-    m.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+    m.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('attached-alpha')")
     m.click("#menu")
     m.wait_for_selector("#rows.open")
     check("phone: ☰ opens the drawer", True)
@@ -88,7 +88,7 @@ def mobile_checks(browser, desktop):
       el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true })); }"""
     # ^C above ended the fake session's cat: attach again, and wrap the new socket
     m.evaluate("select('box/alpha')")
-    m.wait_for_function("sock && sock.readyState === 1 && document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+    m.wait_for_function("sock && sock.readyState === 1 && (() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('attached-alpha')")
     m.evaluate("window.__sent = []; const real2 = sock.send.bind(sock); sock.send = (d) => { window.__sent.push(d); real2(d); }; 0")
     m.evaluate("window.__sent = []; term.write('\\x1b[?1049h')")
     m.wait_for_function("term.buffer.active.type === 'alternate'")
@@ -111,6 +111,11 @@ def mobile_checks(browser, desktop):
     sizes = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'size')")
     check(f"phone: a keyboard animation sends the server one size, once it settles ({sizes})",
           len(sizes) == 1 and sizes[0]["rows"] == m.evaluate("term.rows"))
+    m.evaluate("tmlsKeyboard(120)")
+    check("phone: while the app's keyboard slides, the key bar rides on it (no relayout)",
+          m.evaluate("getComputedStyle(document.getElementById('keys')).transform") == "matrix(1, 0, 0, 1, 0, -120)")
+    m.evaluate("tmlsKeyboard(0)")
+    check("phone: and settles back when it stops", m.evaluate("getComputedStyle(document.getElementById('keys')).transform") == "none")
     check("phone: Back on a session goes back to the list", m.evaluate("tmlsBack()") is True
           and m.evaluate("document.getElementById('rows').classList.contains('open')"))
     check("phone: Back on the list leaves the app", m.evaluate("tmlsBack()") is False)
@@ -166,12 +171,12 @@ def main():
                   "rm x" in (page.get_attribute('.row[data-key="box/beta"]', "title") or ""))
 
             page.click('.row[data-key="box/alpha"]')
-            page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+            page.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('attached-alpha')")
             check("clicking a row attaches its terminal", True)
             page.click("#term")
             page.keyboard.type("hello-e2e")
             page.keyboard.press("Enter")
-            page.wait_for_function("document.querySelector('.xterm-rows').textContent.split('hello-e2e').length > 2")
+            page.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().split('hello-e2e').length > 2")
             check("typing reaches the session (and comes back)", True)
 
             page.click("#zoom-in")
@@ -179,12 +184,12 @@ def main():
             check("A+ twice makes the font 18px", page.inner_text("#zoom-size") == "18px")
             page.keyboard.type("zoomtype")
             page.keyboard.press("Enter")
-            page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('zoomtype')", timeout=5000)
+            page.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('zoomtype')", timeout=5000)
             check("after A+ typing still reaches the terminal", True)
             page.reload()
             page.wait_for_selector('.row[data-key="box/alpha"]')
             check("font size survives a reload", page.inner_text("#zoom-size") == "18px")
-            page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+            page.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('attached-alpha')")
             check("reload reattaches the last session", True)
 
             page.click('.row[data-key="box/beta"] button.yes')
@@ -245,7 +250,7 @@ def main():
             page.press("#new-name", "Enter")
             page.wait_for_selector('.row[data-key="box/gamma"].current', timeout=10000)
             check("Enter creates gamma, closes the modal and selects the new row", page.is_hidden("#new"))
-            page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-gamma')")
+            page.wait_for_function("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })().includes('attached-gamma')")
             check("the terminal attaches to the new session", True)
             page.click(".host .add")
             page.fill("#new-name", "delta")

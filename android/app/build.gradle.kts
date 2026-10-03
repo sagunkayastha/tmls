@@ -25,8 +25,19 @@ android {
             resValue("string", "app_name", "tmls debug")
         }
         release {
-            isMinifyEnabled = false
+            // R8: Compose and the WebView glue run noticeably smoother shrunk and optimized.
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             resValue("string", "app_name", "tmls")
+        }
+        // Release speed, debug identity: measure smoothness on the phone without a second login
+        // (same package and key as debug, so it installs over it). make.sh profile.
+        create("profile") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+            resValue("string", "app_name", "tmls debug")
         }
     }
 

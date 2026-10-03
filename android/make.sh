@@ -3,6 +3,8 @@
 # where tmls-web serves it to the app's updater.
 #   android/make.sh          -> android/out/tmls-<versionCode>.apk, then $TMLS_APK_DIR/{tmls.apk,latest.json}
 #   android/make.sh debug    -> android/out/tmls-debug.apk (dev.sagun.tmls.debug, debug key)
+#   android/make.sh profile  -> the same file and package, built like a release (R8, not debuggable),
+#                               for measuring smoothness on the phone
 # Everything runs in the tmls-android-build image (in-docker.sh); nothing is installed on the host.
 # The signing key lives outside the repo and must never change, or Android refuses the upgrade
 # and the app has to be uninstalled first.
@@ -13,8 +15,8 @@ publish="${TMLS_APK_DIR:-$HOME/stacks/tmls/apk}"
 mode="${1:-release}"
 mkdir -p "$keys" "$here/out" && chmod 700 "$keys"
 
-if [ "$mode" = debug ]; then
-  "$here/in-docker.sh" bash /w/build.sh debug
+if [ "$mode" = debug ] || [ "$mode" = profile ]; then
+  "$here/in-docker.sh" bash /w/build.sh "$mode"
   echo "built $here/out/tmls-debug.apk"
   exit 0
 fi

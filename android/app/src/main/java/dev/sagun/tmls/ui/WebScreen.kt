@@ -14,6 +14,9 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +40,7 @@ const val BG = 0xFF15191F.toInt()
 fun WebScreen(
     url: String,
     modifier: Modifier,
+    keyboardOffsetDp: () -> Float,
     onPainted: () -> Unit,
     onSignedIn: () -> Unit,
     onUpdateRequested: () -> Unit,
@@ -53,6 +57,15 @@ fun WebScreen(
         val web = webView ?: return@BackHandler onLeave()
         web.evaluateJavascript("typeof tmlsBack === 'function' && tmlsBack()") { handled ->
             if (handled != "true") onLeave()
+        }
+    }
+
+    // While the keyboard slides, its reach above the page goes to the page every frame
+    // (tmlsKeyboard in app.js moves the key bar with a transform: no relayout).
+    LaunchedEffect(webView) {
+        val web = webView ?: return@LaunchedEffect
+        snapshotFlow { keyboardOffsetDp() }.distinctUntilChanged().collect { dp ->
+            web.evaluateJavascript("typeof tmlsKeyboard === 'function' && tmlsKeyboard(${"%.1f".format(java.util.Locale.ROOT, dp)})", null)
         }
     }
 
