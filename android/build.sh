@@ -5,7 +5,7 @@ set -euo pipefail
 mode="${1:-release}"
 cd /w
 mkdir -p out "$TMPDIR"
-gradle=(gradle --no-daemon --console=plain --project-cache-dir /scratch/project-cache -PbuildDir="$TMLS_BUILD_DIR")
+gradle=(gradle --no-daemon --console=plain --project-cache-dir /scratch/project-cache -PtmlsBuildDir="$TMLS_BUILD_DIR")
 if [ "$mode" = test ]; then
   "${gradle[@]}" -PtmlsVersionCode=1 -PtmlsVersionName=dev testDebugUnitTest lintDebug
   exit 0

@@ -1,0 +1,5 @@
+<resources>
+    <!-- The terminal's own background (tmls-web's xterm theme), so nothing flashes lighter. -->
+    <color name="bg">#FF15191F</color>
+    <color name="ic_launcher_background">#FF15191F</color>
+</resources>

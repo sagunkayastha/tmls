@@ -1,0 +1,9 @@
+<resources>
+    <!-- Always dark: the app is a terminal. The window is the terminal's colour from the first
+         frame, so a cold start, a rotation or a screen change never flashes white. -->
+    <style name="Theme.Tmls" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

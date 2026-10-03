@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home address is plain http on the LAN and is typed by the user (the repo is public, so no
+     address is built in): cleartext cannot be limited to one host here. The away address is https. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
