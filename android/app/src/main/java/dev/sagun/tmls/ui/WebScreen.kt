@@ -219,6 +219,18 @@ fun WebScreen(
                                 clipboard?.setPrimaryClip(ClipData.newPlainText("tmls", data.removePrefix("copy\n")))
                                 return@addWebMessageListener
                             }
+                            // A link tapped in the terminal: the phone's browser.
+                            data.startsWith("open\n") -> {
+                                val link = Uri.parse(data.removePrefix("open\n"))
+                                if (link.scheme == "http" || link.scheme == "https") {
+                                    try {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, link))
+                                    } catch (e: ActivityNotFoundException) {
+                                        // no browser to open it with
+                                    }
+                                }
+                                return@addWebMessageListener
+                            }
                             data == "last-screenshot" -> {}
                             else -> return@addWebMessageListener
                         }

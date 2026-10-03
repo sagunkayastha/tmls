@@ -76,6 +76,22 @@ def app_checks(browser, desktop):
     a.evaluate("showSketch()")
     check("Sketch hands the keyboard back to the page (its fields type normally)", a.evaluate("window.__ime.at(-1)") == "ime:text")
     a.evaluate("showTerminal()")
+    link = "https://example.com/a/very/long/path/that/wraps/over/two/lines/on/a/phone?x=1"
+    a.evaluate(f"term.reset(); term.write('see {link} ok\\r\\n')")
+    a.wait_for_timeout(200)
+    a.evaluate("window.__ime = []")
+    tap_at = """([col, row]) => { const el = document.querySelector('.xterm-screen'), r = el.getBoundingClientRect();
+      const x = r.left + (col + 0.5) * r.width / term.cols, y = r.top + (row + 0.5) * r.height / term.rows;
+      const t = new Touch({ identifier: 2, target: el, clientX: x, clientY: y });
+      el.dispatchEvent(new TouchEvent('touchstart', { touches: [t], changedTouches: [t], bubbles: true, cancelable: true }));
+      el.dispatchEvent(new TouchEvent('touchend', { touches: [], changedTouches: [t], bubbles: true, cancelable: true })); }"""
+    cols = a.evaluate("term.cols")
+    a.evaluate(tap_at, [2, 1])  # the link's second row: it wrapped
+    check(f"tapping a link (even its wrapped part) opens it through the app ({a.evaluate('window.__ime')})",
+          a.evaluate("window.__ime") == ["open\n" + link] and cols < len(link) + 4)
+    a.evaluate("window.__ime = []")
+    a.evaluate(tap_at, [cols - 1, 3])  # empty space: the usual keyboard
+    check("tapping beside it is just a tap", a.evaluate("window.__ime") == ["ime:terminal"])
     check("the app's own input reaches the terminal (tmlsType)",
           a.evaluate("window.__sent.map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)") == ["hi"])
     a.evaluate("window.__sent = []")
@@ -307,6 +323,16 @@ def main():
             page.wait_for_selector("#toast:not([hidden])")
             check("a changed prompt shows a toast instead of answering", "isn't asking" in page.inner_text("#toast"))
 
+            dlink = "https://example.com/desktop-link"
+            page.evaluate(f"window.__opened = []; window.open = (u) => {{ window.__opened.push(u); }}; term.write('\\r\\n{dlink}\\r\\n')")
+            page.wait_for_timeout(200)
+            cell = page.evaluate("""(() => { const b = term.buffer.active;
+              for (let y = 0; y < term.rows; y++) { const t = b.getLine(b.viewportY + y).translateToString(true), x = t.indexOf('https://example.com/desktop-link');
+                if (x >= 0) { const r = document.querySelector('.xterm-screen').getBoundingClientRect();
+                  return [r.left + (x + 3.5) * r.width / term.cols, r.top + (y + 0.5) * r.height / term.rows]; } } return null; })()""")
+            page.mouse.click(cell[0], cell[1])
+            check(f"clicking a link in the terminal opens it in a new tab ({page.evaluate('window.__opened')})",
+                  page.evaluate("window.__opened") == [dlink])
             page.click("#tab-sketch")
             src = page.get_attribute("#sketch iframe", "src")
             check("Sketch tab frames sketchpad's board only, targeted at the session",

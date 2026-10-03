@@ -22,6 +22,7 @@ let fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Number(store.get("tmls-font
 
 // ---- terminal ----
 const term = new Terminal({ fontSize, cursorBlink: true, scrollback: 5000,
+  linkHandler: { activate: (e, uri) => openUrl(uri) },  // OSC 8 links (Claude Code prints them)
   fontFamily: "'JetBrains Mono', 'DejaVu Sans Mono', monospace", theme: { background: "#15191f" } });
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
@@ -131,19 +132,7 @@ if (window.tmlsApp) {
     const field = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
     if (field && !field.classList.contains("xterm-helper-textarea")) window.tmlsApp.postMessage("ime:text");
   }, true);
-  // A tap on the terminal brings the keyboard back even when the terminal already had focus; a
-  // swipe (scrolling) never does.
-  let tapStart = null;
-  $("term").addEventListener("touchstart", (e) => {
-    tapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), moved: false };
-  }, { passive: true });
-  $("term").addEventListener("touchmove", (e) => {
-    if (tapStart && Math.hypot(e.touches[0].clientX - tapStart.x, e.touches[0].clientY - tapStart.y) > 10) tapStart.moved = true;
-  }, { passive: true });
-  $("term").addEventListener("touchend", () => {
-    if (tapStart && !tapStart.moved && Date.now() - tapStart.t < 500) window.tmlsApp.postMessage("ime:terminal");
-    tapStart = null;
-  });
+
 }
 // The Android app calls this when it goes to the background or comes back (its WebView doesn't
 // mark the page hidden by itself).
@@ -189,6 +178,60 @@ window.tmlsBack = () => {
   if (phone.matches && current && !$("rows").classList.contains("open")) { openRows(true); return true; }
   return false;
 };
+// ---- links: a tap or click on a URL in the terminal opens it ----
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+// The URL at a cell of the screen, if any; a URL wrapped over several rows (phones!) is one URL.
+function urlAt(col, row) {
+  const b = term.buffer.active, at = b.viewportY + row;
+  let y = at;
+  while (y > 0 && b.getLine(y) && b.getLine(y).isWrapped) y--;
+  let text = "";
+  for (let i = y; i < b.length; i++) {
+    const line = b.getLine(i);
+    if (i > y && !line.isWrapped) break;
+    text += line.translateToString(false);
+  }
+  const offset = (at - y) * term.cols + col;
+  for (const m of text.matchAll(URL_RE)) {
+    const url = m[0].replace(/[.,;:!?)\]}'"]+$/, "");  // sentence punctuation isn't part of it
+    if (offset >= m.index && offset < m.index + url.length) return url;
+  }
+  return null;
+}
+function urlAtPoint(x, y) {
+  const r = $("term").querySelector(".xterm-screen").getBoundingClientRect();
+  const col = Math.floor((x - r.left) / (r.width / term.cols)), row = Math.floor((y - r.top) / (r.height / term.rows));
+  return col >= 0 && row >= 0 && col < term.cols && row < term.rows ? urlAt(col, row) : null;
+}
+function openUrl(url) {
+  if (!/^https?:\/\//.test(url)) return;
+  if (window.tmlsApp) window.tmlsApp.postMessage("open\n" + url);  // the phone's browser
+  else window.open(url, "_blank", "noopener");
+}
+let lastTouch = 0;  // a tap also makes a click: the tap already handled it
+$("term").addEventListener("click", (e) => {
+  if (Date.now() - lastTouch < 800 || term.hasSelection()) return;
+  const url = urlAtPoint(e.clientX, e.clientY);
+  if (url) openUrl(url);
+});
+// A tap (not a swipe): a link opens; anywhere else, the app brings the keyboard back (a scroll never does).
+let tap = null;
+$("term").addEventListener("touchstart", (e) => {
+  tap = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), moved: false };
+}, { passive: true });
+$("term").addEventListener("touchmove", (e) => {
+  if (tap && Math.hypot(e.touches[0].clientX - tap.x, e.touches[0].clientY - tap.y) > 10) tap.moved = true;
+}, { passive: true });
+$("term").addEventListener("touchend", () => {
+  lastTouch = Date.now();
+  if (tap && !tap.moved && Date.now() - tap.t < 500) {
+    const url = urlAtPoint(tap.x, tap.y);
+    if (url) openUrl(url);
+    else if (window.tmlsApp) window.tmlsApp.postMessage("ime:terminal");
+  }
+  tap = null;
+});
+
 // ---- copy / paste on phones (a terminal can't be long-pressed like text) ----
 // Paste: the phone's clipboard into the terminal, as one paste (bracketed when the program asks).
 function pasteText(text) { if (text) term.paste(text); }
