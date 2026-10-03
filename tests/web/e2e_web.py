@@ -234,8 +234,25 @@ def main():
             src = page.get_attribute("#sketch iframe", "src")
             check("Sketch tab frames sketchpad's board only, targeted at the session",
                   src.endswith("embed=1&target=box%2Fbeta") or src.endswith("embed=1&target=box%2Falpha"))
+            page.evaluate("window.__frame = document.querySelector('#sketch iframe')")
+            check(f"Sketch has its own Send-to picker, on the current session ({page.input_value('#sketch-target')})",
+                  page.input_value("#sketch-target") == page.evaluate("current")
+                  and page.locator("#sketch-target option").count() >= 2)
+            other = "box/alpha" if page.evaluate("current") == "box/beta" else "box/beta"
+            page.evaluate("""window.__posted = []; const f = document.querySelector('#sketch iframe');
+              const real = f.contentWindow.postMessage.bind(f.contentWindow);
+              f.contentWindow.postMessage = (m, o) => { window.__posted.push(m); };""")
+            page.select_option("#sketch-target", other)
+            check("picking another session keeps the same board (no new frame, so the drawing stays)",
+                  page.evaluate("document.querySelector('#sketch iframe') === window.__frame")
+                  and page.evaluate("current") == other and page.is_visible("#sketch"))
+            check(f"and tells sketchpad the new target ({page.evaluate('window.__posted')})",
+                  page.evaluate("window.__posted.at(-1)") == {"type": "tmls-target", "target": other})
             page.click("#tab-terminal")
             check("Terminal tab comes back", page.is_visible("#term") and not page.is_visible("#sketch"))
+            page.click("#tab-sketch")
+            check("and Sketch again is the same board", page.evaluate("document.querySelector('#sketch iframe') === window.__frame"))
+            page.click("#tab-terminal")
 
             page.evaluate("events.close()")
             page.wait_for_selector("#rows.stale", timeout=5000)

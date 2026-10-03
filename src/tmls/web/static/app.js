@@ -260,6 +260,7 @@ function drawRows() {
     children.push(link);
   }
   box.replaceChildren(...children);
+  fillSketchTarget();
 }
 
 function rowEl(row) {
@@ -511,37 +512,73 @@ fetch("/api/config").then((r) => r.json()).then((c) => {
   if (!sketchUrls.length) { $("tab-sketch").disabled = true; $("tab-sketch").title = "Add sketchpad's URL to ~/.config/tmls/sketchpad"; }
 }).catch(() => {});
 
-function sketchUrl() {
-  const row = rows.get(current);
+function sketchBase() {
   // Same scheme as this page: an https page can't frame an http one.
   const base = sketchUrls.find((u) => u.startsWith(location.protocol)) || null;
   if (!base) return null;
-  // embed=1: sketchpad shows just the board; these rows pick the session. Sketchpad knows this
-  // machine by its name, not "local".
-  const sep = base.includes("?") ? "&" : "?";
-  return row ? `${base}${sep}embed=1&target=${encodeURIComponent(`${row.label || row.host}/${row.name}`)}` : `${base}${sep}embed=1`;
+  // embed=1: sketchpad shows just the board; these rows pick the session.
+  return `${base}${base.includes("?") ? "&" : "?"}embed=1`;
+}
+
+function sketchTarget() {
+  const row = rows.get(current);  // sketchpad knows this machine by its name, not "local"
+  return row ? `${row.label || row.host}/${row.name}` : "";
+}
+
+function sketchUrl() {
+  const base = sketchBase(), target = sketchTarget();
+  return base && (target ? `${base}&target=${encodeURIComponent(target)}` : base);
+}
+
+// The Sketch view's own "Send to" picker: the same choice as the rows, without leaving the board.
+function fillSketchTarget() {
+  const pick = $("sketch-target");
+  if (!pick) return;
+  const keys = [...rows.keys()].sort();
+  const have = [...pick.options].map((o) => o.value);
+  if (have.join("\n") !== ["", ...keys].join("\n")) {
+    const none = new Option("pick a session", "");
+    none.disabled = true;
+    pick.replaceChildren(none, ...keys.map((k) => new Option(`${rows.get(k).label || rows.get(k).host} / ${rows.get(k).name}`, k)));
+  }
+  pick.value = current && rows.has(current) ? current : "";
 }
 
 function showSketch() {
-  const url = sketchUrl();
-  if (!url) {  // no address with this page's scheme: open sketchpad by itself instead
+  const base = sketchBase();
+  if (!base) {  // no address with this page's scheme: open sketchpad by itself instead
     if (sketchUrls[0]) window.open(sketchUrls[0], "_blank", "noopener");
     return;
   }
   const box = $("sketch");
-  if (box.dataset.url !== url) {
+  if (box.dataset.base !== base) {  // first time (or another sketchpad): build the board once
     const frame = document.createElement("iframe");
-    frame.src = url;
+    frame.src = sketchUrl();
     frame.allow = "clipboard-read; clipboard-write; display-capture";
-    const link = document.createElement("a");  // if sketchpad's login doesn't reach the frame
-    link.href = url;
+    const bar = document.createElement("div");
+    bar.className = "sketch-bar";
+    const label = document.createElement("label");
+    label.textContent = "Send to ";
+    const pick = document.createElement("select");
+    pick.id = "sketch-target";
+    pick.onchange = () => select(pick.value);
+    label.append(pick);
+    const link = document.createElement("a");
+    link.href = base;
     link.target = "_blank";
     link.rel = "noopener";
     link.className = "sketch-open";
-    link.textContent = "Open sketchpad in a new tab ↗";
-    box.replaceChildren(link, frame);
-    box.dataset.url = url;
+    link.textContent = "Open in a new tab ↗";
+    bar.append(label, link);
+    box.replaceChildren(bar, frame);
+    box.dataset.base = base;
+  } else {
+    // Same board, maybe another session: tell sketchpad instead of reloading it (a reload
+    // threw the drawing away).
+    const frame = box.querySelector("iframe");
+    frame.contentWindow.postMessage({ type: "tmls-target", target: sketchTarget() }, new URL(base, location.href).origin);
   }
+  fillSketchTarget();
   $("term").hidden = true;
   box.hidden = false;
   $("empty").hidden = true;
