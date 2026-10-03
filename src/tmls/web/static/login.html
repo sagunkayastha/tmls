@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>tmls login</title>
+<style>body{font:16px system-ui;background:#15191f;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}form{display:grid;gap:12px;width:min(320px,90vw)}input,button{font:inherit;padding:12px;border-radius:8px}button{cursor:pointer}</style></head>
+<body><form method="post" action="/login"><h1>tmls</h1><input name="username" autocomplete="username" placeholder="Username" required><input name="password" type="password" autocomplete="current-password" placeholder="Password" required><button>Log in</button><p id="error" role="alert"></p></form>
+<script>if(new URLSearchParams(location.search).has('error'))document.getElementById('error').textContent='Wrong username or password.';</script></body>
+</html>
