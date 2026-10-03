@@ -827,6 +827,30 @@ async def test_working_ask_queues_typed_and_saved_messages_then_can_clear(clock_
         assert sent == []
 
 
+async def test_ask_queues_while_a_permission_prompt_waits_instead_of_typing_into_it(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590, waiting="permission prompt")]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await open_session(app, pilot, "ask")
+        assert rows(app)["ask"].endswith("?")
+        await app.send_prompt("hello")
+        assert sent == []  # Enter would pick the highlighted dialog option
+        assert app.queue[tmls_app.slug("box", "ask")] == ["hello"]
+        assert any(n.startswith("Queued for ask") for n in notices)
+
+
 async def test_queue_releases_one_message_per_done_or_idle_change(clock_hosts, monkeypatch):
     from tmls import prompts
     sent = []

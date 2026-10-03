@@ -547,7 +547,7 @@ class Tmls(App):
         if session is None:
             return
         key = slug(session.host, session.name)
-        if self.marks.get(key) == "running":
+        if self.marks.get(key) in ("running", "waiting"):
             pending = self.queue.setdefault(key, [])
             pending.append(text)
             self.notify(f"Queued for {session.name} ({len(pending)} waiting).")

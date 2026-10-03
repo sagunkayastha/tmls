@@ -84,8 +84,8 @@ command.
   `blue`, `teal`, `violet`, `green`, `amber`, `rose`.
 - **Ask**: sends a message to the shown session: type one, pick a saved prompt (one per
   line in `~/.config/tmls/prompts`; default "What's the progress?"), or resend one of the
-  last ten you typed to its Claude. While the session is working (●), Ask queues the
-  message instead. The row and Ask title show the count; **Clear queue** removes messages
+  last ten you typed to its Claude. While the session is working (●) or waiting on
+  you (?), Ask queues the message instead. The row and Ask title show the count; **Clear queue** removes messages
   still waiting. One message goes through tmux's paste buffer after each finished turn
   (◆ or ○). A permission prompt (?) or API error (✕) keeps the queue. Queues last only
   until tmls exits.
