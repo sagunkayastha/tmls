@@ -43,23 +43,25 @@ def get_app_checks(browser, desktop):
 
 
 def app_checks(browser, desktop):
-    """The Android app's WebView (user agent "... TmlsApp/1"): a ⟳ App button asks the app to
-    check for an update via /app/update; a plain browser following it just lands on the page."""
-    check("a browser gets no ⟳ App button", desktop.locator("#app-update").count() == 0)
+    """The Android app's WebView (user agent "... TmlsApp/1 TmlsVersion/<name>"): the session list
+    ends with its version and "Check for updates" (like fin), which goes to /app/update for the app
+    to intercept; a plain browser following it just lands on the page."""
+    check("a browser gets no update button", desktop.locator("#app-update").count() == 0)
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
-                              user_agent="Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile TmlsApp/1")
+                              user_agent="Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile TmlsApp/1 TmlsVersion/1.261003.42")
     ctx.add_cookies(desktop.context.cookies())
     a = ctx.new_page()
     a.goto(BASE + "/")
-    a.wait_for_selector("#app-update")
-    check("the app gets a ⟳ button", a.inner_text("#app-update").strip() == "⟳")
+    a.wait_for_selector("#rows #app-update")
+    check("the app's list ends with Check for updates", a.inner_text("#app-update").strip() == "Check for updates"
+          and a.is_visible("#app-update"))
+    check("next to the installed version", "1.261003.42" in a.inner_text("#app-version"))
+    check("the header has no ⟳ any more", a.locator("header #app-update").count() == 0)
     check("the app itself gets no app link", a.locator("#get-app").count() == 0)
-    a.click("#shade", position={"x": 370, "y": 400})  # the rows drawer starts open on a phone
-    a.wait_for_function("!document.getElementById('rows').classList.contains('open')")
     with a.expect_request(lambda r: r.url.endswith("/app/update")):
         a.click("#app-update")
     a.wait_for_load_state()
-    check(f"⟳ App goes to /app/update, which lands back on the page ({a.url})", a.url == BASE + "/")
+    check(f"Check for updates goes to /app/update, which lands back on the page ({a.url})", a.url == BASE + "/")
     ctx.close()
 
 

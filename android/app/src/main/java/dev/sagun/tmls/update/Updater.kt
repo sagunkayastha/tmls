@@ -65,7 +65,7 @@ class Updater(private val activity: ComponentActivity, private val baseUrl: () -
     /** The site has loaded: quiet unless there is something to offer. */
     fun checkNow() = check(manual = false)
 
-    /** The site's "⟳ App" button (/app/update): always answers, and installs without the banner. */
+    /** The site's "Check for updates" (/app/update): always answers, and installs without the banner. */
     fun checkManual() = check(manual = true)
 
     /** Returning to the foreground: ask only if the last check is old enough. */

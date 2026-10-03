@@ -12,6 +12,8 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 const rows = new Map();        // key -> row from the server
 let hostList = [];             // [{host, label, online}] from the server, sessions or not
 let offerApp = false;          // an Android browser and an app published: the list links to it
+const inApp = navigator.userAgent.includes("TmlsApp/");  // the Android app's WebView
+const appVersion = (navigator.userAgent.match(/TmlsVersion\/(\S+)/) || [])[1] || "";
 let current = null;            // selected key
 let newWait = null;            // waits for a just-created session's row; any select() ends it
 let alerts = [];               // newest last, kept after a look
@@ -236,6 +238,19 @@ function drawRows() {
       el.dataset.sig = sig;
       children.push(el);
     }
+  }
+  if (inApp) {  // like fin: the list ends with the version and the update check; the app intercepts /app/update
+    const foot = document.createElement("div");
+    foot.id = "app-foot";
+    const version = document.createElement("span");
+    version.id = "app-version";
+    version.textContent = appVersion ? `tmls ${appVersion}` : "tmls app";
+    const check = document.createElement("a");
+    check.id = "app-update";
+    check.href = "/app/update";
+    check.textContent = "Check for updates";
+    foot.append(version, check);
+    children.push(foot);
   }
   if (offerApp) {  // an Android browser, not the app: where to get it
     const link = document.createElement("a");
@@ -534,17 +549,6 @@ function showSketch() {
 }
 $("tab-terminal").onclick = showTerminal;
 $("tab-sketch").onclick = showSketch;
-
-// The Android app (user agent "TmlsApp/<n>") gets a button that asks it to check for an update;
-// it intercepts /app/update itself. Browsers never see the button.
-if (navigator.userAgent.includes("TmlsApp/")) {
-  const b = document.createElement("button");
-  b.id = "app-update";
-  b.textContent = "⟳";
-  b.title = "Check for an app update";
-  b.onclick = () => { location.href = "/app/update"; };
-  $("logout").closest("form").before(b);
-}
 
 setFont(fontSize);
 connectEvents();

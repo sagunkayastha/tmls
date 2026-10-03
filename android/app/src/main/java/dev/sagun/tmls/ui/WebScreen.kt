@@ -24,6 +24,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import dev.sagun.tmls.BuildConfig
 
 /** The terminal's background; the WebView paints it before the page has. */
 const val BG = 0xFF15191F.toInt()
@@ -32,8 +33,8 @@ const val BG = 0xFF15191F.toInt()
  * tmls-web, full screen. The site's own login page signs in; the WebView's cookie jar keeps the
  * session. No pull-to-refresh and no zoom: a swipe belongs to the terminal.
  * [onPainted] fires once the first page is on screen (the app shows a plain dark screen until then),
- * [onSignedIn] once a page other than /login has loaded, [onUpdateRequested] for the site's "⟳ App"
- * button, [onLeave] when Back has nothing left to close, [onCrashed] if the page's renderer died.
+ * [onSignedIn] once a page other than /login has loaded, [onUpdateRequested] for the site's
+ * "Check for updates", [onLeave] when Back has nothing left to close, [onCrashed] if the page's renderer died.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -94,8 +95,8 @@ fun WebScreen(
                 settings.setSupportZoom(false)
                 settings.builtInZoomControls = false
                 settings.textZoom = 100                 // the terminal has its own A-/A+
-                // The site shows the "⟳ App" button to this marker.
-                settings.userAgentString = settings.userAgentString + " TmlsApp/1"
+                // The site shows "Check for updates" and this version at the end of its list to these markers.
+                settings.userAgentString = settings.userAgentString + " TmlsApp/1 TmlsVersion/" + BuildConfig.VERSION_NAME
                 CookieManager.getInstance().setAcceptCookie(true)
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
