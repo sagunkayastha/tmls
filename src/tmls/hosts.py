@@ -54,12 +54,21 @@ class Session:
 
 def parse(host, out):
     """First line is the host's `date +%s`, then one line per window (newest output wins), then
-    after "---" Claude Code's session files."""
+    after "---" Claude Code's session files. Lines a login script printed are skipped; ValueError
+    when there's no clock line."""
     tmux, _, claude = out.partition("\n---\n")
-    now, *lines = tmux.splitlines()
+    lines = tmux.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.isdigit()), None)
+    if start is None:
+        raise ValueError("no clock line in the listing")
+    now, lines = lines[start], lines[start + 1:]
     sessions = {}
     for line in lines:
-        name, windows, attached, activity = line.rsplit(":", 3)
+        try:
+            name, windows, attached, activity = line.rsplit(":", 3)
+            int(windows), int(activity)
+        except ValueError:
+            continue
         if name not in sessions or int(activity) > sessions[name].activity:
             sessions[name] = Session(host, name, int(windows), attached != "0", int(activity), int(now))
     files = []
@@ -177,5 +186,8 @@ async def list_host(host):
     except (OSError, asyncio.TimeoutError):
         return False, []
     if proc.returncode == 0:
-        return True, parse(host, out.decode())
+        try:
+            return True, parse(host, out.decode())
+        except ValueError:  # not a listing (e.g. a login script's output only): treat as unreachable
+            return False, []
     return b"no server running" in err, []

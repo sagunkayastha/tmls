@@ -118,3 +118,23 @@ def test_remote_commands_quote_names():
 
 def test_copy_command_is_shell_ready():
     assert hosts.attach_command("nas", "my notes") == "ssh -t nas \"tmux -u attach -t 'my notes'\""
+
+
+def test_parse_skips_lines_that_are_not_windows():
+    out = "Welcome to the box\n1700000000\nwork:1:0:1699999990\nmotd line\n---\n"
+    sessions = hosts.parse("box", out)
+    assert [s.name for s in sessions] == ["work"]
+
+
+async def test_list_host_offline_when_output_is_garbage(monkeypatch):
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"garbage\n", b""
+
+    async def fake_exec(*argv, **kw):
+        return Proc()
+    monkeypatch.setattr(hosts.asyncio, "create_subprocess_exec", fake_exec)
+    online, sessions = await hosts.list_host("box")
+    assert (online, sessions) == (False, [])
