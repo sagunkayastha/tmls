@@ -500,10 +500,16 @@ async def test_no_hosts_explains_why(monkeypatch):
 
 async def test_a_host_slower_than_the_refresh_interval_does_not_cancel_every_refresh(monkeypatch):
     import asyncio
+    slow = {"now": 0, "most": 0}
 
     async def list_host(host):
         if host == "slow":
-            await asyncio.sleep(0.7)
+            slow["now"] += 1
+            slow["most"] = max(slow["most"], slow["now"])
+            try:
+                await asyncio.sleep(0.7)
+            finally:
+                slow["now"] -= 1
         return True, [hosts.Session(host, "alpha", 1, False, 0, 0)]
     monkeypatch.setattr(hosts, "hosts", lambda remotes: ["slow", "fast"])
     monkeypatch.setattr(hosts, "label", lambda h: h)
@@ -511,9 +517,34 @@ async def test_a_host_slower_than_the_refresh_interval_does_not_cancel_every_ref
     monkeypatch.setattr(tmls_app, "REFRESH_SECONDS", 0.2)
     app = tmls_app.Tmls()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.pause(1.5)
-        assert "fast" in [h for h, _, _ in app._results]
+        assert await wait_for(pilot, lambda: "fast" in [h for h, _, _ in app._results], timeout=3)
         assert app.query(tmls_app.SessionRow)
+        await pilot.pause(1)
+        assert slow["most"] == 1  # ticks while the slow host answers don't start a second poll
+
+
+async def test_a_refresh_asked_for_during_a_poll_runs_right_after_it(monkeypatch):
+    import asyncio
+    state = {"name": "alpha", "calls": 0}
+
+    async def list_host(host):
+        name = state["name"]  # what the host says now; a rename after this isn't in this answer
+        state["calls"] += 1
+        await asyncio.sleep(0.3)
+        return True, [hosts.Session(host, name, 1, False, 0, 3600)]
+    monkeypatch.setattr(hosts, "hosts", lambda remotes: ["box"])
+    monkeypatch.setattr(hosts, "label", lambda h: h)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(tmls_app, "REFRESH_SECONDS", 30)  # only the asked-for refresh can show it
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: "alpha" in rows(app))
+        before = state["calls"]
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: state["calls"] == before + 1)
+        state["name"] = "renamed"
+        app.refresh_sessions()  # as renamed_session does, while that poll is still out
+        assert await wait_for(pilot, lambda: "renamed" in rows(app), timeout=2)
 
 
 @pytest.fixture
@@ -922,6 +953,36 @@ async def test_ask_queues_while_a_permission_prompt_waits_instead_of_typing_into
         assert sent == []  # Enter would pick the highlighted dialog option
         assert app.queue[tmls_app.slug("box", "ask")] == ["hello"]
         assert any(n.startswith("Queued for ask") for n in notices)
+
+
+async def test_session_names_with_markup_brackets_can_be_asked_and_notified(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+    odd = "x[/]y"
+
+    async def send(host, name, text):
+        sent.append((host, name, text))
+
+    async def recent(host, name):
+        return []
+
+    async def list_host(host):
+        return True, [hosts.Session(host, odd, 1, False, 0, 3600)]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "send", send)
+    monkeypatch.setattr(prompts, "recent", recent)
+    monkeypatch.setattr(prompts, "saved", lambda: [])
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await open_session(app, pilot, odd)
+        await pilot.click("#ask-button")
+        assert await wait_for(pilot, lambda: app.query_one("#ask").display)
+        await app.send_prompt("hi")  # notifies "Sent to x[/]y."
+        await pilot.pause(0.3)  # the toast renders
+        assert sent == [("box", odd, "hi")]
+        await pilot.click("#copy")  # notifies "Copied: ... x[/]y"
+        await pilot.pause(0.3)
 
 
 async def test_queue_releases_one_message_per_done_or_idle_change(clock_hosts, monkeypatch):
