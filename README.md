@@ -172,6 +172,8 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 - Attaching resizes the tmux window to tmls's pane, which other attached clients see
   (that's tmux's `window-size` behaviour).
 - Tested on Linux only.
+- In the browser, the mouse wheel only scrolls tmux history when the session has `set -g mouse on`;
+  otherwise it sends arrow keys like a plain terminal.
 
 ## Development
 

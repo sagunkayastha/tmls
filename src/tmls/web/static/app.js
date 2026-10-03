@@ -81,7 +81,7 @@ function select(key) {
   drawRows();
   if (!$("sketch").hidden) showSketch();
 }
-$("reattach").onclick = () => { retries = 0; if (current) attach(current); };
+$("reattach").onclick = () => { retries = 0; if (current) { term.reset(); attach(current); } };
 
 // ---- font zoom ----
 function setFont(size) {

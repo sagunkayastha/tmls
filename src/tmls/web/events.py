@@ -85,8 +85,13 @@ async def handle_events(request):
 
 async def handle_seen(request):
     app = request.app
-    data = await request.json()
-    k = data.get("key", "")
+    try:
+        data = await request.json()
+        k = data["key"] if isinstance(data, dict) and isinstance(data.get("key"), str) else None
+    except ValueError:
+        k = None
+    if k is None:
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
     host = k.split("/", 1)[0]
     if host not in app["now"]:
         return web.json_response({"ok": False, "error": "unknown session"}, status=404)

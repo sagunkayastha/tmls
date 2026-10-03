@@ -114,3 +114,12 @@ async def test_unchanged_tick_sends_nothing(monkeypatch):
     await events.poll_once(app)
     await events.poll_once(app)
     assert [m["t"] for m in socket.sent] == ["rows"]
+
+
+async def test_seen_rejects_a_body_that_is_not_an_object(aiohttp_client, monkeypatch):
+    client = await make(aiohttp_client, monkeypatch, {"box": (True, [sess("a")])})
+    for body in ([], "x", {"key": 5}):
+        response = await client.post("/api/seen", json=body)
+        assert response.status == 400 and await response.json() == {"ok": False, "error": "invalid request"}
+    response = await client.post("/api/seen", data="not json", headers={"Content-Type": "application/json"})
+    assert response.status == 400
