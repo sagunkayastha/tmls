@@ -56,3 +56,10 @@ def test_odd_names_survive():
     name = 'my "odd" name;x'
     out = rows.build(rows.State(), [("box", True, [sess(name)])], {})
     assert out[0]["name"] == name and out[0]["key"] == f"box/{name}"
+
+
+def test_rows_carry_a_display_label(monkeypatch):
+    monkeypatch.setattr(hosts, "label", lambda h: "archbox" if h == hosts.LOCAL else h)
+    local = hosts.Session(hosts.LOCAL, "a", 1, False, 0, 100)
+    out = rows.build(rows.State(), [(hosts.LOCAL, True, [local])], {})
+    assert out[0]["host"] == hosts.LOCAL and out[0]["label"] == "archbox"

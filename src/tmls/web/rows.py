@@ -43,7 +43,7 @@ def build(state, found, extras):
             k = key(host, s.name)
             mark = hosts.status(s, state.seen.get(k, 0), state.started[host])
             extra = extras.get(k, {})
-            out.append({"key": k, "host": host, "name": s.name, "mark": mark,
+            out.append({"key": k, "host": host, "label": hosts.label(host), "name": s.name, "mark": mark,
                         "line": second_line(s, mark, extra.get("line")), "waiting": s.waiting,
                         "shown": extra.get("shown") if mark == "waiting" else None, "online": True})
     state.marks = {r["key"]: r["mark"] for r in out}

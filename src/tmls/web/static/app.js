@@ -101,7 +101,7 @@ window.addEventListener("keydown", (e) => {
 // ---- rows ----
 function drawTitle() {
   const row = rows.get(current);
-  $("title").textContent = row ? `${row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
+  $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
 }
 
 function drawRows() {
@@ -115,7 +115,7 @@ function drawRows() {
   for (const [host, list] of byHost) {
     const head = document.createElement("div");
     head.className = "host" + (list.every((r) => !r.online) ? " offline" : "");
-    head.textContent = host;
+    head.textContent = list[0].label || host;  // "local" is the machine tmls runs on
     box.append(head);
     for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) box.append(rowEl(row));
   }
@@ -185,7 +185,7 @@ $("bell").onclick = () => {
   for (const a of unread.slice().reverse()) {
     const el = document.createElement("div");
     el.className = "alert";
-    el.textContent = `${MARK[a.mark]} ${a.name} · ${a.key.split("/")[0]}`;
+    el.textContent = `${MARK[a.mark]} ${a.name} · ${rows.get(a.key)?.label || a.key.split("/")[0]}`;
     el.onclick = () => { box.hidden = true; select(a.key); };
     box.append(el);
   }
@@ -255,7 +255,10 @@ function sketchUrl() {
   // Same scheme as this page: an https page can't frame an http one.
   const base = sketchUrls.find((u) => u.startsWith(location.protocol)) || null;
   if (!base) return null;
-  return row ? `${base}${base.includes("?") ? "&" : "?"}target=${encodeURIComponent(`${row.host}/${row.name}`)}` : base;
+  // embed=1: sketchpad shows just the board; these rows pick the session. Sketchpad knows this
+  // machine by its name, not "local".
+  const sep = base.includes("?") ? "&" : "?";
+  return row ? `${base}${sep}embed=1&target=${encodeURIComponent(`${row.label || row.host}/${row.name}`)}` : `${base}${sep}embed=1`;
 }
 
 function showSketch() {

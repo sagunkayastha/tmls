@@ -90,7 +90,8 @@ def main():
 
             page.click("#tab-sketch")
             src = page.get_attribute("#sketch iframe", "src")
-            check("Sketch tab frames sketchpad targeted at the session", src.endswith("?target=box%2Fbeta") or src.endswith("?target=box%2Falpha"))
+            check("Sketch tab frames sketchpad's board only, targeted at the session",
+                  src.endswith("embed=1&target=box%2Fbeta") or src.endswith("embed=1&target=box%2Falpha"))
             page.click("#tab-terminal")
             check("Terminal tab comes back", page.is_visible("#term") and not page.is_visible("#sketch"))
 
