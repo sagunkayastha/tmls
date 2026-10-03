@@ -573,7 +573,9 @@ class Tmls(App):
             self.notify(f"Queued for {session.name} ({len(pending)} waiting).", markup=False)
             await self._render_rows()
             return
-        error = await prompts.send(session.host, session.name, text, pane=session.pane)
+        # the tab's Session is from when it opened; Claude may run in another pane by now
+        fresh = next((s for _, _, ss in self._results for s in ss if slug(s.host, s.name) == key), session)
+        error = await prompts.send(session.host, session.name, text, pane=fresh.pane)
         self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information",
                     markup=False)
 

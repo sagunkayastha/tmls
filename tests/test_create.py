@@ -142,6 +142,19 @@ async def test_form_follows_repo_name_until_name_is_edited(monkeypatch):
         assert form.query_one("#name", Input).value == "my-agent"
 
 
+async def test_form_shows_errors_with_brackets_verbatim(monkeypatch):
+    async def fake(host, name, folder, start):
+        return f"no such folder: {folder}"
+    monkeypatch.setattr(create, "create", fake)
+    app = Host(hosts=["archbox"], host="archbox")
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.screen.query_one("#folder", Input).value = "~/a[/]b"
+        app.screen.query_one("#name", Input).value = "ok"
+        await pilot.click("#create")
+        await pilot.pause(0.2)
+        assert "no such folder: ~/a[/]b" in str(app.screen.query_one("#error").render())
+
+
 async def test_form_shows_errors_and_stays_open(monkeypatch):
     async def fake(host, name, folder, start):
         return "no such folder: ~/nope"

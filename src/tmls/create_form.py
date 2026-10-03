@@ -50,7 +50,7 @@ class NewSession(ModalScreen):
                     yield RadioButton("claude", id="claude")
                     for i, name in enumerate(self.presets):
                         yield RadioButton(name, id=f"preset-{i}")
-            yield Static("", id="error")
+            yield Static("", id="error", markup=False)
             with Horizontal(id="buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Create", id="create", variant="success")

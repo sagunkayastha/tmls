@@ -391,7 +391,7 @@ class Terminal(Widget, can_focus=True):
                 data = await asyncio.to_thread(dropped.read_bytes)
                 path = await image_paste.store(self.host, data, dropped.suffix)
             except (OSError, image_paste.ImageError) as error:
-                self.app.notify(f"Image copy failed: {error}", severity="error")
+                self.app.notify(f"Image copy failed: {error}", severity="error", markup=False)
                 return
             self._paste(path)
             return
@@ -407,7 +407,7 @@ class Terminal(Widget, can_focus=True):
                 data, suffix = image
                 path = await image_paste.store(self.host, data, suffix)
             except image_paste.ImageError as error:
-                self.app.notify(f"Image copy failed: {error}", severity="error")
+                self.app.notify(f"Image copy failed: {error}", severity="error", markup=False)
                 return
             self._paste(path)
             return

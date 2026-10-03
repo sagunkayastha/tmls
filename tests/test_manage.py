@@ -2,6 +2,8 @@ import asyncio
 import subprocess
 
 import pytest
+from textual.app import App
+from textual.content import Content
 
 from tmls import hosts, manage
 
@@ -75,3 +77,40 @@ async def test_kill_pane_info_warns_about_process_and_last_pane(private_tmux):
     assert await manage.kill_pane(hosts.LOCAL, "alpha") is None
     assert subprocess.run(["tmux", "has-session", "-t", "=alpha"], capture_output=True).returncode != 0
     assert subprocess.run(["tmux", "has-session", "-t", "=alphabet"], capture_output=True).returncode == 0
+
+
+class Host(App):
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    def on_mount(self):
+        self.push_screen(manage.SessionActions(self.session))
+
+
+async def test_actions_dialog_shows_bracketed_names_and_errors_verbatim(monkeypatch):
+    async def rename(host, old, new):
+        return "tmux: bad [/] name"
+
+    async def running(host, name):
+        return ["vim[/]"]
+
+    async def pane_info(host, name):
+        return "top[/]", False
+    monkeypatch.setattr(manage, "rename", rename)
+    monkeypatch.setattr(manage, "running_commands", running)
+    monkeypatch.setattr(manage, "pane_info", pane_info)
+    app = Host(hosts.Session("box", "a[/]b", 1, False, 0, 0))
+    async with app.run_test(size=(100, 40)) as pilot:
+        box = app.screen.query_one("#session-actions")
+        assert Content.from_markup(box.border_title).plain == "box · a[/]b"  # the getter gives markup
+        await pilot.click("#rename-session")
+        await pilot.pause(.1)
+        assert "tmux: bad [/] name" in str(app.screen.query_one("#action-error").render())
+        await pilot.click("#kill-session")
+        await pilot.pause(.1)
+        warning = str(app.screen.query_one("#kill-warning").render())
+        assert "Kill a[/]b?" in warning and "Running: vim[/]" in warning
+        await pilot.click("#kill-pane")
+        await pilot.pause(.1)
+        assert "Running: top[/]" in str(app.screen.query_one("#pane-warning").render())

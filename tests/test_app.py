@@ -1253,6 +1253,29 @@ async def test_ask_sends_and_delivers_queued_messages_to_claudes_pane(clock_host
         assert await wait_for(pilot, lambda: sent[-1] == ("box", "beta", "later", "%7"))
 
 
+async def test_ask_follows_claude_to_a_new_pane_after_the_tab_was_opened(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+    state = {"pane": "%7"}
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "beta", 1, False, 3600, 3600, "idle", 3590, pane=state["pane"])]
+
+    async def send(host, name, text, pane=None):
+        sent.append(pane)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'beta')}"))
+        await open_session(app, pilot, "beta")
+        state["pane"] = "%12"
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: any(s.pane == "%12" for _, _, ss in app._results for s in ss))
+        await app.send_prompt("hi")
+        assert sent == ["%12"]
+
+
 async def test_alerts_panel_reads_and_answers_the_prompt_in_claudes_pane(clock_hosts, monkeypatch):
     from tmls import approve
     seen, answered = [], []

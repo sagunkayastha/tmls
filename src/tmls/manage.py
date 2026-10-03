@@ -3,6 +3,7 @@
 import asyncio
 import shlex
 
+from rich.text import Text
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
@@ -121,11 +122,11 @@ class SessionActions(ModalScreen):
 
     def compose(self):
         with Vertical(id="session-actions") as box:
-            box.border_title = f"{self.session.host} · {self.session.name}"
+            box.border_title = Text(f"{self.session.host} · {self.session.name}")
             yield Static("New name")
             yield Input(self.session.name, id="new-name")
-            yield Static("", id="action-error")
-            yield Static("", id="kill-warning")
+            yield Static("", id="action-error", markup=False)
+            yield Static("", id="kill-warning", markup=False)
             with Horizontal():
                 yield Button("Cancel", id="cancel-actions")
                 yield Button("Rename", id="rename-session", variant="primary")
@@ -138,7 +139,7 @@ class SessionActions(ModalScreen):
             with Horizontal():
                 yield Button("Split side by side", id="split-horizontal")
                 yield Button("Split top/bottom", id="split-vertical")
-            yield Static("", id="pane-warning")
+            yield Static("", id="pane-warning", markup=False)
             with Horizontal():
                 yield Button("Kill pane…", id="kill-pane", variant="error")
 
