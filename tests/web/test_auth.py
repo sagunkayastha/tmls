@@ -80,7 +80,10 @@ async def test_logged_in_websocket_gets_rows(aiohttp_client, tmp_path):
     client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
     await client.post("/login", data={"username": "me", "password": "pw"})
     ws = await client.ws_connect("/api/events")
-    assert (await ws.receive_json())["t"] == "rows"
+    first = await ws.receive_json()
+    if first["t"] == "hosts":  # the host list comes first once the poller has run
+        first = await ws.receive_json()
+    assert first["t"] == "rows"
 
 
 async def test_config_lists_sketchpad_urls(aiohttp_client, tmp_path, monkeypatch):

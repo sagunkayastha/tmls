@@ -114,7 +114,20 @@ async def test_unchanged_tick_sends_nothing(monkeypatch):
     app["sockets"].add(socket)
     await events.poll_once(app)
     await events.poll_once(app)
-    assert [m["t"] for m in socket.sent] == ["rows"]
+    assert [m["t"] for m in socket.sent] == ["hosts", "rows"]  # hosts once: nothing changed on the 2nd tick
+
+
+async def test_hosts_are_sent_even_without_sessions_so_each_gets_a_plus(aiohttp_client, monkeypatch):
+    # an online host with no tmux sessions has no rows; the page still needs its header and +
+    client = await make(aiohttp_client, monkeypatch, {"box": (True, [])})
+    ws = await client.ws_connect("/api/events")
+    msg = await next_kind(ws, "hosts")
+    assert msg["hosts"] == [{"host": "box", "label": "box", "online": True}]
+    await ws.close()
+    ws = await client.ws_connect("/api/events")  # a new tab gets them at once
+    first = await asyncio.wait_for(ws.receive_json(), 3)
+    assert first == {"t": "hosts", "hosts": [{"host": "box", "label": "box", "online": True}]}
+    await ws.close()
 
 
 async def test_seen_rejects_a_body_that_is_not_an_object(aiohttp_client, monkeypatch):

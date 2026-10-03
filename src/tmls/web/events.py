@@ -33,6 +33,11 @@ async def _list(host):
 async def poll_once(app):
     state, names = app["state"], app["hosts"]
     found = [(h, *r) for h, r in zip(names, await asyncio.gather(*(_list(h) for h in names)))]
+    # Every host, sessions or not: an online host with none still needs its header and its +.
+    host_list = [{"host": h, "label": hosts.label(h), "online": online} for h, online, _ in found]
+    if host_list != app["host_list"]:
+        app["host_list"] = host_list
+        await broadcast(app, {"t": "hosts", "hosts": host_list})
     lines, extras = app["lines"], {}
     screens, prompts_up = {}, {}  # fetched in parallel: one slow host mustn't hold up the rest
     for host, online, sessions in found:
@@ -84,6 +89,8 @@ async def handle_events(request):
     snapshot = list(app["state"].rows.values())
     app["sockets"].add(ws)  # before the await below, so no poll tick can slip past this client
     try:
+        if app["host_list"] is not None:
+            await ws.send_json({"t": "hosts", "hosts": app["host_list"]})
         await ws.send_json({"t": "rows", "full": True, "set": snapshot, "gone": []})
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
@@ -121,6 +128,7 @@ async def _stop(app):
 
 def setup(app):
     app["state"], app["sockets"], app["lines"], app["now"], app["slots"] = rows.State(), set(), {}, {}, {}
+    app["host_list"] = None
     app.router.add_get("/api/events", handle_events)
     app.router.add_post("/api/seen", handle_seen)
     app.on_startup.append(_start)

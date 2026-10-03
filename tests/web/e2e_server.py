@@ -25,6 +25,8 @@ created = []
 
 
 async def list_host(host):
+    if host == "spare":  # online, no tmux sessions yet
+        return True, []
     return True, [hosts.Session("box", "alpha", 1, False, 0, 1000),
                   hosts.Session("box", "beta", 1, False, 0, 1000, claude="waiting", claude_since=990,
                                 waiting="permission prompt", title="beta"), *created]
@@ -63,7 +65,7 @@ async def answer(host, name, shown, yes, pane=None):
 hosts.list_host, prompts._run, approve.current, approve.answer = list_host, run, current, answer
 create.create, create.suggest_name = create_session, suggest_name
 create.load_presets = lambda: {"Opus plan": ("claude", "--model", "opus")}
-app = server.make_app(folder / "auth.json", ["box"])
+app = server.make_app(folder / "auth.json", ["box", "spare"])
 app["poll_interval"] = 0.3
 app["attach_argv"] = lambda host, name: ["sh", "-c", 'echo "attached-$0"; exec cat', name]
 app["sketchpad"] = [f"http://127.0.0.1:{port}/healthz"]

@@ -155,6 +155,8 @@ def main():
             page.fill('input[name="password"]', "pw")
             page.press('input[name="password"]', "Enter")
             page.wait_for_selector('.row[data-key="box/alpha"]')
+            page.wait_for_selector('.host[data-host="spare"] .add', timeout=5000)
+            check("a host with no sessions still shows its header with +", True)
             check("logged in: rows for alpha and beta",
                   page.locator('.row[data-key="box/beta"]').count() == 1)
             check("plain session shows its last screen line",

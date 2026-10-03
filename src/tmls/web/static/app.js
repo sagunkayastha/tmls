@@ -10,6 +10,7 @@ const store = {
 const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`;
 
 const rows = new Map();        // key -> row from the server
+let hostList = [];             // [{host, label, online}] from the server, sessions or not
 let current = null;            // selected key
 let newWait = null;            // waits for a just-created session's row; any select() ends it
 let alerts = [];               // newest last, kept after a look
@@ -204,21 +205,26 @@ function drawRows() {
   const box = $("rows");
   const old = new Map([...box.querySelectorAll(".row")].map((el) => [el.dataset.key, el]));
   const children = [];
-  const byHost = new Map();
+  // Every host the server lists, in its order, even one with no sessions (it still needs its +).
+  const byHost = new Map(hostList.map((h) => [h.host, []]));
   for (const row of rows.values()) {
     if (!byHost.has(row.host)) byHost.set(row.host, []);
     byHost.get(row.host).push(row);
   }
   for (const [host, list] of byHost) {
+    const info = hostList.find((h) => h.host === host);
+    const online = info ? info.online : list.some((r) => r.online);
+    const label = (info && info.label) || (list[0] && list[0].label) || host;  // "local" is the machine tmls runs on
     const head = document.createElement("div");
-    head.className = "host" + (list.every((r) => !r.online) ? " offline" : "");
-    head.textContent = list[0].label || host;  // "local" is the machine tmls runs on
-    if (list.some((r) => r.online)) {
+    head.className = "host" + (online ? "" : " offline");
+    head.dataset.host = host;
+    head.textContent = label;
+    if (online) {
       const add = document.createElement("button");
       add.className = "add";
       add.title = "New session";
       add.textContent = "+";
-      add.onclick = (e) => { e.stopPropagation(); openNew(host, list[0].label || host); };
+      add.onclick = (e) => { e.stopPropagation(); openNew(host, label); };
       head.append(add);
     }
     children.push(head);
@@ -419,7 +425,10 @@ function connectEvents() {
   ws.onopen = () => { $("feed").hidden = true; $("rows").classList.remove("stale"); };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.t === "rows") {
+    if (msg.t === "hosts") {
+      hostList = msg.hosts;
+      drawRows();
+    } else if (msg.t === "rows") {
       if (msg.full) rows.clear();  // a (re)connect sends everything: drop sessions that ended meanwhile
       for (const key of msg.gone) rows.delete(key);
       for (const row of msg.set) rows.set(row.key, row);
