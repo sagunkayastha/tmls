@@ -2,7 +2,7 @@
 #
 # Copy this file, tailscale-serve.json and ssh_config.example into a folder of its own
 # (e.g. ~/stacks/tmls), put the ssh key and config under ./ssh, `touch state/known_hosts`,
-# set the LAN address below, and `docker compose up -d`.
+# set the LAN address below, and `docker compose up -d --build`.
 #
 # The container has no tmux: the machine running it is reached over ssh like every other host
 # (host.docker.internal, see ssh_config.example), so its ssh key must be in that machine's
@@ -10,16 +10,20 @@
 services:
   tmls-web:
     image: tmls
-    build: ${TMLS_SRC:-..}            # the tmls checkout; set TMLS_SRC in .env when this file lives elsewhere
+    pull_policy: build
+    build:
+      context: ${TMLS_SRC:-..}        # the tmls checkout (absolute path in .env when this file lives elsewhere)
+      args:
+        UID: "${UID:-1000}"           # the owner of the mounted key and config files
     container_name: tmls-web
     restart: unless-stopped
-    user: "1000:1000"                 # the owner of the mounted key and config files
+    init: true                        # reaps the ssh masters that ControlPersist leaves behind
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "192.168.1.10:8794:8794"      # the LAN address only; never 0.0.0.0
-    # --trust-proxy: the sidecar's network, so the login lockout counts per real client
-    command: ["--bind", "0.0.0.0", "--port", "8794", "--trust-proxy", "172.31.77.0/24"]
+    # --trust-proxy: only the sidecar, by its fixed address, so nothing else can forge a client address
+    command: ["--bind", "0.0.0.0", "--port", "8794", "--trust-proxy", "172.31.77.250"]
     volumes:
       - ./ssh:/home/tmls/.ssh:ro                                  # config + id_ed25519(.pub)
       - ./state/known_hosts:/home/tmls/known_hosts               # must exist as a file first (outside the read-only .ssh)
@@ -49,10 +53,12 @@ services:
       - ./state/tailscale:/var/lib/tailscale
       - ./tailscale-serve.json:/config/serve.json:ro
     networks:
-      - tmls
+      tmls:
+        ipv4_address: 172.31.77.250   # fixed: --trust-proxy above names it
 
 networks:
   tmls:
     ipam:
       config:
-        - subnet: 172.31.77.0/24      # fixed so --trust-proxy above can name it
+        - subnet: 172.31.77.0/24
+          ip_range: 172.31.77.0/25    # dynamic addresses stay below .128, away from the sidecar's

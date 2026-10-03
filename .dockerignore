@@ -3,8 +3,8 @@
 .pytest_cache
 .superpowers
 .claude
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
 tests
 docs
 survey

@@ -42,11 +42,14 @@ archbox                                     ~/stacks/tmls/
 - `./ssh/config` (deploy-local, not committed; the repo ships `deploy/ssh_config.example`):
   `Host archbox` → `HostName host.docker.internal`; `Host sgnkayast-ubu` → `HostName 192.168.0.13`;
   `IdentityFile ~/.ssh/id_ed25519`, `StrictHostKeyChecking accept-new`,
-  `UserKnownHostsFile ~/.ssh/known_hosts` (the rw mount), `ControlMaster auto`
+  `UserKnownHostsFile ~/known_hosts` (the rw mount; it can't live inside the read-only `.ssh`), `ControlMaster auto`
   `ControlPath /tmp/cm-%C` `ControlPersist 60` (one ssh per host instead of one per poll).
 - Row labels stay `archbox` / `sgnkayast-ubu`, so sketchpad's `?target=archbox/<name>` still matches.
-- `--trust-proxy` learns CIDR (`172.20.0.0/16`): the sidecar's address on the compose network is
-  dynamic. Small code change in `server.py` (`ipaddress.ip_network`).
+- `--trust-proxy` names the sidecar by a **fixed** address on the compose network (`172.31.77.250`);
+  the network's `/24` would include the host gateway (`.1`), which anything on the host can use.
+  `--trust-proxy` also accepts a CIDR now (`ipaddress.ip_network`).
+- `events.py` caps parallel ssh commands per host (`SLOTS`): with `ControlMaster`, they are channels
+  on one connection, and sshd's `MaxSessions` (10) refuses the rest.
 
 ## The ssh key (open)
 
@@ -74,9 +77,17 @@ on **archbox** (archbox's own key is not there today) and on **ubu**.
 - README: a **Docker** subsection under Install/Use; the systemd unit is gone.
 - `server.py`: `--trust-proxy` accepts addresses or CIDRs.
 
+## Through the sidecar (verified in tailscale's `ipn/ipnlocal/serve.go`, 2026-10-02)
+
+`tailscale serve` keeps the original `Host` for TCP backends (`r.Out.Host = r.In.Host`), so
+`auth.same_origin` (Origin netloc == Host) holds; it sets `X-Forwarded-Proto: https` (the
+session cookie gets `secure`) and `X-Forwarded-For` to the client's tailnet address (with
+`Set`, one value), which `--trust-proxy` on the sidecar's subnet turns into the lockout key.
+
 ## Checks
 
 - Unit: `client_address` with a CIDR trusted proxy.
 - Build on ubu, run it against archbox + ubu over ssh with a throwaway session (LAN only), then
-  deploy on archbox: `docker compose up -d`, LAN login, rows for both hosts, attach, approve,
-  create; sidecar login URL (user), tailnet https login; `--trust-proxy` lockout keyed per client.
+  deploy on archbox: `docker compose up -d --build`, LAN login, rows for both hosts, attach, approve,
+  create; sidecar login URL (user); over the tailnet: login, **open a terminal and press Approve or
+  Logout** (a 4403 close or a 403 would mean the proxy rewrote `Host`); lockout keyed per client.

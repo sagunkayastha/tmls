@@ -1,8 +1,10 @@
 # The container's ssh config: copy to ./ssh/config next to docker-compose.yml, next to the key
-# (./ssh/id_ed25519 and .pub). Every name in ~/.config/tmls/hosts needs a Host block here.
-# The file must be owned by uid 1000 and not writable by others, or ssh refuses it.
+# (./ssh/id_ed25519 and .pub). Every name in ~/.config/tmls/hosts needs a Host block here, and
+# the file must be owned by the same uid as the container and not writable by others.
 
-# The machine running the container: reached through Docker's host gateway.
+# The machine running the container, reached through Docker's host gateway. Name it after the
+# machine's real hostname: the terminal tmls on that machine then knows it is itself, and
+# sketchpad's targets keep matching.
 Host box
     HostName host.docker.internal
 
@@ -10,10 +12,11 @@ Host laptop
     HostName 192.168.1.20
 
 Host *
-    User me
+    User me                          # your login on the hosts
     IdentityFile ~/.ssh/id_ed25519
-    StrictHostKeyChecking accept-new
+    StrictHostKeyChecking accept-new  # first contact pins the key in ~/known_hosts; a changed key shows the host offline
     UserKnownHostsFile ~/known_hosts
+    ConnectTimeout 5
     # one connection per host, reused by every poll
     ControlMaster auto
     ControlPath /tmp/cm-%C

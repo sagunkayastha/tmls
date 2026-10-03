@@ -1,3 +1,4 @@
+from tmls.web import server
 import asyncio
 
 from aiohttp import web
@@ -123,3 +124,23 @@ async def test_seen_rejects_a_body_that_is_not_an_object(aiohttp_client, monkeyp
         assert response.status == 400 and await response.json() == {"ok": False, "error": "invalid request"}
     response = await client.post("/api/seen", data="not json", headers={"Content-Type": "application/json"})
     assert response.status == 400
+
+
+async def test_ssh_commands_per_host_are_capped(monkeypatch, tmp_path):
+    """sshd's MaxSessions (10) caps the channels on one ControlMaster connection, so a host's
+    captures must not all run at once."""
+    async def list_host(host):
+        return True, [hosts.Session(host, f"s{i}", 1, False, i, 1000) for i in range(20)]
+    running = {"now": 0, "most": 0}
+
+    async def run(argv, stdin=None):
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        await asyncio.sleep(0.01)
+        running["now"] -= 1
+        return 0, "line\n"
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "_run", run)
+    app = server.make_app(tmp_path / "auth.json", ["box"])
+    await events.poll_once(app)
+    assert 0 < running["most"] <= events.SLOTS

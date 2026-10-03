@@ -7,6 +7,16 @@ from aiohttp import WSMsgType, web
 from tmls import approve, hosts, prompts
 from tmls.web import rows
 
+# Parallel ssh commands per host. With ControlMaster they are channels on one connection, and
+# sshd's MaxSessions (10 by default) refuses the rest with "administratively prohibited".
+SLOTS = 6
+
+
+async def _capped(app, host, coro):
+    slot = app["slots"].setdefault(host, asyncio.Semaphore(SLOTS))
+    async with slot:
+        return await coro
+
 
 async def _screen(host, name):
     code, out = await prompts._run(prompts._run_argv(host, f"tmux capture-pane -p -t {shlex.quote(f'={name}:')}"))
@@ -30,9 +40,9 @@ async def poll_once(app):
             app["now"][host] = s.now
             k = rows.key(host, s.name)
             if not s.claude and lines.get(k, (None,))[0] != s.activity:  # plain tmux: only on new output
-                screens[k] = (s.activity, _screen(host, s.name))
+                screens[k] = (s.activity, _capped(app, host, _screen(host, s.name)))
             if s.claude == "waiting":
-                prompts_up[k] = approve.current(host, s.name, pane=s.pane)
+                prompts_up[k] = _capped(app, host, approve.current(host, s.name, pane=s.pane))
     for (k, (activity, _)), text in zip(screens.items(), await asyncio.gather(*(c for _, c in screens.values()))):
         lines[k] = (activity, text)
     shown = dict(zip(prompts_up, await asyncio.gather(*prompts_up.values())))
@@ -110,7 +120,7 @@ async def _stop(app):
 
 
 def setup(app):
-    app["state"], app["sockets"], app["lines"], app["now"] = rows.State(), set(), {}, {}
+    app["state"], app["sockets"], app["lines"], app["now"], app["slots"] = rows.State(), set(), {}, {}, {}
     app.router.add_get("/api/events", handle_events)
     app.router.add_post("/api/seen", handle_seen)
     app.on_startup.append(_start)
