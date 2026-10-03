@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -91,7 +92,8 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
     }
 
     MaterialTheme(colorScheme = darkColorScheme(background = Bg, surface = Bg)) {
-        Box(Modifier.fillMaxSize().background(Bg)) {
+        // The Surface gives text its light colour; the Box only stacks the site and the overlay.
+        Surface(Modifier.fillMaxSize(), color = Bg) { Box(Modifier.fillMaxSize()) {
             val web = screen as? Screen.Web
             var painted by remember(web) { mutableStateOf(false) }
             if (web != null) key(web) {
@@ -130,7 +132,7 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
                     }
                 }
             }
-        }
+        } }
     }
 }
 
