@@ -142,6 +142,28 @@ Listing uses `ssh -o BatchMode=yes`, so a host that needs a password shows as of
 
 `tmls-web --bind ADDR [--port 8794] [--trust-proxy ADDR]` serves the browser version;
 `--trust-proxy` names a reverse proxy whose `X-Forwarded-For` is believed for the login lockout.
+Both options can be repeated, and `--trust-proxy` also takes a network (`172.31.77.0/24`).
+
+## Docker
+
+`tmls-web` can run as a container next to your other stacks. There is no tmux inside it: every
+host, including the machine running the container, is reached over ssh. `deploy/` has a
+`docker-compose.yml` (tmls-web plus a Tailscale sidecar for use away from home),
+`tailscale-serve.json` and `ssh_config.example`.
+
+1. Copy those three files to a folder of their own, say `~/stacks/tmls`, and in it run
+   `mkdir -p ssh state && touch state/known_hosts` and `echo TMLS_SRC=/path/to/tmls > .env`.
+2. `ssh/`: a key every listed host accepts (`cp ~/.ssh/id_ed25519{,.pub} ssh/`, and add the `.pub`
+   to this machine's own `~/.ssh/authorized_keys`), plus `ssh/config` made from
+   `ssh_config.example`: one `Host` block per line of `~/.config/tmls/hosts`, with this machine
+   as `host.docker.internal`.
+3. Put the LAN address under `ports:` and run `docker compose up -d`. Log in on port 8794 as before.
+4. Away from home: `docker compose logs tmls-tailscale` prints a login URL once; open it while
+   signed in to your tailnet, then use `https://tmls.<tailnet>.ts.net`.
+
+`~/.config/tmls/hosts` must name this machine too (`box` in `ssh_config.example`): from inside
+the container it is no longer "local". `--trust-proxy` in the compose file names the sidecar's
+network, so the login lockout counts per real client.
 
 ## Sketchpad button
 

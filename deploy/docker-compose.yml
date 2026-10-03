@@ -1,0 +1,58 @@
+# tmls-web as a container, with a Tailscale sidecar for use away from home. See README "Docker".
+#
+# Copy this file, tailscale-serve.json and ssh_config.example into a folder of its own
+# (e.g. ~/stacks/tmls), put the ssh key and config under ./ssh, `touch state/known_hosts`,
+# set the LAN address below, and `docker compose up -d`.
+#
+# The container has no tmux: the machine running it is reached over ssh like every other host
+# (host.docker.internal, see ssh_config.example), so its ssh key must be in that machine's
+# authorized_keys too.
+services:
+  tmls-web:
+    image: tmls
+    build: ${TMLS_SRC:-..}            # the tmls checkout; set TMLS_SRC in .env when this file lives elsewhere
+    container_name: tmls-web
+    restart: unless-stopped
+    user: "1000:1000"                 # the owner of the mounted key and config files
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "192.168.1.10:8794:8794"      # the LAN address only; never 0.0.0.0
+    # --trust-proxy: the sidecar's network, so the login lockout counts per real client
+    command: ["--bind", "0.0.0.0", "--port", "8794", "--trust-proxy", "172.31.77.0/24"]
+    volumes:
+      - ./ssh:/home/tmls/.ssh:ro                                  # config + id_ed25519(.pub)
+      - ./state/known_hosts:/home/tmls/known_hosts               # must exist as a file first (outside the read-only .ssh)
+      - ${HOME}/.config/tmls:/home/tmls/.config/tmls:ro           # hosts, sketchpad
+      - ${HOME}/.config/sketchpad/auth.json:/home/tmls/.config/sketchpad/auth.json:ro
+    networks:
+      - tmls
+
+  # Joins your personal tailnet as node "tmls", serves HTTPS with a Tailscale certificate, and
+  # proxies to tmls-web. No auth key: the first start logs a login URL; open it while signed in
+  # to your tailnet. State in ./state keeps the node logged in across restarts.
+  tmls-tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tmls-tailscale
+    hostname: tmls
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TS_HOSTNAME=tmls
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+      - TS_USERSPACE=false
+    volumes:
+      - ./state/tailscale:/var/lib/tailscale
+      - ./tailscale-serve.json:/config/serve.json:ro
+    networks:
+      - tmls
+
+networks:
+  tmls:
+    ipam:
+      config:
+        - subnet: 172.31.77.0/24      # fixed so --trust-proxy above can name it

@@ -52,6 +52,31 @@ async def test_lockout_is_per_client_behind_a_trusted_proxy(aiohttp_client, tmp_
     assert await locked(client, "10.0.0.10", "10.0.0.9")  # ... also when the proxy adds its own line
 
 
+async def test_trust_proxy_takes_a_network(aiohttp_client, tmp_path, monkeypatch):
+    """The sidecar's address on its docker network changes; its subnet doesn't."""
+    monkeypatch.setattr(server, "FAIL_DELAY", 0)
+    write_creds(tmp_path / "auth.json")
+    app = server.make_app(tmp_path / "auth.json", [])
+    app["trusted_proxies"] = {"127.0.0.0/8"}  # the test client connects from 127.0.0.1
+    client = await aiohttp_client(app)
+    await fail_from(client, "10.0.0.9")
+    assert await locked(client, "10.0.0.9")
+    assert not await locked(client, "10.0.0.10")
+    other = server.make_app(tmp_path / "auth.json", [])
+    other["trusted_proxies"] = {"10.0.0.0/8", "not an address"}  # 127.0.0.1 isn't in it: header ignored
+    client = await aiohttp_client(other)
+    await fail_from(client, "10.0.0.9")
+    assert await locked(client, "10.0.0.10")  # every request counts as 127.0.0.1, whatever the header says
+
+
+def test_trust_proxy_argument_rejects_garbage():
+    import pytest
+    with pytest.raises(SystemExit):
+        server.parse_args(["--bind", "127.0.0.1", "--trust-proxy", "evil"])
+    assert server.parse_args(["--bind", "127.0.0.1", "--trust-proxy", "172.31.77.0/24",
+                              "--trust-proxy", "10.0.0.1"]).trust_proxy == ["172.31.77.0/24", "10.0.0.1/32"]
+
+
 async def test_forwarded_for_is_ignored_without_a_trusted_proxy(aiohttp_client, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "FAIL_DELAY", 0)
     write_creds(tmp_path / "auth.json")

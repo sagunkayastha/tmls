@@ -1,0 +1,21 @@
+# The container's ssh config: copy to ./ssh/config next to docker-compose.yml, next to the key
+# (./ssh/id_ed25519 and .pub). Every name in ~/.config/tmls/hosts needs a Host block here.
+# The file must be owned by uid 1000 and not writable by others, or ssh refuses it.
+
+# The machine running the container: reached through Docker's host gateway.
+Host box
+    HostName host.docker.internal
+
+Host laptop
+    HostName 192.168.1.20
+
+Host *
+    User me
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/known_hosts
+    # one connection per host, reused by every poll
+    ControlMaster auto
+    ControlPath /tmp/cm-%C
+    ControlPersist 60
+    ServerAliveInterval 15

@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+.superpowers
+.claude
+__pycache__
+*.pyc
+tests
+docs
+survey
+deploy
+PROGRESS.md
+PLAN.md

@@ -1,6 +1,7 @@
 """tmls in a browser: one big terminal, status rows, approve, sketch."""
 import argparse
 import asyncio
+import ipaddress
 import re
 import time
 from pathlib import Path
@@ -64,11 +65,26 @@ async def login_page(request):
     return web.FileResponse(STATIC / "login.html")
 
 
+def _trusted(remote, proxies):
+    """Is this peer one of the --trust-proxy addresses or networks?"""
+    try:
+        address = ipaddress.ip_address(remote)
+    except ValueError:  # no address: a unix socket, or a test transport
+        return False
+    for proxy in proxies:
+        try:
+            if address in ipaddress.ip_network(proxy, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_address(request):
     """Who is logging in. Behind a --trust-proxy address that is the proxy's X-Forwarded-For entry:
     the last one, since a proxy appends what it saw and anything before that came from the client."""
     forwarded = ", ".join(request.headers.getall("X-Forwarded-For", [])).split(",")[-1].strip()
-    if forwarded and request.remote in request.app["trusted_proxies"]:
+    if forwarded and _trusted(request.remote, request.app["trusted_proxies"]):
         return forwarded
     return request.remote
 
@@ -187,13 +203,24 @@ def make_app(auth_file, hosts_list):
     return app
 
 
-def main(argv=None):
+def _network(value):
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an address or network")
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(prog="tmls-web")
     parser.add_argument("--bind", action="append", required=True, help="address to listen on (repeatable)")
     parser.add_argument("--port", type=int, default=8794)
-    parser.add_argument("--trust-proxy", action="append", default=[], metavar="ADDR",
-                        help="a reverse proxy whose X-Forwarded-For names the client (repeatable)")
-    args = parser.parse_args(argv)
+    parser.add_argument("--trust-proxy", action="append", default=[], metavar="ADDR|CIDR", type=_network,
+                        help="a reverse proxy (or its network) whose X-Forwarded-For names the client (repeatable)")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
     app = make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config()))
     app["trusted_proxies"] = set(args.trust_proxy)
     app["sketchpad"] = hosts.read_config(hosts.SKETCHPAD)
