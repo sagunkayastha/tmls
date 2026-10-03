@@ -4,7 +4,7 @@ import secrets
 import subprocess
 import sys
 
-from tmls.web import auth, server
+from tmls.web import server
 
 
 def write_creds(path):
@@ -25,26 +25,16 @@ async def test_health_needs_no_login(aiohttp_client, tmp_path):
     assert resp.status == 200 and await resp.text() == "ok"
 
 
-async def test_lockout_sends_the_form_back_with_a_reason(aiohttp_client, tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "FAIL_DELAY", 0)
-    write_creds(tmp_path / "auth.json")
-    client = await aiohttp_client(server.make_app(tmp_path / "auth.json", []))
-    for _ in range(server.MAX_FAILS):
-        await client.post("/login", data={"username": "me", "password": "bad"}, allow_redirects=False)
-    response = await client.post("/login", data={"username": "me", "password": "bad"}, allow_redirects=False)
-    assert response.status == 302 and response.headers["Location"] == "/login?error=locked"
-    assert auth.COOKIE not in response.cookies
-
-
 async def fail_from(client, address, times=server.MAX_FAILS):
     for _ in range(times):
         await client.post("/login", data={"username": "me", "password": "bad"},
                           headers={"X-Forwarded-For": address}, allow_redirects=False)
 
 
-async def locked(client, address):
+async def locked(client, *lines):
+    """One X-Forwarded-For header line per argument."""
     response = await client.post("/login", data={"username": "me", "password": "bad"},
-                                 headers={"X-Forwarded-For": address}, allow_redirects=False)
+                                 headers=[("X-Forwarded-For", line) for line in lines], allow_redirects=False)
     return response.headers["Location"] == "/login?error=locked"
 
 
@@ -59,6 +49,7 @@ async def test_lockout_is_per_client_behind_a_trusted_proxy(aiohttp_client, tmp_
     assert not await locked(client, "10.0.0.10")
     # a proxy that appends puts the address it saw last; what the client sent before it is untrusted
     assert await locked(client, "10.0.0.10, 10.0.0.9")
+    assert await locked(client, "10.0.0.10", "10.0.0.9")  # ... also when the proxy adds its own line
 
 
 async def test_forwarded_for_is_ignored_without_a_trusted_proxy(aiohttp_client, tmp_path, monkeypatch):

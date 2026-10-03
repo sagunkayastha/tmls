@@ -62,8 +62,14 @@ def main():
                   page.inner_text('.row[data-key="box/alpha"] .line') == "build ok")
             page.evaluate("""window.__el = document.querySelector('.row[data-key="box/alpha"]')""")
             page.wait_for_timeout(1500)  # several fake poll ticks with nothing changing
+            page.evaluate("drawRows()")  # no rows message arrives meanwhile: redraw so the client is tested too
             check("an unchanged row keeps its element across poll ticks",
                   page.evaluate("""document.querySelector('.row[data-key="box/alpha"]') === window.__el"""))
+            page.evaluate("""events.onmessage({data: JSON.stringify({t: 'rows', gone: [],
+              set: [{...rows.get('box/alpha'), line: 'changed'}]})})""")
+            check("a changed row gets a new element showing the change",
+                  page.evaluate("""(() => { const el = document.querySelector('.row[data-key="box/alpha"]');
+                                    return el !== window.__el && el.querySelector('.line').textContent === 'changed'; })()"""))
             prompt_lines = page.evaluate("""[...document.querySelectorAll('.row[data-key="box/beta"] .prompt > div')]
                                             .map((d) => d.textContent)""")
             check(f"a waiting row shows its prompt line by line ({prompt_lines})", prompt_lines == ["Bash", "rm x"])

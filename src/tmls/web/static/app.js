@@ -109,7 +109,7 @@ function drawTitle() {
   $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
 }
 
-function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.key === current]); }
+function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.pane, row.key === current]); }
 
 function drawRows() {
   const box = $("rows");
@@ -182,7 +182,8 @@ function rowEl(row) {
       const b = document.createElement("button");
       b.className = yes ? "yes" : "no";
       b.textContent = label;
-      b.onclick = (e) => { e.stopPropagation(); answer(row, yes); };
+      // stopPropagation skips the outside-click handler, so close the alerts list here
+      b.onclick = (e) => { e.stopPropagation(); $("alerts").hidden = true; answer(row, yes); };
       actions.append(b);
     }
     el.append(actions);
@@ -342,7 +343,7 @@ function connectEvents() {
       const items = msg.items.filter((a) => a.key !== current);
       alerts.push(...items);
       alerts = alerts.slice(-50);
-      unreadCount += items.length;
+      unreadCount = Math.min(unreadCount + items.length, alerts.length);
       drawBell();
     }
   };

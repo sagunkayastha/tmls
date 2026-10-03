@@ -67,7 +67,7 @@ async def login_page(request):
 def client_address(request):
     """Who is logging in. Behind a --trust-proxy address that is the proxy's X-Forwarded-For entry:
     the last one, since a proxy appends what it saw and anything before that came from the client."""
-    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[-1].strip()
+    forwarded = ", ".join(request.headers.getall("X-Forwarded-For", [])).split(",")[-1].strip()
     if forwarded and request.remote in request.app["trusted_proxies"]:
         return forwarded
     return request.remote
