@@ -103,6 +103,36 @@ function armCtrl(on) {
   ctrlArmed = on;
   document.querySelector('#keys button[data-key="Ctrl"]').classList.toggle("on", on);
 }
+// A swipe over the terminal scrolls the shell: one wheel tick per line of movement. The
+// program gets wheel reports when it asked for the mouse (tmux `mouse on` scrolls its
+// history), the alternate screen gets arrow keys (what a wheel does), and the normal
+// screen is xterm's own scrollback, which xterm scrolls by itself.
+let touchY = null, touchX = 0;
+function wheelStep(up, x, y) {
+  if (term.modes.mouseTrackingMode !== "none") {
+    const r = $("term").querySelector(".xterm-screen").getBoundingClientRect();
+    const col = Math.max(0, Math.min(term.cols - 1, Math.floor((x - r.left) / (r.width / term.cols))));
+    const row = Math.max(0, Math.min(term.rows - 1, Math.floor((y - r.top) / (r.height / term.rows))));
+    sendKeys(`\x1b[<${up ? 64 : 65};${col + 1};${row + 1}M`);
+  } else if (term.buffer.active.type === "alternate") {
+    sendKeys(up ? "\x1b[A" : "\x1b[B");
+  }
+}
+$("term").addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; touchX = e.touches[0].clientX; }, { passive: true });
+$("term").addEventListener("touchend", () => { touchY = null; });
+$("term").addEventListener("touchmove", (e) => {
+  if (touchY === null) return;
+  e.preventDefault();
+  const screen = $("term").querySelector(".xterm-screen");
+  const line = (screen ? screen.getBoundingClientRect().height / term.rows : 0) || 16;
+  const y = e.touches[0].clientY;
+  while (Math.abs(y - touchY) >= line) {
+    const up = y > touchY;  // finger down: older content, like a wheel up
+    wheelStep(up, touchX, y);
+    touchY += up ? line : -line;
+  }
+}, { passive: false });
+
 for (const b of document.querySelectorAll("#keys button")) {
   b.onpointerdown = (e) => e.preventDefault();  // the terminal keeps the focus (and the keyboard)
   b.onclick = () => {

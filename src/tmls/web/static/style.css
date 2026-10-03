@@ -5,6 +5,8 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { height: 100dvh; }  /* phones: the visible height, under the browser bar and keyboard */
+html, body { overscroll-behavior: none; }  /* a swipe scrolls the shell, never pulls the page to refresh */
+#term { touch-action: none; }
 body { background: var(--bg); color: var(--text); font: 14px system-ui, sans-serif;
        display: flex; flex-direction: column; }
 button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);

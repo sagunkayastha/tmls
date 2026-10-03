@@ -59,6 +59,30 @@ def mobile_checks(browser, desktop):
     m.keyboard.type("c")
     sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
     check("phone: Ctrl then c sends ^C, and Ctrl disarms", sent[-1] == "\x03" and not m.evaluate("document.querySelector('#keys button[data-key=\"Ctrl\"]').classList.contains('on')"))
+    # a swipe over the terminal scrolls the shell, never the page: arrows on the alternate screen,
+    # wheel reports when the program asked for the mouse
+    swipe = """(dy) => { const el = document.querySelector('.xterm-screen'), r = el.getBoundingClientRect();
+      const t = (y) => new Touch({ identifier: 1, target: el, clientX: r.left + 40, clientY: y });
+      el.dispatchEvent(new TouchEvent('touchstart', { touches: [t(r.top + 100)], bubbles: true, cancelable: true }));
+      el.dispatchEvent(new TouchEvent('touchmove', { touches: [t(r.top + 100 + dy)], bubbles: true, cancelable: true }));
+      el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true })); }"""
+    # ^C above ended the fake session's cat: attach again, and wrap the new socket
+    m.evaluate("select('box/alpha')")
+    m.wait_for_function("sock && sock.readyState === 1 && document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+    m.evaluate("window.__sent = []; const real2 = sock.send.bind(sock); sock.send = (d) => { window.__sent.push(d); real2(d); }; 0")
+    m.evaluate("window.__sent = []; term.write('\\x1b[?1049h')")
+    m.wait_for_function("term.buffer.active.type === 'alternate'")
+    line = m.evaluate("document.querySelector('.xterm-screen').getBoundingClientRect().height / term.rows")
+    m.evaluate(swipe, 3 * line + 2)  # finger down: older content, like a wheel up
+    sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
+    check("phone: swiping down over the alternate screen sends arrow-up keys", sent == ["\x1b[A"] * 3)
+    check("phone: the page itself can't be pulled to refresh", m.evaluate("getComputedStyle(document.body).overscrollBehaviorY") == "none")
+    m.evaluate("window.__sent = []; term.write('\\x1b[?1000h\\x1b[?1006h')")
+    m.wait_for_function("term.modes.mouseTrackingMode !== 'none'")
+    m.evaluate(swipe, -(2 * line + 2))  # finger up: newer content, wheel down
+    sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
+    check("phone: with the mouse on, a swipe sends wheel reports to the program", len(sent) == 2 and all(d.startswith("\x1b[<65;") and d.endswith("M") for d in sent))
+    m.evaluate("term.write('\\x1b[?1000l\\x1b[?1049l')")
     ctx.close()
 
 
