@@ -123,6 +123,21 @@ async def test_form_offers_named_agent_presets(tmp_path, monkeypatch):
     assert made == [("archbox", "home", "~", ("claude", "--model", "opus", "--permission-mode", "plan"))]
 
 
+async def test_the_first_preset_is_the_default_start(tmp_path, monkeypatch):
+    # e.g. {"cdsp": ["claude", "--dangerously-skip-permissions"]}: the sessions you usually start
+    monkeypatch.setattr(create, "PRESETS", tmp_path / "presets.json")
+    create.PRESETS.write_text(json.dumps({"cdsp": ["claude", "--dangerously-skip-permissions"]}))
+    made = []
+    async def fake(host, name, folder, start):
+        made.append((host, name, folder, start))
+    monkeypatch.setattr(create, "create", fake)
+    app = Host(hosts=["archbox"], host="archbox")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#create")
+        await pilot.pause(.2)
+    assert made == [("archbox", "home", "~", ("claude", "--dangerously-skip-permissions"))]
+
+
 async def test_form_follows_repo_name_until_name_is_edited(monkeypatch):
     async def suggest(host, folder):
         return "ph_forecast" if folder.endswith("/src") else create.default_name(folder)

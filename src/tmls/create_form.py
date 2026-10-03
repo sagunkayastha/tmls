@@ -45,11 +45,12 @@ class NewSession(ModalScreen):
                 yield Input(self._auto_name, id="name")
             with Horizontal():
                 yield Label("Start")
+                # The default: the first named preset if there is one (what you usually start), else claude.
                 with RadioSet(id="start"):
                     yield RadioButton("shell", id="shell")
-                    yield RadioButton("claude", value=True, id="claude")
+                    yield RadioButton("claude", value=not self.presets, id="claude")
                     for i, name in enumerate(self.presets):
-                        yield RadioButton(name, id=f"preset-{i}")
+                        yield RadioButton(name, value=i == 0, id=f"preset-{i}")
             yield Static("", id="error", markup=False)
             with Horizontal(id="buttons"):
                 yield Button("Cancel", id="cancel")

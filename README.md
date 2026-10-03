@@ -66,12 +66,13 @@ command.
   folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
   it's plain `claude`.
 - **New session**: `+` on a host line opens a small form (host, folder, name, start
-  `claude` (the default) or a shell). The session is created with `tmux new-session` in that folder and
+  a shell, `claude`, or a named agent command). The session is created with `tmux new-session` in that folder and
   opens in a tab. Name follows the git repository name when Folder is inside one (or
   the folder name otherwise); editing Name yourself keeps your choice. Optional named
   agent commands appear below `claude` in Start. Put them
   in `~/.config/tmls/agent-presets.json` as argv lists, for example
   `{"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"]}`.
+  The first of them is the default Start; with none, `claude` is.
   Also in the browser: `+` on a host header.
 - **Rename or kill**: click `⋯` at the end of a tmux session row. Rename changes the
   session name and reopens its tab under the new name. Kill always asks you to confirm,

@@ -246,7 +246,7 @@ def main():
             starts = page.evaluate("[...document.querySelectorAll('#new-start label')].map((l) => l.textContent.trim())")
             check(f"Start offers shell, claude and the presets ({starts})", starts == ["shell", "claude", "Opus plan"])
             checked = page.evaluate("document.querySelector('#new-start input:checked').value")
-            check(f"claude is the default Start ({checked})", checked == "claude")
+            check(f"the first preset is the default Start ({checked})", checked == "Opus plan")
             page.fill("#new-name", "alpha")
             page.click("#new-create")
             page.wait_for_selector("#new-error:has-text('already exists')")

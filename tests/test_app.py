@@ -838,8 +838,9 @@ async def test_a_redraw_during_the_local_lookup_does_not_crash(clock_hosts, monk
         assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
 
 
-async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hosts, monkeypatch):
+async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hosts, monkeypatch, tmp_path):
     from tmls import create, create_form
+    monkeypatch.setattr(create, "PRESETS", tmp_path / "none.json")  # not this machine's presets
     made = []
 
     async def fake(host, name, folder, start):
