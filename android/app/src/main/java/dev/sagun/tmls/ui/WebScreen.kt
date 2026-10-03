@@ -206,6 +206,7 @@ fun WebScreen(
                             data == "ime:terminal" -> { terminalInput(true); return@addWebMessageListener }
                             data == "ime:text" -> { terminalInput(false); return@addWebMessageListener }
                             data == "ime:none" -> { keyboardAway(); return@addWebMessageListener }
+                            data == "ime:toggle" -> { toggleKeyboard(); return@addWebMessageListener }
                             // The key bar's Paste: the phone's clipboard, handed to the terminal.
                             data == "paste" -> {
                                 val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }

@@ -63,6 +63,10 @@ private sealed interface Screen {
 
 private val Bg = Color(BG)
 
+private const val REACH_TRIES = 3
+private const val REACH_PAUSE_MS = 1_500L
+private const val UNREACHABLE_RETRY_MS = 5_000L
+
 /** Back after this long away: the phone may have moved between home and away, so ask again. */
 private const val RECHECK_AFTER_MS = 60_000L
 
@@ -87,7 +91,21 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
             return@LaunchedEffect
         }
         if (screen !is Screen.Web) screen = Screen.Loading
-        show(Reach.first(urls, client), urls)
+        // A phone waking up needs a moment for Wi-Fi: a few quiet tries before saying so.
+        var url: String? = null
+        for (i in 0 until REACH_TRIES) {
+            url = Reach.first(urls, client)
+            if (url != null) break
+            if (i < REACH_TRIES - 1) delay(REACH_PAUSE_MS)
+        }
+        show(url, urls)
+    }
+
+    // While "Can't reach tmls" shows, keep trying by itself; Retry is there for the impatient.
+    LaunchedEffect(screen) {
+        if (screen !is Screen.Unreachable) return@LaunchedEffect
+        delay(UNREACHABLE_RETRY_MS)
+        attempt++
     }
 
     LifecycleStartEffect(Unit) {

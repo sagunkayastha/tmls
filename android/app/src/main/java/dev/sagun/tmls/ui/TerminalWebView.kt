@@ -2,6 +2,7 @@ package dev.sagun.tmls.ui
 
 import android.content.Context
 import android.text.InputType
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
@@ -9,6 +10,8 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.webkit.WebView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 
 /**
@@ -26,20 +29,33 @@ class TerminalWebView(context: Context) : WebView(context) {
         evaluateJavascript("typeof tmlsType === 'function' && tmlsType(${JSONObject.quote(text)})", null)
     }
 
-    /** Nothing to type into (e.g. Copy's view): the keyboard goes away. */
+    /** Nothing to type into (the list, Copy's view): the keyboard goes away, focus stays put. */
     fun keyboardAway() {
-        terminalInput(false)
         context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(windowToken, 0)
+    }
+
+    /** The key bar's ⌨: the keyboard up for the terminal, or away. */
+    fun toggleKeyboard() {
+        val shown = ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        Log.i("tmls", "keyboard toggle: shown=$shown")
+        if (shown) keyboardAway() else terminalInput(true)
     }
 
     /** The terminal focused: keyboard to [keys]; anything else: back to the page. */
     fun terminalInput(on: Boolean) {
         val imm = context.getSystemService(InputMethodManager::class.java) ?: return
         if (on) {
+            // A touch on the page (scrolling, the key bar) mustn't take focus back from [keys]:
+            // the page would see its terminal focused again and bring the keyboard back.
+            isFocusableInTouchMode = false
             keys.requestFocus()
             imm.showSoftInput(keys, 0)
-        } else if (keys.hasFocus()) {
-            requestFocus()
+        } else {
+            isFocusableInTouchMode = true
+            if (keys.hasFocus()) {
+                requestFocus()
+                imm.showSoftInput(this, 0)  // the field the page focused
+            }
         }
     }
 }

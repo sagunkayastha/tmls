@@ -61,6 +61,21 @@ def app_checks(browser, desktop):
     a.wait_for_function("(window.__ime || []).at(-1) === 'ime:terminal'", timeout=5000)
     check("the terminal focused: the app is told to type plain characters (no doubled words)", True)
     a.evaluate("window.__sent = []; const real = sock.send.bind(sock); sock.send = (d) => { window.__sent.push(d); real(d); }; tmlsType('hi')")
+    touch = """(dy) => { const el = document.querySelector('.xterm-screen'), r = el.getBoundingClientRect();
+      const t = (y) => new Touch({ identifier: 1, target: el, clientX: r.left + 40, clientY: y });
+      el.dispatchEvent(new TouchEvent('touchstart', { touches: [t(r.top + 100)], bubbles: true, cancelable: true }));
+      if (dy) el.dispatchEvent(new TouchEvent('touchmove', { touches: [t(r.top + 100 + dy)], bubbles: true, cancelable: true }));
+      el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true })); }"""
+    a.evaluate("window.__ime = []")
+    a.evaluate(touch, 120)
+    check("scrolling the terminal doesn't bring the keyboard up", "ime:terminal" not in a.evaluate("window.__ime"))
+    a.evaluate(touch, 0)
+    check("a tap on the terminal does", a.evaluate("window.__ime.at(-1)") == "ime:terminal")
+    a.click('#keys button[data-key="Keyboard"]')
+    check("the key bar's keyboard button asks the app to show or hide it", a.evaluate("window.__ime.at(-1)") == "ime:toggle")
+    a.evaluate("showSketch()")
+    check("Sketch hands the keyboard back to the page (its fields type normally)", a.evaluate("window.__ime.at(-1)") == "ime:text")
+    a.evaluate("showTerminal()")
     check("the app's own input reaches the terminal (tmlsType)",
           a.evaluate("window.__sent.map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)") == ["hi"])
     a.evaluate("window.__sent = []")
@@ -82,6 +97,10 @@ def app_checks(browser, desktop):
     check("Back closes the copy view first", a.evaluate("tmlsBack()") is True and a.is_hidden("#copyview"))
     a.evaluate("document.querySelector('.host .add').click()")
     a.wait_for_selector("#new:not([hidden])")
+    a.evaluate("window.__ime = []")
+    a.dispatch_event("#new-folder", "pointerdown")
+    check("touching a text field tells the app at once (its focus event waits for the app)",
+          a.evaluate("window.__ime.at(-1)") == "ime:text")
     a.focus("#new-folder")
     a.wait_for_function("(window.__ime || []).at(-1) === 'ime:text'", timeout=5000)
     check("a normal field focused: suggestions come back", True)

@@ -125,8 +125,25 @@ if (window.tmlsApp) {
   };
   document.addEventListener("focusin", imeFor);
   document.addEventListener("focusout", () => setTimeout(imeFor, 0));
-  // A tap on the terminal brings the keyboard back even when the terminal already had focus.
-  $("term").addEventListener("touchend", () => window.tmlsApp.postMessage("ime:terminal"));
+  // A touch on a text field (the New session form, the login): normal typing at once. Its focus
+  // event comes too late: the page has no focus while the app's terminal input has it.
+  document.addEventListener("pointerdown", (e) => {
+    const field = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+    if (field && !field.classList.contains("xterm-helper-textarea")) window.tmlsApp.postMessage("ime:text");
+  }, true);
+  // A tap on the terminal brings the keyboard back even when the terminal already had focus; a
+  // swipe (scrolling) never does.
+  let tapStart = null;
+  $("term").addEventListener("touchstart", (e) => {
+    tapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), moved: false };
+  }, { passive: true });
+  $("term").addEventListener("touchmove", (e) => {
+    if (tapStart && Math.hypot(e.touches[0].clientX - tapStart.x, e.touches[0].clientY - tapStart.y) > 10) tapStart.moved = true;
+  }, { passive: true });
+  $("term").addEventListener("touchend", () => {
+    if (tapStart && !tapStart.moved && Date.now() - tapStart.t < 500) window.tmlsApp.postMessage("ime:terminal");
+    tapStart = null;
+  });
 }
 // The Android app calls this when it goes to the background or comes back (its WebView doesn't
 // mark the page hidden by itself).
@@ -255,6 +272,7 @@ for (const b of document.querySelectorAll("#keys button")) {
   b.onpointerdown = (e) => e.preventDefault();  // the terminal keeps the focus (and the keyboard)
   b.onclick = () => {
     const key = b.dataset.key;
+    if (key === "Keyboard") { if (window.tmlsApp) window.tmlsApp.postMessage("ime:toggle"); else term.focus(); return; }
     if (key === "Paste") { pasteClipboard(); return; }
     if (key === "Copy") { openCopy(); return; }
     if (key === "Ctrl") armCtrl(!ctrlArmed);
@@ -674,6 +692,7 @@ function showSketch() {
   $("tab-sketch").classList.add("on");
   $("tab-terminal").classList.remove("on");
   document.body.classList.add("sketching");  // the phone's key bar is for the terminal
+  if (window.tmlsApp) window.tmlsApp.postMessage("ime:text");  // sketchpad's fields type normally
 }
 $("tab-terminal").onclick = showTerminal;
 $("tab-sketch").onclick = showSketch;
