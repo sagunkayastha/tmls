@@ -520,7 +520,8 @@ class Tmls(App):
     async def _show_approvals(self, panel):
         """Sessions at a permission prompt right now, with the live request and Yes/No."""
         asking = [s for _, _, ss in self._results for s in ss
-                  if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"]
+                  if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"
+                  and s.host != hosts.KITTY]
         shown = await asyncio.gather(*(approve.current(s.host, s.name) for s in asking))
         boxes = [Approval(s, req) for s, req in zip(asking, shown) if req]
         if boxes and panel.display:

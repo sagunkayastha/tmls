@@ -1074,6 +1074,33 @@ async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(
         assert await wait_for(pilot, lambda: not app.query(tmls_app.Approval))
 
 
+async def test_alerts_panel_does_not_read_permission_prompts_of_kitty_only_sessions(clock_hosts, monkeypatch):
+    from tmls import approve
+    asked = []
+    win = local.Window("sock", 4, False)
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590, waiting="permission prompt")]
+
+    async def kitty():
+        return [hosts.Session(hosts.KITTY, "notes", 1, False, 0, 3600, "waiting", 3590, win,
+                              waiting="permission prompt")]
+
+    async def current(host, name):
+        asked.append(host)
+        return ["Bash command", "touch /tmp/x"]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(local, "list_sessions", kitty)
+    monkeypatch.setattr(approve, "current", current)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_for(pilot, lambda: len(app.query(tmls_app.SessionRow)) == 2)
+        assert rows(app)["notes"].endswith("?")
+        await pilot.click("#alerts-button")
+        assert await wait_for(pilot, lambda: len(app.query(tmls_app.Approval)) == 1)
+        assert asked == ["box"]  # kitty has no tmux pane to read
+
+
 async def test_permission_prompt_text_is_shown_verbatim_not_as_markup():
     from textual.app import App
     shown = ["Bash command", "sed 's/[/]/_/g' f", "src/[id]/page.tsx", "[b]not bold[/b]"]
