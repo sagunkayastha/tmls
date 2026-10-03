@@ -11,7 +11,8 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 
 const rows = new Map();        // key -> row from the server
 let current = null;            // selected key
-let unread = [];               // alerts not yet looked at
+let alerts = [];               // newest last, kept after a look
+let unreadCount = 0;
 let fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Number(store.get("tmls-font")) || 14));
 
 // ---- terminal ----
@@ -196,28 +197,32 @@ function toast(text) {
 }
 
 // ---- alerts ----
-function drawBell() { $("bell-count").textContent = unread.length ? String(unread.length) : ""; }
+function drawBell() { $("bell-count").textContent = unreadCount ? String(unreadCount) : ""; }
 $("bell").onclick = () => {
   const box = $("alerts");
   if (!box.hidden) { box.hidden = true; return; }
   box.replaceChildren();
-  if (!unread.length) {
+  if (!alerts.length) {
     const none = document.createElement("div");
     none.className = "none";
-    none.textContent = "No new alerts";
+    none.textContent = "No alerts yet";
     box.append(none);
   }
-  for (const a of unread.slice().reverse()) {
+  for (const a of alerts.slice().reverse()) {
     const el = document.createElement("div");
     el.className = "alert";
     el.textContent = `${MARK[a.mark]} ${a.name} · ${rows.get(a.key)?.label || a.key.split("/")[0]}`;
     el.onclick = () => { box.hidden = true; select(a.key); };
     box.append(el);
   }
-  unread = [];
+  unreadCount = 0;
   drawBell();
   box.hidden = false;
 };
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") $("alerts").hidden = true; });
+document.addEventListener("click", (e) => {
+  if (!$("alerts").hidden && !e.target.closest("#alerts, #bell")) $("alerts").hidden = true;
+});
 
 // ---- live rows ----
 let events = null;
@@ -238,7 +243,10 @@ function connectEvents() {
       drawRows();
       drawTitle();
     } else if (msg.t === "alerts") {
-      unread.push(...msg.items.filter((a) => a.key !== current));
+      const items = msg.items.filter((a) => a.key !== current);
+      alerts.push(...items);
+      alerts = alerts.slice(-50);
+      unreadCount += items.length;
       drawBell();
     }
   };

@@ -115,6 +115,21 @@ def main():
             page.wait_for_selector("#rows:not(.stale)", timeout=10000)
             check("the feed comes back by itself", not page.is_visible("#feed"))
 
+            page.evaluate("""events.onmessage({data: JSON.stringify({t: 'alerts', items: [
+              {key: 'box/gamma', name: 'gamma', mark: 'done'}, {key: 'box/delta', name: 'delta', mark: 'failed'}]})})""")
+            check("new alerts are counted on the bell", page.inner_text("#bell-count") == "2")
+            page.click("#bell")
+            check("the bell lists the alerts", page.locator("#alerts .alert").count() == 2)
+            page.click("#bell")
+            page.click("#bell")
+            check("alerts are still listed after a look, and none are unread",
+                  page.locator("#alerts .alert").count() == 2 and page.inner_text("#bell-count") == "")
+            page.keyboard.press("Escape")
+            check("Esc closes the alert list", page.is_hidden("#alerts"))
+            page.click("#bell")
+            page.click("#title")
+            check("a click outside closes the alert list", page.is_hidden("#alerts"))
+
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]
             page.goto(BASE + "/")
