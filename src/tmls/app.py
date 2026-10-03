@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
-from tmls import approve, create, host_colors, hosts, local, manage, notifications, prompts, viewer
+from tmls import approve, create_form, host_colors, hosts, local, manage, notifications, prompts, viewer
 from tmls.term import Terminal
 from tmls.viewer import FileViewer
 
@@ -133,7 +133,7 @@ class AddSession(Static):
 
     def on_click(self):
         names = [h for h, online, _ in self.app._results if online and h != hosts.KITTY]
-        self.app.push_screen(create.NewSession(names, self.host), self.app.created)
+        self.app.push_screen(create_form.NewSession(names, self.host), self.app.created)
 
 
 class PromptLine(Static):

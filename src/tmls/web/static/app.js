@@ -11,6 +11,7 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 
 const rows = new Map();        // key -> row from the server
 let current = null;            // selected key
+let newWait = null;            // waits for a just-created session's row; any select() ends it
 let alerts = [];               // newest last, kept after a look
 let unreadCount = 0;
 let fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Number(store.get("tmls-font")) || 14));
@@ -70,6 +71,7 @@ function attach(key) {
 
 function select(key) {
   if (!rows.has(key)) return;
+  clearInterval(newWait);  // a manual pick wins over the row we were waiting for
   current = key;
   store.set("tmls-current", key);
   $("empty").hidden = true;
@@ -122,6 +124,14 @@ function drawRows() {
     const head = document.createElement("div");
     head.className = "host" + (list.every((r) => !r.online) ? " offline" : "");
     head.textContent = list[0].label || host;  // "local" is the machine tmls runs on
+    if (list.some((r) => r.online)) {
+      const add = document.createElement("button");
+      add.className = "add";
+      add.title = "New session";
+      add.textContent = "+";
+      add.onclick = (e) => { e.stopPropagation(); openNew(host, list[0].label || host); };
+      head.append(add);
+    }
     children.push(head);
     for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) {
       const sig = rowSig(row), prev = old.get(row.key);
@@ -195,6 +205,92 @@ function toast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { $("toast").hidden = true; }, 4000);
 }
+
+// ---- new session ----
+let presets = [];              // agent preset names, from /api/config
+let newHost = null, autoName = "", nameTimer = null;
+let newOpened = 0;             // counts openNew calls, so a late /api/create answer can't reach a newer form
+// like create.default_name: the folder's last part, "home" for ~
+const defaultName = (folder) => folder.replace(/^[~/]+|[~/]+$/g, "") ? folder.replace(/\/+$/, "").split("/").pop() : "home";
+const postJson = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+function openNew(host, label) {
+  newHost = host;
+  newOpened += 1;
+  clearTimeout(nameTimer);
+  $("alerts").hidden = true;  // the +'s stopPropagation keeps the outside-click handler from closing it
+  $("new-create").disabled = false;
+  $("new-title").textContent = `New session on ${label}`;
+  $("new-folder").value = "~";
+  $("new-name").value = autoName = "home";
+  $("new-error").textContent = "";
+  const box = $("new-start");
+  box.replaceChildren();
+  ["shell", "claude", ...presets].forEach((start, i) => {
+    const option = document.createElement("label");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "new-start";
+    radio.value = start;
+    radio.checked = i === 0;
+    const text = document.createElement("span");
+    text.textContent = start;
+    option.append(radio, text);
+    box.append(option);
+  });
+  $("new").hidden = false;
+  $("new-folder").focus();
+}
+
+function closeNew() {
+  $("new").hidden = true;
+  clearTimeout(nameTimer);
+  if (current && $("sketch").hidden) term.focus();
+}
+
+$("new-folder").oninput = () => {
+  const folder = $("new-folder").value.trim();
+  if ($("new-name").value === autoName) $("new-name").value = autoName = defaultName(folder);  // not edited yet: follow
+  clearTimeout(nameTimer);
+  nameTimer = setTimeout(() => suggestName(newHost, folder || "~"), 250);
+};
+
+async function suggestName(host, folder) {  // the host's git repo name, when Folder is inside one
+  const r = await postJson("/api/suggest-name", { host, folder }).catch(() => null);
+  if (!r || !r.ok) return;
+  const { name } = await r.json();
+  if ($("new").hidden || host !== newHost || ($("new-folder").value.trim() || "~") !== folder) return;
+  if ($("new-name").value === autoName) $("new-name").value = autoName = name;
+}
+
+$("new-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const host = newHost, name = $("new-name").value.trim(), opened = newOpened;
+  const start = $("new-start").querySelector("input:checked")?.value || "shell";
+  $("new-error").textContent = "";
+  $("new-create").disabled = true;
+  let error = null;
+  try {
+    const r = await postJson("/api/create", { host, folder: $("new-folder").value, name, start });
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) error = (await r.json().catch(() => ({}))).error || `create failed (${r.status})`;
+  } catch {
+    error = "couldn't reach tmls";
+  }
+  if (opened !== newOpened || $("new").hidden) return;  // closed or reopened meanwhile: not this form's answer
+  $("new-create").disabled = false;
+  if (error) { $("new-error").textContent = error; return; }
+  closeNew();
+  const key = `${host}/${name}`;
+  let tries = 0;
+  clearInterval(newWait);
+  newWait = setInterval(() => {  // the row arrives with the next poll
+    if (rows.has(key)) select(key);
+    else if (++tries >= 50) clearInterval(newWait);
+  }, 300);
+};
+$("new-cancel").onclick = closeNew;
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("new").hidden) closeNew(); });
 
 // ---- alerts ----
 function drawBell() { $("bell-count").textContent = unreadCount ? String(unreadCount) : ""; }
@@ -284,6 +380,7 @@ function showTerminal() {
 let sketchUrls = [];
 fetch("/api/config").then((r) => r.json()).then((c) => {
   sketchUrls = c.sketchpad || [];
+  presets = c.presets || [];
   if (!sketchUrls.length) { $("tab-sketch").disabled = true; $("tab-sketch").title = "Add sketchpad's URL to ~/.config/tmls/sketchpad"; }
 }).catch(() => {});
 
