@@ -251,6 +251,7 @@ class Tmls(App):
         self.current = None      # slug of the tab being shown
         self._listing = None
         self._results = []       # [(host, online, sessions)] from the last poll
+        self._refreshing = False  # a poll is in flight
         self.started = {}        # host -> host clock at first poll, minus QUIET: older output isn't news
         self.seen = {}           # slug -> host clock when its tab was last on screen
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
@@ -289,20 +290,26 @@ class Tmls(App):
         self.set_interval(REFRESH_SECONDS, self.refresh_sessions)
 
     def refresh_sessions(self):
-        self.run_worker(self._refresh(), exclusive=True, group="refresh")
+        if self._refreshing:
+            return  # a slow host is still answering; cancelling would throw away every host's result
+        self._refreshing = True
+        self.run_worker(self._refresh(), group="refresh")
 
     async def _refresh(self):
-        names = hosts.hosts(self.remotes)
-        results = await asyncio.gather(*(hosts.list_host(h) for h in names))
-        found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
-        kitty = await local.list_sessions()
-        if kitty:
-            found.append((hosts.KITTY, True, kitty))
-        for h, _, ss in found:
-            if ss:
-                self.started.setdefault(h, ss[0].now - hosts.QUIET)
-        self._results = found  # only now: a redraw while awaiting must not see hosts without `started`
-        await self._render_rows(bool(self._results))
+        try:
+            names = hosts.hosts(self.remotes)
+            results = await asyncio.gather(*(hosts.list_host(h) for h in names))
+            found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
+            kitty = await local.list_sessions()
+            if kitty:
+                found.append((hosts.KITTY, True, kitty))
+            for h, _, ss in found:
+                if ss:
+                    self.started.setdefault(h, ss[0].now - hosts.QUIET)
+            self._results = found  # only now: a redraw while awaiting must not see hosts without `started`
+            await self._render_rows(bool(self._results))
+        finally:
+            self._refreshing = False
 
     def _mark(self, s):
         key = slug(s.host, s.name)

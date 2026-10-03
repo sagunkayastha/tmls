@@ -443,6 +443,24 @@ async def test_no_hosts_explains_why(monkeypatch):
         assert "no hosts" in msg and str(hosts.CONFIG) in msg
 
 
+async def test_a_host_slower_than_the_refresh_interval_does_not_cancel_every_refresh(monkeypatch):
+    import asyncio
+
+    async def list_host(host):
+        if host == "slow":
+            await asyncio.sleep(0.7)
+        return True, [hosts.Session(host, "alpha", 1, False, 0, 0)]
+    monkeypatch.setattr(hosts, "hosts", lambda remotes: ["slow", "fast"])
+    monkeypatch.setattr(hosts, "label", lambda h: h)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(tmls_app, "REFRESH_SECONDS", 0.2)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause(1.5)
+        assert "fast" in [h for h, _, _ in app._results]
+        assert app.query(tmls_app.SessionRow)
+
+
 @pytest.fixture
 def clock_hosts(monkeypatch):
     # name -> Claude status and when it last changed (host clock)
