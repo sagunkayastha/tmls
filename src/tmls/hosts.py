@@ -50,6 +50,7 @@ class Session:
     title: str | None = None    # Claude's name for the conversation (/rename, or one it made up)
     model: str | None = None    # model of Claude's newest reply
     context: int = 0            # tokens in context at Claude's newest reply
+    pane: str | None = None     # Claude's own tmux pane ("%7"); after a split it needn't be the active one
 
 
 def parse(host, out):
@@ -100,6 +101,8 @@ def parse(host, out):
             s.claude, s.claude_since = status, since
             s.waiting, s.failed, s.title = c.get("waitingFor"), bool(c.get("failed")), c.get("name")
             s.model, s.context = c.get("model"), c.get("context", 0)
+            m = re.search(r"%\d+$", c.get("tmux") or "")
+            s.pane = m.group(0) if m else None
     return list(sessions.values())
 
 

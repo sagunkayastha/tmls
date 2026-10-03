@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import time
 
@@ -50,3 +51,26 @@ async def test_send_pastes_into_the_session_and_presses_enter(private_tmux):
 
 async def test_send_to_a_missing_session_says_so(private_tmux):
     assert await prompts.send(hosts.LOCAL, "nope", "hi")
+
+
+@pytest.fixture
+def scripts(monkeypatch):
+    """The shell scripts prompts._run is asked to run, instead of running them."""
+    got = []
+
+    async def fake_run(argv, stdin=None):
+        got.append(argv[-1])
+        return 0, ""
+    monkeypatch.setattr(prompts, "_run", fake_run)
+    return got
+
+
+def targets(script):
+    return re.findall(r"-t (\S+)", script)
+
+
+async def test_send_targets_claudes_pane_when_given(scripts):
+    assert await prompts.send("box", "work", "hi", pane="%7") is None
+    assert await prompts.send("box", "work", "hi") is None
+    assert targets(scripts[0]) == ["%7", "%7"]
+    assert targets(scripts[1]) == ["=work:", "=work:"]

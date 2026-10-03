@@ -151,6 +151,15 @@ def test_half_written_status_file_keeps_its_failed_and_usage_lines():
     assert (a.failed, a.model, a.context) == (False, None, 0)
 
 
+def test_parse_records_claudes_own_pane():
+    out = ("1000\nBudget:1:0:990\nnone:1:0:990\nodd:1:0:990\nplain:1:0:10\n---\n"
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"Budget:@7.%7"}\n'
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"none"}\n'
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"odd:@1.1"}\n')
+    got = {s.name: s.pane for s in hosts.parse("nas", out)}
+    assert got == {"Budget": "%7", "none": None, "odd": None, "plain": None}
+
+
 def test_blank_line_after_a_status_file_keeps_its_failed_line():
     out = '1000\nA:1:0:990\n---\n{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n\nfailed\n'
     assert hosts.parse("nas", out)[0].failed is True
