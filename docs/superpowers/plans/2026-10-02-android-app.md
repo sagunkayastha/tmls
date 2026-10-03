@@ -48,6 +48,17 @@ Written but NOT yet verified:
 
 ## Steps (verify each before the next; test-first for code)
 
+0. **First, a small TUI fix the user asked for (2026-10-02, after the handoff):** the `+` New session
+   form in the terminal UI starts a *shell* by default; the user wants **`claude` as the default Start**
+   (their sessions are Claude sessions). In `src/tmls/create_form.py` the `RadioSet` has
+   `RadioButton("shell", value=True, id="shell")` — move `value=True` to the `claude` button, and update the
+   README **New session** bullet ("start a shell or `claude`" → say claude is the default). Make the web
+   modal match: in `src/tmls/web/static/app.js` `openNew()` resets the Start radios with `shell` checked —
+   check `claude` instead (and the e2e checks that read the Start radios may need the new default; run
+   `tests/test_create.py`, `tests/test_app.py -k plus`, and the e2e). Commit on `main` (not the android branch),
+   push, `cd ~/stacks/tmls && docker compose up -d --build`, and tell the user. Then rebase/merge `main`
+   into `android` and carry on with step 1.
+
 1. **Server + web** (`main`-worthy, independent of the app): fix the test collection, make the 5 tests pass,
    add the e2e check for the header button, run `python3 tests/web/e2e_web.py` (48 checks today) — note
    on archbox Playwright may not be installed for `python3`; `pip install --user playwright && playwright install chrome`
