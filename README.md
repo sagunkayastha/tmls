@@ -203,7 +203,7 @@ or goes from a session to the list, and the terminal draws with WebGL.
   `https://tmls.example.com`): `make.sh` builds them in. Without it, first run asks for them. The
   app uses whichever answers, then shows the site's login once.
 - **Update:** each new `make.sh` publishes a higher version. The app checks on start and every 6
-  hours, and ⟳ in the header checks now; a banner offers it, the download is checked against
+  hours, and **Check for updates** at the end of the session list (beside the version) checks now; a banner offers it, the download is checked against
   `latest.json`'s SHA-256, and Android asks you to confirm.
 
 ## Sketchpad button
