@@ -143,7 +143,8 @@ Listing uses `ssh -o BatchMode=yes`, so a host that needs a password shows as of
 `tmls-web --bind ADDR [--port 8794] [--trust-proxy ADDR]` serves the browser version;
 `--trust-proxy` names a reverse proxy whose `X-Forwarded-For` is believed for the login lockout.
 `--bind` and `--trust-proxy` can be repeated, and `--trust-proxy` also takes a network
-(`172.31.77.0/24`).
+(`172.31.77.0/24`). On a phone the session list slides in from `☰`, the terminal takes the
+whole width, and a bar under it supplies Esc, Tab, Ctrl (arms the next key) and the arrows.
 
 ## Docker
 
