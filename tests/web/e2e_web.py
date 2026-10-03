@@ -103,6 +103,17 @@ def mobile_checks(browser, desktop):
     sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
     check("phone: with the mouse on, a swipe sends wheel reports to the program", len(sent) == 2 and all(d.startswith("\x1b[<65;") and d.endswith("M") for d in sent))
     m.evaluate("term.write('\\x1b[?1000l\\x1b[?1049l')")
+    m.evaluate("window.__sent = []")
+    for h in range(844, 504, -34):  # a keyboard sliding in shrinks the page every frame
+        m.set_viewport_size({"width": 390, "height": h})
+        m.wait_for_timeout(16)
+    m.wait_for_timeout(500)
+    sizes = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'size')")
+    check(f"phone: a keyboard animation sends the server one size, once it settles ({sizes})",
+          len(sizes) == 1 and sizes[0]["rows"] == m.evaluate("term.rows"))
+    check("phone: Back on a session goes back to the list", m.evaluate("tmlsBack()") is True
+          and m.evaluate("document.getElementById('rows').classList.contains('open')"))
+    check("phone: Back on the list leaves the app", m.evaluate("tmlsBack()") is False)
     ctx.close()
 
 

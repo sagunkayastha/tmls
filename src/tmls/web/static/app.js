@@ -28,7 +28,18 @@ function sendSize() {
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ t: "size", cols: term.cols, rows: term.rows }));
 }
 function refit() { if (!$("term").hidden) { fit.fit(); sendSize(); } }
-new ResizeObserver(refit).observe($("pane"));
+// A phone keyboard sliding in resizes the pane every frame: fit at most once a frame, and tell the
+// server (which resizes tmux, redrawing the whole window) only once the size has settled.
+let fitFrame = 0, sizeTimer = null;
+new ResizeObserver(() => {
+  if (fitFrame || $("term").hidden) return;
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = 0;
+    fit.fit();
+    clearTimeout(sizeTimer);
+    sizeTimer = setTimeout(sendSize, 150);
+  });
+}).observe($("pane"));
 function sendKeys(d) { if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ t: "in", d })); }
 let ctrlArmed = false;  // the key bar's Ctrl: the next typed key becomes a control character
 term.onData((d) => {
@@ -98,6 +109,14 @@ function openRows(open) {
 }
 $("menu").onclick = () => openRows(!$("rows").classList.contains("open"));
 $("shade").onclick = () => openRows(false);
+// The Android app's Back button: close what is open, and on a phone go from a session back to the
+// list. False means nothing was left to close, and the app leaves.
+window.tmlsBack = () => {
+  if (!$("new").hidden) { closeNew(); return true; }
+  if (!$("alerts").hidden) { $("alerts").hidden = true; return true; }
+  if (phone.matches && current && !$("rows").classList.contains("open")) { openRows(true); return true; }
+  return false;
+};
 const KEYS = { Escape: "\x1b", Tab: "\t", Up: "\x1b[A", Down: "\x1b[B", Left: "\x1b[D", Right: "\x1b[C" };
 function armCtrl(on) {
   ctrlArmed = on;
