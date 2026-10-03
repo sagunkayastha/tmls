@@ -162,7 +162,7 @@ class Approval(Vertical):
 
     def compose(self):
         yield Static(Text("? ", style="bold #e5c07b") + f"{self.session.name} · permission prompt")
-        yield Static("\n".join(self.shown[:8]), classes="request")
+        yield Static("\n".join(self.shown[:8]), classes="request", markup=False)
         with Horizontal(classes="answers"):
             yield Button("Yes", classes="yes", variant="success")
             yield Button("No", classes="no", variant="error")

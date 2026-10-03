@@ -1074,6 +1074,20 @@ async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(
         assert await wait_for(pilot, lambda: not app.query(tmls_app.Approval))
 
 
+async def test_permission_prompt_text_is_shown_verbatim_not_as_markup():
+    from textual.app import App
+    shown = ["Bash command", "sed 's/[/]/_/g' f", "src/[id]/page.tsx", "[b]not bold[/b]"]
+
+    class Box(App):
+        def compose(self):
+            yield tmls_app.Approval(hosts.Session("box", "ask", 1, False, 0, 0), shown)
+    app = Box()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        request = str(app.query_one(".request").render())
+        assert "[/]" in request and "src/[id]/page.tsx" in request and "[b]not bold[/b]" in request
+
+
 async def test_desktop_notifications_name_the_host_as_the_sidebar_does(fake_hosts, monkeypatch):
     # internally this machine is "local"; the popup should say its hostname
     emitted = []
