@@ -81,7 +81,7 @@ def test_remote_commands_quote_their_arguments():
 
 def test_survey_lists_claude_even_without_a_tmux_server():
     script = ag.survey_argv(hosts.LOCAL)[-1]
-    assert "list-windows" in script and "2>/dev/null;" in script and "&&" not in script.split("---")[0]
+    assert "tmux -u list-windows" in script and "2>/dev/null;" in script and "&&" not in script.split("---")[0]
 
 
 def test_this_machine_by_its_hostname(monkeypatch):

@@ -53,6 +53,13 @@ async def test_send_to_a_missing_session_says_so(private_tmux):
     assert await prompts.send(hosts.LOCAL, "nope", "hi")
 
 
+async def test_a_failed_paste_leaves_no_buffer_behind(private_tmux):
+    subprocess.run(["tmux", "new-session", "-d", "-s", "work", "cat"], check=True)
+    assert await prompts.send(hosts.LOCAL, "nope", "hi")
+    buffers = subprocess.run(["tmux", "list-buffers"], capture_output=True, text=True).stdout
+    assert buffers == ""
+
+
 @pytest.fixture
 def scripts(monkeypatch):
     """The shell scripts prompts._run is asked to run, instead of running them."""
@@ -79,7 +86,8 @@ async def test_send_targets_claudes_pane_when_given(scripts):
 async def test_each_send_uses_its_own_buffer(scripts):
     await prompts.send("box", "a", "one")
     await prompts.send("box", "b", "two")
-    buffers = [re.findall(r"-b (\S+)", s) for s in scripts]
-    for load, paste in buffers:
-        assert load == paste and re.fullmatch(r"tmls-[0-9a-f]+", load)
+    buffers = [re.findall(r"-b ([^\s;]+)", s) for s in scripts]
+    for load, paste, cleanup in buffers:  # cleanup: delete-buffer when the paste fails
+        assert load == paste == cleanup and re.fullmatch(r"tmls-[0-9a-f]+", load)
+    assert all(f"delete-buffer -b {b[0]}" in s for b, s in zip(buffers, scripts))
     assert buffers[0][0] != buffers[1][0]

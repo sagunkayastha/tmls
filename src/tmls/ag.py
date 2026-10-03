@@ -78,8 +78,8 @@ def resolve(target, claudes, tmux):
 
 
 def survey_argv(host):
-    # unlike tmls's listing, Claude sessions count even where no tmux server runs
-    return _argv(host, f"date +%s; tmux list-windows -a -F {shlex.quote(hosts.FORMAT)} 2>/dev/null; "
+    # unlike tmls's listing, Claude sessions count even where no tmux server runs; -u as in hosts.list_argv
+    return _argv(host, f"date +%s; tmux -u list-windows -a -F {shlex.quote(hosts.FORMAT)} 2>/dev/null; "
                        f"{{ {hosts.CLAUDE}; }}")
 
 

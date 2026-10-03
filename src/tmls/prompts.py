@@ -77,7 +77,8 @@ async def send(host, name, text, pane=None):
     `pane` (Claude's own, "%7") is the target when given, else the window's active pane."""
     t = shlex.quote(pane or f"={name}:")
     buf = f"tmls-{secrets.token_hex(4)}"  # one per send: two sends in the same tick can't swap texts
-    script = (f"tmux load-buffer -b {buf} - && tmux paste-buffer -p -d -b {buf} -t {t} "
+    script = (f"tmux load-buffer -b {buf} - && "
+              f"{{ tmux paste-buffer -p -d -b {buf} -t {t} || {{ tmux delete-buffer -b {buf}; false; }}; }} "
               f"&& sleep 0.2 && tmux send-keys -t {t} Enter")
     code, out = await _run(_run_argv(host, script), stdin=text.encode())
     return None if code == 0 else (out.strip() or f"couldn't send to {name}")

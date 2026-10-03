@@ -59,7 +59,8 @@ def parse(host, out):
     when there's no clock line."""
     tmux, _, claude = out.partition("\n---\n")
     lines = tmux.splitlines()
-    start = next((i for i, line in enumerate(lines) if line.isdigit()), None)
+    # the last all-digit line: a login banner prints before `date`, and window lines have colons
+    start = next((i for i in reversed(range(len(lines))) if lines[i].isascii() and lines[i].isdigit()), None)
     if start is None:
         raise ValueError("no clock line in the listing")
     now, lines = lines[start], lines[start + 1:]

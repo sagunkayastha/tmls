@@ -148,9 +148,10 @@ def test_listing_forces_utf8():
 
 
 def test_parse_skips_lines_that_are_not_windows():
-    out = "Welcome to the box\n1700000000\nwork:1:0:1699999990\nmotd line\n---\n"
+    out = "Welcome to the box\n42\n1700000000\nwork:1:0:1699999990\nmotd line\n---\n"
     sessions = hosts.parse("box", out)
     assert [s.name for s in sessions] == ["work"]
+    assert sessions[0].now == 1700000000  # a banner's number isn't the clock
 
 
 async def test_list_host_offline_when_output_is_garbage(monkeypatch):
