@@ -510,7 +510,7 @@ $("tab-sketch").onclick = showSketch;
 if (navigator.userAgent.includes("TmlsApp/")) {
   const b = document.createElement("button");
   b.id = "app-update";
-  b.textContent = "⟳ App";
+  b.textContent = "⟳";
   b.title = "Check for an app update";
   b.onclick = () => { location.href = "/app/update"; };
   $("logout").closest("form").before(b);

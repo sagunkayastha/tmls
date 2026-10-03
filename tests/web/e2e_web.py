@@ -38,7 +38,7 @@ def app_checks(browser, desktop):
     a = ctx.new_page()
     a.goto(BASE + "/")
     a.wait_for_selector("#app-update")
-    check("the app gets a ⟳ App button", a.inner_text("#app-update").strip() == "⟳ App")
+    check("the app gets a ⟳ button", a.inner_text("#app-update").strip() == "⟳")
     a.click("#shade", position={"x": 370, "y": 400})  # the rows drawer starts open on a phone
     a.wait_for_function("!document.getElementById('rows').classList.contains('open')")
     with a.expect_request(lambda r: r.url.endswith("/app/update")):

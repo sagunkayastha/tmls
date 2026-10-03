@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -68,6 +69,9 @@ fun WebScreen(
             var painted = false
             var signedInFired = false
             WebView(context).apply {
+                // AndroidView's default WRAP_CONTENT makes Chromium size the page to its content, and
+                // every vh/dvh unit is 0 (tmls-web's body is 100dvh: the page collapsed).
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 setBackgroundColor(BG)
                 overScrollMode = View.OVER_SCROLL_NEVER
                 isVerticalScrollBarEnabled = false
