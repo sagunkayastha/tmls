@@ -50,7 +50,8 @@ def main():
             page.fill('input[name="password"]', "nope")
             page.press('input[name="password"]', "Enter")
             page.wait_for_selector("#error:has-text('Wrong')")
-            check("wrong password shows the error on the form", True)
+            check("wrong password shows the error on the form and keeps the username",
+                  page.input_value('input[name="username"]') == "tester")
             page.fill('input[name="username"]', "tester")
             page.fill('input[name="password"]', "pw")
             page.press('input[name="password"]', "Enter")

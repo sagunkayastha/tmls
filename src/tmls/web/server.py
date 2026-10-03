@@ -74,7 +74,7 @@ async def login(request):
     if now - since > LOCKOUT:
         count, since = 0, now
     if count >= MAX_FAILS:
-        return web.Response(status=429, text="too many wrong passwords; try again in a few minutes")
+        raise web.HTTPFound("/login?error=locked")
     data = await request.post()
     user, password = str(data.get("username", "")), str(data.get("password", ""))
     if not await asyncio.to_thread(auth.check_login, creds, user, password):
