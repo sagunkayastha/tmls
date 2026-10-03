@@ -1,6 +1,8 @@
 import hashlib
 import json
 import secrets
+import subprocess
+import sys
 
 from tmls.web import auth, server
 
@@ -9,6 +11,12 @@ def write_creds(path):
     salt = secrets.token_hex(16)
     hashed = hashlib.scrypt(b"pw", salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
     path.write_text(json.dumps({"username": "me", "salt": salt, "hash": hashed, "secret": "s" * 64}))
+
+
+def test_create_imports_without_textual():
+    # the web server imports create; Textual belongs to the TUI only
+    check = "import sys; import tmls.create; assert 'textual' not in sys.modules"
+    assert subprocess.run([sys.executable, "-c", check]).returncode == 0
 
 
 async def test_health_needs_no_login(aiohttp_client, tmp_path):

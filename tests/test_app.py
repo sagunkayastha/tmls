@@ -735,7 +735,7 @@ async def test_a_redraw_during_the_local_lookup_does_not_crash(clock_hosts, monk
 
 
 async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hosts, monkeypatch):
-    from tmls import create
+    from tmls import create, create_form
     made = []
 
     async def fake(host, name, folder, start):
@@ -746,7 +746,7 @@ async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hos
         assert await wait_for(pilot, lambda: app.query("#add-box"))
         assert not app.query("#add-down")  # offline: nowhere to create
         await pilot.click("#add-box")
-        assert await wait_for(pilot, lambda: isinstance(app.screen, create.NewSession))
+        assert await wait_for(pilot, lambda: isinstance(app.screen, create_form.NewSession))
         app.screen.query_one("#folder").value = "~/proj"
         await pilot.pause()
         await pilot.click("#create")

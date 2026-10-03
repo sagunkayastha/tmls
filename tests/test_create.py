@@ -6,7 +6,7 @@ import pytest
 from textual.app import App
 from textual.widgets import Input
 
-from tmls import create, hosts
+from tmls import create, create_form, hosts
 
 
 def test_script_expands_home_and_quotes_everything_else():
@@ -87,7 +87,7 @@ class Host(App):
         self.kw, self.result = kw, "unset"
 
     def on_mount(self):
-        self.push_screen(create.NewSession(**self.kw), lambda r: setattr(self, "result", r))
+        self.push_screen(create_form.NewSession(**self.kw), lambda r: setattr(self, "result", r))
 
 
 async def test_form_creates_with_folder_name_by_default(monkeypatch):
@@ -151,7 +151,7 @@ async def test_form_shows_errors_and_stays_open(monkeypatch):
         app.screen.query_one("#folder", Input).value = "~/nope"
         await pilot.click("#create")
         await pilot.pause(0.2)
-        assert isinstance(app.screen, create.NewSession)
+        assert isinstance(app.screen, create_form.NewSession)
         assert "no such folder" in str(app.screen.query_one("#error").render())
         await pilot.click("#cancel")
         await pilot.pause(0.2)
