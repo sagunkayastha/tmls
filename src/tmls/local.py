@@ -113,18 +113,10 @@ def last_reply(transcript):
                                  ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
             break
     return out
-    for line in reversed(lines):
-        if '"type":"assistant"' in line:
-            try:
-                return json.loads(line).get("isApiErrorMessage") is True
-            except ValueError:
-                return False  # cut off by the seek
-    return False
 
 
 async def _run(*argv):
-    """stdout, or None on failure. Async, not threads: tmls forks ptys, and forking a
-    multi-threaded process can deadlock the child."""
+    """stdout, or None on failure. An asyncio subprocess, so a slow kitty or ps never blocks the UI."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)

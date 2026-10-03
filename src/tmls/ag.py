@@ -126,7 +126,11 @@ def cmd_ls(args):
 
 def cmd_read(args):
     claudes, tmux = asyncio.run(_survey(_hosts()))
-    kind, host, what = resolve(args.name, claudes, tmux)
+    try:
+        kind, host, what = resolve(args.name, claudes, tmux)
+    except Ambiguous as e:
+        print(e, file=sys.stderr)
+        return 2
     if kind == "claude":
         if not what.get("tmux"):
             print(f"{args.name} isn't in tmux; its screen can't be read", file=sys.stderr)
