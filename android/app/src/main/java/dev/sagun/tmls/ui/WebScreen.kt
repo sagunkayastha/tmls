@@ -25,6 +25,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.sagun.tmls.BuildConfig
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
+import android.webkit.ConsoleMessage
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import dev.sagun.tmls.Origins
+import dev.sagun.tmls.Screenshots
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The terminal's background; the WebView paints it before the page has. */
 const val BG = 0xFF15191F.toInt()
@@ -70,6 +91,34 @@ fun WebScreen(
         }
     }
 
+    // A page's <input type=file> (sketchpad's Image… > This device): Android's photo picker.
+    var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        Log.i("tmls", "file chooser picked: ${uri != null}, callback waiting: ${fileCallback != null}")
+        fileCallback?.onReceiveValue(uri?.let { arrayOf(it) })
+        fileCallback = null
+    }
+
+    // Sketch's "This phone's last screenshot": window.tmlsApp.postMessage("last-screenshot") from a
+    // page of this server; the photos permission is asked the first time.
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var screenshotReply by remember { mutableStateOf<JavaScriptReplyProxy?>(null) }
+    fun sendScreenshot(reply: JavaScriptReplyProxy) {
+        scope.launch {
+            val json = withContext(Dispatchers.IO) { Screenshots.latestAsJson(context) }
+            reply.postMessage(json)
+        }
+    }
+    val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val reply = screenshotReply ?: return@rememberLauncherForActivityResult
+        screenshotReply = null
+        if (granted) sendScreenshot(reply)
+        else reply.postMessage(Screenshots.error("tmls needs access to photos to read your screenshots."))
+    }
+    val photosPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES
+        else Manifest.permission.READ_EXTERNAL_STORAGE
+
     DisposableEffect(Unit) {
         onDispose {
             CookieManager.getInstance().flush()
@@ -98,6 +147,37 @@ fun WebScreen(
                 // The site shows "Check for updates" and this version at the end of its list to these markers.
                 settings.userAgentString = settings.userAgentString + " TmlsApp/1 TmlsVersion/" + BuildConfig.VERSION_NAME
                 CookieManager.getInstance().setAcceptCookie(true)
+                webChromeClient = object : WebChromeClient() {
+                    // The page's console in the phone's log (adb logcat -s tmls-page): the only
+                    // window into the page in a release build.
+                    override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                        Log.i("tmls-page", "${message.messageLevel()} ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                        return true
+                    }
+
+                    override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
+                                                   params: FileChooserParams): Boolean {
+                        fileCallback?.onReceiveValue(null)  // one picker at a time
+                        fileCallback = callback
+                        Log.i("tmls", "file chooser: ${params.acceptTypes.joinToString()}")
+                        pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        return true
+                    }
+                }
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                    // Offered to every frame, answered only for this server's pages (sketchpad's frame
+                    // is the same host on another port, or a sibling name).
+                    WebViewCompat.addWebMessageListener(this, "tmlsApp", setOf("*")) { _, message, origin, _, reply ->
+                        if (message.data != "last-screenshot") return@addWebMessageListener
+                        if (!Origins.trusted(origin.toString(), url)) return@addWebMessageListener
+                        if (ContextCompat.checkSelfPermission(context, photosPermission) == PackageManager.PERMISSION_GRANTED) {
+                            sendScreenshot(reply)
+                        } else {
+                            screenshotReply = reply
+                            askPhotos.launch(photosPermission)
+                        }
+                    }
+                }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         if (sameOrigin(request.url, baseUri)) {
