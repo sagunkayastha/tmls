@@ -23,12 +23,14 @@ services:
     ports:
       - "192.168.1.10:8794:8794"      # the LAN address only; never 0.0.0.0
     # --trust-proxy: only the sidecar, by its fixed address, so nothing else can forge a client address
+    # The Android app's updates (android/make.sh publishes to ./apk): add "--apk-dir", "/home/tmls/apk".
     command: ["--bind", "0.0.0.0", "--port", "8794", "--trust-proxy", "172.31.77.250"]
     volumes:
       - ./ssh:/home/tmls/.ssh:ro                                  # config + id_ed25519(.pub)
       - ./state/known_hosts:/home/tmls/known_hosts               # must exist as a file first (outside the read-only .ssh)
       - ${HOME}/.config/tmls:/home/tmls/.config/tmls:ro           # hosts, sketchpad
       - ${HOME}/.config/sketchpad/auth.json:/home/tmls/.config/sketchpad/auth.json:ro
+      # - ./apk:/home/tmls/apk:ro          # with --apk-dir above, for the Android app
     networks:
       - tmls
 

@@ -1,6 +1,6 @@
 # tmls Android app — design
 
-Date: 2026-10-02. Status: approved direction (user: "I want an Android app … tested on the Samsung,
+Date: 2026-10-02. Status: built and tested on the Samsung 2026-10-03 (see PROGRESS.md); approved direction (user: "I want an Android app … tested on the Samsung,
 updated with the update button, like my other apps").
 
 ## Why
@@ -74,6 +74,21 @@ host), `in-docker.sh`, `build.sh` (unit tests, lint, assemble, zipalign + apksig
 Unit tests (plain JUnit, no Android): `UpdateRules` (manifest parsing, newer, digest, copy),
 `Servers.normalize`, `Reach.first` (MockWebServer). Device test: install on the Samsung, screenshot,
 log in, open a session, swipe, keyboard, update banner against a bumped `latest.json`.
+
+## As built (2026-10-03)
+
+- Keyboard: resizing the WebView every frame made Chromium re-raster the page (12-25 ms frames).
+  The app resizes it once per keyboard move (at the end when opening, at the start when closing)
+  and sends the live keyboard height to `tmlsKeyboard()` in app.js, which moves the key bar with
+  a transform. Padding uses the bars' stable insets (Samsung's nav inset animates after the
+  keyboard). The page sends tmux one size, 150 ms after a resize settles.
+- xterm draws with WebGL (DOM renderer fallback); the drawer and its shade are their own layers.
+- The WebView needs MATCH_PARENT layout params: with AndroidView's WRAP_CONTENT every vh/dvh is 0.
+- Back: `tmlsBack()` closes the New session form / alert list, or goes from a session to the list;
+  then the app goes to the background (`moveTaskToBack`), keeping the terminal.
+- Measured, release build: cold start 250-290 ms to first frame; scroll 1 % janky frames; drawer
+  and keyboard slides 15-19 ms frames while moving, the remaining slow frames come when the motion
+  ends (the one resize, tmux redrawing).
 
 ## Not in scope
 

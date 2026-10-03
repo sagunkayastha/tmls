@@ -2,10 +2,12 @@
 # Install an APK on the phone over USB adb (the host's adb), launch it, take a screenshot.
 #   android/install.sh                         newest out/tmls-<code>.apk (release)
 #   APK=out/tmls-debug.apk android/install.sh  the debug build (dev.sagun.tmls.debug)
-# DEVICE picks the adb serial (default: the Samsung). Always -s: the TV box is on adb too.
+# Always -s: other adb devices (a TV box, say) may be connected too.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-device="${DEVICE:-<phone-serial>}"
+# The phone's adb serial (`adb devices`): DEVICE=, else ~/.config/tmls-android/device.
+device="${DEVICE:-$(cat "${TMLS_ANDROID_KEYS:-$HOME/.config/tmls-android}/device" 2>/dev/null || true)}"
+[ -n "$device" ] || { echo "set DEVICE=<serial> (adb devices) or write it to ~/.config/tmls-android/device" >&2; exit 1; }
 apk="${APK:-$(ls -t "$here"/out/tmls-[0-9]*.apk 2>/dev/null | head -n 1 || true)}"
 case "$apk" in /*) ;; ?*) apk="$here/$apk" ;; esac
 [ -n "$apk" ] && [ -f "$apk" ] || { echo "no APK - run make.sh (or make.sh debug) first" >&2; exit 1; }

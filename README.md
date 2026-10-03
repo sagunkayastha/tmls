@@ -180,6 +180,30 @@ Drop the sidecar, attach `tmls-web` to that stack's network (`networks: {proxy: 
 external: true}}`) and point the proxy at `tmls-web:8794`. If that proxy can't see the real client
 address, leave `--trust-proxy` out.
 
+## Android app
+
+`android/` is a small app around tmls-web: the same page, full screen, with its own login that
+lasts, and an in-app update button. It feels like a native app, not a page in a browser:
+dark from the first frame, the key bar rides on the keyboard as it slides, Back closes the drawer
+or goes from a session to the list, and the terminal draws with WebGL.
+
+- **Build** (Docker only, nothing installed on the host): `android/make.sh` builds, tests and lints a
+  release APK signed with a key it creates once in `~/.config/tmls-android/` (**back that folder
+  up**: a new key means uninstalling the app to update it), then publishes `tmls.apk` and
+  `latest.json` to `$TMLS_APK_DIR` (default `~/stacks/tmls/apk`). `android/make.sh debug` builds a
+  debuggable `dev.sagun.tmls.debug`; `android/make.sh profile` the same package built like a release,
+  for measuring smoothness. `android/test.sh` runs the unit tests and lint.
+- **Serve updates:** run tmls-web with `--apk-dir DIR` (in the compose file: mount `./apk` read-only
+  and pass `--apk-dir /home/tmls/apk`). It serves `/app/latest.json` and `/app/tmls.apk`, behind the
+  login.
+- **Install:** `android/install.sh` (adb over USB; `DEVICE=` picks the phone, `APK=` the file), or
+  open `/app/tmls.apk` on the phone while logged in. First run asks for a home address (for
+  example `http://192.168.1.10:8794`) and, optionally, an away one (`https://tmls.example.com`);
+  the app uses whichever answers, then shows the site's login once.
+- **Update:** each new `make.sh` publishes a higher version. The app checks on start and every 6
+  hours, and ⟳ in the header checks now; a banner offers it, the download is checked against
+  `latest.json`'s SHA-256, and Android asks you to confirm.
+
 ## Sketchpad button
 
 [sketchpad](https://github.com/sagunkayastha/sketchpad) is a drawing board that sends
