@@ -42,6 +42,17 @@ def make_cookie(secret, user, now=None):
     return f"{payload}.{_sign(secret, payload)}"
 
 
+SKETCHPAD_COOKIE = "sp_session"
+
+
+def sketchpad_cookie(secret, user, now=None):
+    """sketchpad's own session cookie, in its format (no "tmls|"): both read the same credentials
+    file, so a tmls login opens the Sketch tab too. Only this way round: it is not a tmls cookie."""
+    now = time.time() if now is None else now
+    payload = base64.urlsafe_b64encode(f"{int(now + SESSION_TTL)}|{user}".encode()).decode()
+    return f"{payload}.{hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()}"
+
+
 def verify_cookie(secret, value, now=None):
     try:
         payload, sig = value.rsplit(".", 1)

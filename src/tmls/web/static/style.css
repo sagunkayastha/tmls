@@ -81,6 +81,7 @@ main { flex: 1; display: flex; min-height: 0; }
   #menu { display: inline-block; }
   #zoom-out, #zoom-in, #zoom-size, .wide { display: none; }
   #keys { display: flex; }
+  body.sketching #keys { display: none; }
   /* The drawer and its shade live on their own GPU layers, painted once: sliding and fading them
      only moves layers (no repaint of the shadow or the page per frame). Ease out, like a native drawer. */
   #rows { position: fixed; top: 0; left: 0; bottom: 0; z-index: 7; width: min(85vw, 20rem); background: var(--bg);

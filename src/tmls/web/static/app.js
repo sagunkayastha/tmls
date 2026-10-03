@@ -499,6 +499,7 @@ function showTerminal() {
   $("empty").hidden = Boolean(current);
   $("tab-terminal").classList.add("on");
   $("tab-sketch").classList.remove("on");
+  document.body.classList.remove("sketching");
   refit();
 }
 let sketchUrls = [];
@@ -546,6 +547,7 @@ function showSketch() {
   $("empty").hidden = true;
   $("tab-sketch").classList.add("on");
   $("tab-terminal").classList.remove("on");
+  document.body.classList.add("sketching");  // the phone's key bar is for the terminal
 }
 $("tab-terminal").onclick = showTerminal;
 $("tab-sketch").onclick = showSketch;

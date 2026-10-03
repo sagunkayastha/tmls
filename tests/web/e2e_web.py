@@ -136,6 +136,10 @@ def mobile_checks(browser, desktop):
     check("phone: Back on a session goes back to the list", m.evaluate("tmlsBack()") is True
           and m.evaluate("document.getElementById('rows').classList.contains('open')"))
     check("phone: Back on the list leaves the app", m.evaluate("tmlsBack()") is False)
+    m.evaluate("showSketch()")
+    check("phone: the key bar is hidden while Sketch shows", m.is_hidden("#keys"))
+    m.evaluate("showTerminal()")
+    check("phone: and back with the terminal", m.is_visible("#keys"))
     m.evaluate("document.activeElement.blur(); sock.close()")  # the app back from the background: a reconnect
     m.wait_for_function("sock && sock.readyState === 1", timeout=10000)
     m.wait_for_timeout(300)

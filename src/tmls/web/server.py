@@ -5,6 +5,7 @@ import ipaddress
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiohttp import web
 
@@ -56,9 +57,32 @@ async def healthz(request):
     return web.Response(text="ok")
 
 
+def _sketch_cookie_domain(request):
+    """Where sketchpad's cookie must go for its frame to see it: "" for this very host (cookies
+    ignore ports, so http://lan:8794 and http://lan:8790 share them), the parent domain for a
+    sibling name (tmls.example.com and sketchpad.example.com), None if sketchpad lives elsewhere."""
+    here = request.host.rsplit(":", 1)[0] if request.host.count(":") == 1 else request.host
+    for url in request.app.get("sketchpad", []):
+        there = urlparse(url).hostname
+        if there == here:
+            return ""
+        if there and "." in here and here.split(".", 1)[1] == there.split(".", 1)[1] \
+                and "." in here.split(".", 1)[1]:
+            return here.split(".", 1)[1]
+    return None
+
+
 async def page(request):
     # no-store: after logout, Back or a revisit must ask the server (and get the login page)
-    return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
+    response = web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
+    domain = _sketch_cookie_domain(request)
+    creds = auth.load(request.app["auth_file"]) if domain is not None else None
+    user = creds and auth.verify_cookie(creds["secret"], request.cookies.get(auth.COOKIE, ""))
+    if user:  # logged in here = logged in to sketchpad (same credentials): no second login in Sketch
+        response.set_cookie(auth.SKETCHPAD_COOKIE, auth.sketchpad_cookie(creds["secret"], user),
+                            max_age=auth.SESSION_TTL, httponly=True, samesite="Lax", path="/",
+                            domain=domain or None, secure=_https(request))
+    return response
 
 
 async def login_page(request):
@@ -111,13 +135,20 @@ async def login(request):
     response = web.HTTPFound("/")
     response.set_cookie(auth.COOKIE, auth.make_cookie(creds["secret"], user),
                         max_age=auth.SESSION_TTL, httponly=True, samesite="Lax", path="/",
-                        secure=request.secure or request.headers.get("X-Forwarded-Proto") == "https")
+                        secure=_https(request))
     raise response
+
+
+def _https(request):
+    return request.secure or request.headers.get("X-Forwarded-Proto") == "https"
 
 
 async def logout(request):
     response = web.HTTPFound("/login")
     response.del_cookie(auth.COOKIE, path="/")
+    domain = _sketch_cookie_domain(request)
+    if domain is not None:
+        response.del_cookie(auth.SKETCHPAD_COOKIE, path="/", domain=domain or None)
     raise response
 
 
