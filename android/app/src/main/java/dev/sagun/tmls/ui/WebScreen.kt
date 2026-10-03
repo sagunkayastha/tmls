@@ -28,6 +28,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import dev.sagun.tmls.BuildConfig
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import org.json.JSONObject
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
@@ -197,10 +200,25 @@ fun WebScreen(
                     // is the same host on another port, or a sibling name).
                     WebViewCompat.addWebMessageListener(this, "tmlsApp", setOf("*")) { _, message, origin, _, reply ->
                         if (!Origins.trusted(origin.toString(), url)) return@addWebMessageListener
-                        when (message.data) {
-                            "ime:terminal" -> { terminalInput(true); return@addWebMessageListener }
-                            "ime:text" -> { terminalInput(false); return@addWebMessageListener }
-                            "last-screenshot" -> {}
+                        val data = message.data ?: return@addWebMessageListener
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        when {
+                            data == "ime:terminal" -> { terminalInput(true); return@addWebMessageListener }
+                            data == "ime:text" -> { terminalInput(false); return@addWebMessageListener }
+                            data == "ime:none" -> { keyboardAway(); return@addWebMessageListener }
+                            // The key bar's Paste: the phone's clipboard, handed to the terminal.
+                            data == "paste" -> {
+                                val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }
+                                    ?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                evaluateJavascript("typeof tmlsPaste === 'function' && tmlsPaste(${JSONObject.quote(text)})", null)
+                                return@addWebMessageListener
+                            }
+                            // Copy's "Copy all" (Android shows its own "Copied").
+                            data.startsWith("copy\n") -> {
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("tmls", data.removePrefix("copy\n")))
+                                return@addWebMessageListener
+                            }
+                            data == "last-screenshot" -> {}
                             else -> return@addWebMessageListener
                         }
                         if (ContextCompat.checkSelfPermission(context, photosPermission) == PackageManager.PERMISSION_GRANTED) {

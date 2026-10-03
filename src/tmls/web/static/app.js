@@ -76,7 +76,7 @@ function attach(key) {
   ws.binaryType = "arraybuffer";
   sock = ws;
   // Not over the phone's open list: focusing the terminal there pops the keyboard over the rows.
-  ws.onopen = () => { overlay(null); refit(); if (!$("rows").classList.contains("open")) term.focus(); };
+  ws.onopen = () => { overlay(null); refit(); if (!$("rows").classList.contains("open")) term.focus(); reportIme(); };
   ws.onmessage = (e) => {
     if (typeof e.data === "string") {
       const msg = JSON.parse(e.data);
@@ -115,9 +115,14 @@ function setSeen(seen) {
 document.addEventListener("visibilitychange", () => setSeen(!document.hidden));
 // The Android app types plain characters into the terminal (a keyboard's word suggestions
 // re-send text when the terminal redraws) and keeps suggestions for other fields: say which has focus.
+let reportIme = () => {};  // tells the Android app what the keyboard is for (no-op elsewhere)
 if (window.tmlsApp) {
-  const imeFor = () => window.tmlsApp.postMessage(
-    document.activeElement && document.activeElement.classList.contains("xterm-helper-textarea") ? "ime:terminal" : "ime:text");
+  const imeFor = reportIme = () => {
+    const inTerm = document.activeElement && document.activeElement.classList.contains("xterm-helper-textarea");
+    // The terminal with no session, or under the open list: nothing to type into.
+    if (inTerm && (!current || $("rows").classList.contains("open"))) window.tmlsApp.postMessage("ime:none");
+    else window.tmlsApp.postMessage(inTerm ? "ime:terminal" : "ime:text");
+  };
   document.addEventListener("focusin", imeFor);
   document.addEventListener("focusout", () => setTimeout(imeFor, 0));
   // A tap on the terminal brings the keyboard back even when the terminal already had focus.
@@ -148,6 +153,10 @@ const phone = matchMedia("(max-width: 700px)");
 function openRows(open) {
   $("rows").classList.toggle("open", open);
   $("shade").classList.toggle("open", open);
+  if (open && phone.matches) {  // the list is for reading: no keyboard over it
+    term.blur();
+    if (window.tmlsApp) window.tmlsApp.postMessage("ime:none");
+  }
 }
 $("menu").onclick = () => openRows(!$("rows").classList.contains("open"));
 $("shade").onclick = () => openRows(false);
@@ -157,11 +166,56 @@ window.tmlsKeyboard = (px) => { $("keys").style.transform = px > 0 ? `translateY
 // The Android app's Back button: close what is open, and on a phone go from a session back to the
 // list. False means nothing was left to close, and the app leaves.
 window.tmlsBack = () => {
+  if (!$("copyview").hidden) { $("copyview").hidden = true; return true; }
   if (!$("new").hidden) { closeNew(); return true; }
   if (!$("alerts").hidden) { $("alerts").hidden = true; return true; }
   if (phone.matches && current && !$("rows").classList.contains("open")) { openRows(true); return true; }
   return false;
 };
+// ---- copy / paste on phones (a terminal can't be long-pressed like text) ----
+// Paste: the phone's clipboard into the terminal, as one paste (bracketed when the program asks).
+function pasteText(text) { if (text) term.paste(text); }
+window.tmlsPaste = pasteText;  // the Android app answers "paste" with the clipboard
+async function pasteClipboard() {
+  if (window.tmlsApp) { window.tmlsApp.postMessage("paste"); return; }
+  try { pasteText(await navigator.clipboard.readText()); }
+  catch { pasteText(prompt("Paste here")); }  // http pages have no clipboard API
+}
+// Copy: the recent text as plain text, for the phone's own long-press selection, or all of it.
+function bufferText(lines = 500) {
+  const b = term.buffer.active, out = [];
+  // The last row is tmux's status line, not the session's text.
+  for (let i = Math.max(0, b.length - 1 - lines); i < b.length - 1; i++) {
+    const line = b.getLine(i).translateToString(true);
+    if (!line.trim() && out.length && !out[out.length - 1].trim()) continue;  // one blank line at most
+    out.push(line);
+  }
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.join("\n");
+}
+function openCopy() {
+  term.blur();  // the keyboard goes away while reading
+  if (window.tmlsApp) window.tmlsApp.postMessage("ime:none");
+  const pre = $("copy-text");
+  pre.textContent = bufferText();
+  $("copyview").hidden = false;
+  pre.scrollTop = pre.scrollHeight;  // the newest lines, like the terminal
+}
+$("copy-close").onclick = () => { $("copyview").hidden = true; };
+$("copy-all").onclick = async () => {
+  const text = $("copy-text").textContent;
+  if (window.tmlsApp) { window.tmlsApp.postMessage("copy\n" + text); return; }  // Android says "Copied"
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const range = document.createRange();
+    range.selectNodeContents($("copy-text"));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    document.execCommand("copy");
+  }
+  toast("Copied");
+};
+
 const KEYS = { Escape: "\x1b", Tab: "\t", Up: "\x1b[A", Down: "\x1b[B", Left: "\x1b[D", Right: "\x1b[C" };
 function armCtrl(on) {
   ctrlArmed = on;
@@ -201,6 +255,8 @@ for (const b of document.querySelectorAll("#keys button")) {
   b.onpointerdown = (e) => e.preventDefault();  // the terminal keeps the focus (and the keyboard)
   b.onclick = () => {
     const key = b.dataset.key;
+    if (key === "Paste") { pasteClipboard(); return; }
+    if (key === "Copy") { openCopy(); return; }
     if (key === "Ctrl") armCtrl(!ctrlArmed);
     else sendKeys(KEYS[key] || key);
     term.focus();

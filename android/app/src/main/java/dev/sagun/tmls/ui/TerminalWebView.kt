@@ -26,6 +26,12 @@ class TerminalWebView(context: Context) : WebView(context) {
         evaluateJavascript("typeof tmlsType === 'function' && tmlsType(${JSONObject.quote(text)})", null)
     }
 
+    /** Nothing to type into (e.g. Copy's view): the keyboard goes away. */
+    fun keyboardAway() {
+        terminalInput(false)
+        context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(windowToken, 0)
+    }
+
     /** The terminal focused: keyboard to [keys]; anything else: back to the page. */
     fun terminalInput(on: Boolean) {
         val imm = context.getSystemService(InputMethodManager::class.java) ?: return

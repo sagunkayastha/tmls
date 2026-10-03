@@ -36,8 +36,16 @@
 <!-- phones: the keys a soft keyboard lacks; Ctrl arms the next key -->
 <div id="keys">
   <button data-key="Escape">Esc</button><button data-key="Tab">Tab</button><button data-key="Ctrl">Ctrl</button>
+  <button data-key="Paste">Paste</button><button data-key="Copy">Copy</button>
   <button data-key="Up">↑</button><button data-key="Down">↓</button><button data-key="Left">←</button><button data-key="Right">→</button>
   <button data-key="/">/</button><button data-key="-">-</button><button data-key="|">|</button>
+</div>
+<!-- phones: the terminal's recent text as plain text, for the phone's own select-and-copy -->
+<div id="copyview" hidden>
+  <div class="panel">
+    <div class="row"><button id="copy-all">Copy all</button><span class="hint">or long-press to select</span><button id="copy-close">✕</button></div>
+    <pre id="copy-text"></pre>
+  </div>
 </div>
 <div id="new" hidden>
   <form id="new-form" autocomplete="off">

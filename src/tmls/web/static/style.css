@@ -97,3 +97,13 @@ main { flex: 1; display: flex; min-height: 0; }
   #shade.open { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity .25s; }
   #alerts { left: 10px; right: 10px; width: auto; }
 }
+
+/* phones: Copy's view of the terminal text, selectable like any text */
+#copyview { position: fixed; inset: 0; z-index: 9; display: grid; place-items: center; background: rgba(21, 25, 31, .6); }
+#copyview[hidden] { display: none; }
+#copyview .panel { width: min(56rem, 96vw); height: 85dvh; display: flex; flex-direction: column; gap: 8px; padding: 8px;
+                   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+#copyview .row { display: flex; gap: 8px; align-items: center; }
+#copyview .hint { flex: 1; color: var(--dim); font-size: 12px; }
+#copy-text { flex: 1; margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--text);
+             font: 13px 'JetBrains Mono', 'DejaVu Sans Mono', monospace; user-select: text; -webkit-user-select: text; }
