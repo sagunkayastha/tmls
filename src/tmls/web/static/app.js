@@ -292,7 +292,7 @@ function openNew(host, label) {
     radio.type = "radio";
     radio.name = "new-start";
     radio.value = start;
-    radio.checked = i === 0;
+    radio.checked = start === "claude";
     const text = document.createElement("span");
     text.textContent = start;
     option.append(radio, text);
