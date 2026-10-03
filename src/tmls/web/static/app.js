@@ -89,9 +89,11 @@ function setFont(size) {
   $("zoom-size").textContent = `${fontSize}px`;
   store.set("tmls-font", String(fontSize));
   refit();
+  if (current && $("sketch").hidden) term.focus();
 }
 $("zoom-in").onclick = () => setFont(fontSize + 2);
 $("zoom-out").onclick = () => setFont(fontSize - 2);
+$("zoom-in").onmousedown = $("zoom-out").onmousedown = (e) => e.preventDefault();  // never take focus from the terminal
 window.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "=" || e.key === "+") { e.preventDefault(); setFont(fontSize + 2); }
