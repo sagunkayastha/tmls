@@ -104,9 +104,12 @@ function drawTitle() {
   $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
 }
 
+function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.key === current]); }
+
 function drawRows() {
   const box = $("rows");
-  box.replaceChildren();
+  const old = new Map([...box.querySelectorAll(".row")].map((el) => [el.dataset.key, el]));
+  const children = [];
   const byHost = new Map();
   for (const row of rows.values()) {
     if (!byHost.has(row.host)) byHost.set(row.host, []);
@@ -116,9 +119,16 @@ function drawRows() {
     const head = document.createElement("div");
     head.className = "host" + (list.every((r) => !r.online) ? " offline" : "");
     head.textContent = list[0].label || host;  // "local" is the machine tmls runs on
-    box.append(head);
-    for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) box.append(rowEl(row));
+    children.push(head);
+    for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) {
+      const sig = rowSig(row), prev = old.get(row.key);
+      if (prev && prev.dataset.sig === sig) { children.push(prev); continue; }  // same node: a click in flight still lands
+      const el = rowEl(row);
+      el.dataset.sig = sig;
+      children.push(el);
+    }
   }
+  box.replaceChildren(...children);
 }
 
 function rowEl(row) {

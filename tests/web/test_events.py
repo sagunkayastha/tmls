@@ -88,3 +88,29 @@ async def test_seen_clears_done(aiohttp_client, monkeypatch):
     while not msg["set"]:
         msg = await next_kind(ws, "rows")
     assert msg["set"][0]["mark"] == "idle"
+
+
+async def test_unchanged_tick_sends_nothing(monkeypatch):
+    async def list_host(host):
+        return True, [sess("a"), sess("b")]
+
+    async def run(argv, stdin=None):
+        return 0, "last line\n"
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, message):
+            self.sent.append(message)
+
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "_run", run)
+    app = web.Application()
+    app["hosts"] = ["box"]
+    events.setup(app)
+    socket = Socket()
+    app["sockets"].add(socket)
+    await events.poll_once(app)
+    await events.poll_once(app)
+    assert [m["t"] for m in socket.sent] == ["rows"]

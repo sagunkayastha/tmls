@@ -59,6 +59,10 @@ def main():
                   page.locator('.row[data-key="box/beta"]').count() == 1)
             check("plain session shows its last screen line",
                   page.inner_text('.row[data-key="box/alpha"] .line') == "build ok")
+            page.evaluate("""window.__el = document.querySelector('.row[data-key="box/alpha"]')""")
+            page.wait_for_timeout(1500)  # several fake poll ticks with nothing changing
+            check("an unchanged row keeps its element across poll ticks",
+                  page.evaluate("""document.querySelector('.row[data-key="box/alpha"]') === window.__el"""))
 
             page.click('.row[data-key="box/alpha"]')
             page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
