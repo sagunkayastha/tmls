@@ -21,6 +21,6 @@ exec docker run --rm -u "$(id -u):$(id -g)" \
   -e HOME=/scratch/home -e TMPDIR=/scratch/tmp -e GRADLE_USER_HOME=/gradle \
   -e ANDROID_USER_HOME=/scratch/home/.android \
   -e TMLS_BUILD_DIR=/scratch/build -e JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/scratch/tmp -Duser.home=/scratch/home" \
-  -e VERSION_CODE -e VERSION_NAME \
+  -e VERSION_CODE -e VERSION_NAME -e TMLS_HOME_URL -e TMLS_AWAY_URL \
   -v "$here:/w" -v "$scratch:/scratch" -v tmls-android-gradle:/gradle "${extra[@]}" \
   -w /w tmls-android-build "$@"

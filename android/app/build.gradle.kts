@@ -17,6 +17,11 @@ android {
         targetSdk = 35
         versionCode = (findProperty("tmlsVersionCode") as String? ?: "1").toInt()
         versionName = findProperty("tmlsVersionName") as String? ?: "dev"
+        // The owner's addresses, from ~/.config/tmls-android/servers via make.sh (never committed):
+        // with them the app connects without a Setup screen.
+        fun quoted(name: String) = "\"" + (findProperty(name) as String? ?: "").replace("\\", "").replace("\"", "") + "\""
+        buildConfigField("String", "DEFAULT_HOME", quoted("tmlsHome"))
+        buildConfigField("String", "DEFAULT_AWAY", quoted("tmlsAway"))
     }
 
     buildTypes {

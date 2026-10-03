@@ -20,17 +20,21 @@ object ServerUrl {
 }
 
 /**
- * The two addresses typed on the Setup screen: home (the LAN) and, optionally, away (the public
- * name). No address is built in: the repo is public.
+ * Home (the LAN) and, optionally, away (the public name). A build can carry defaults (make.sh reads
+ * them from ~/.config/tmls-android/servers, never from the repo); addresses saved on the Setup
+ * screen ("Change server") replace them.
  */
 class Servers(context: Context) {
     private val prefs = context.getSharedPreferences("servers", Context.MODE_PRIVATE)
 
-    val home: String? get() = prefs.getString(HOME, null)
-    val away: String? get() = prefs.getString(AWAY, null)
+    private val saved get() = prefs.getString(HOME, null)
+
+    val home: String? get() = saved ?: BuildConfig.DEFAULT_HOME.ifEmpty { null }
+    val away: String? get() = if (saved != null) prefs.getString(AWAY, null) else BuildConfig.DEFAULT_AWAY.ifEmpty { null }
 
     /** What to try, in order. */
-    fun list(): List<String> = order(home, away)
+    fun list(): List<String> =
+        effective(saved, prefs.getString(AWAY, null), BuildConfig.DEFAULT_HOME, BuildConfig.DEFAULT_AWAY)
 
     fun save(home: String, away: String?) {
         prefs.edit().putString(HOME, home).putString(AWAY, away).apply()
@@ -41,5 +45,10 @@ class Servers(context: Context) {
         private const val AWAY = "away"
 
         fun order(home: String?, away: String?): List<String> = listOfNotNull(home, away).distinct()
+
+        /** Saved addresses if any were saved, else the build's defaults ("" = none). */
+        fun effective(savedHome: String?, savedAway: String?, defaultHome: String, defaultAway: String): List<String> =
+            if (savedHome != null) order(savedHome, savedAway)
+            else order(defaultHome.ifEmpty { null }, defaultAway.ifEmpty { null })
     }
 }

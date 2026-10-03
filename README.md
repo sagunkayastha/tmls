@@ -197,9 +197,11 @@ or goes from a session to the list, and the terminal draws with WebGL.
   and pass `--apk-dir /home/tmls/apk`). It serves `/app/latest.json` and `/app/tmls.apk`, behind the
   login.
 - **Install:** `android/install.sh` (adb over USB; `DEVICE=` picks the phone, `APK=` the file), or
-  open `/app/tmls.apk` on the phone while logged in. First run asks for a home address (for
-  example `http://192.168.1.10:8794`) and, optionally, an away one (`https://tmls.example.com`);
-  the app uses whichever answers, then shows the site's login once.
+  tap **Get the Android app** at the bottom of the session list in an Android browser (logged in).
+  To skip the address screen, put your addresses in `~/.config/tmls-android/servers` before
+  building (home on the first line, e.g. `http://192.168.1.10:8794`, away on the second, e.g.
+  `https://tmls.example.com`): `make.sh` builds them in. Without it, first run asks for them. The
+  app uses whichever answers, then shows the site's login once.
 - **Update:** each new `make.sh` publishes a higher version. The app checks on start and every 6
   hours, and ⟳ in the header checks now; a banner offers it, the download is checked against
   `latest.json`'s SHA-256, and Android asks you to confirm.

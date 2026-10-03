@@ -14,6 +14,11 @@ keys="${TMLS_ANDROID_KEYS:-$HOME/.config/tmls-android}"
 publish="${TMLS_APK_DIR:-$HOME/stacks/tmls/apk}"
 mode="${1:-release}"
 mkdir -p "$keys" "$here/out" && chmod 700 "$keys"
+# Default addresses built into the app (no Setup screen): ~/.config/tmls-android/servers, home on
+# the first line, away (optional) on the second. Local only: the repo is public.
+if [ -f "$keys/servers" ]; then
+  export TMLS_HOME_URL="$(sed -n 1p "$keys/servers")" TMLS_AWAY_URL="$(sed -n 2p "$keys/servers")"
+fi
 
 if [ "$mode" = debug ] || [ "$mode" = profile ]; then
   "$here/in-docker.sh" bash /w/build.sh "$mode"
