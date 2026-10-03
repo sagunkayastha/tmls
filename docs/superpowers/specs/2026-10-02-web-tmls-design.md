@@ -29,7 +29,7 @@ prompts, sketch to a session) from home over the LAN and from outside over their
 ```
 
 - **Main pane**: the selected session at full size (xterm.js). Clicking a row switches it.
-- **Rows** (right column, grouped by host): status mark (● working, ? waiting, ◆ done, ✕ failed,
+- **Rows** (left column, grouped by host, like the terminal UI): status mark (● working, ? waiting, ◆ done, ✕ failed,
   ○ idle), name, and a second line: the waiting reason for `?`, otherwise the session's last
   non-empty screen line. `?` rows have **Yes / No** buttons.
 - **Font zoom**: A− / A+ and Ctrl +/− change the terminal font size only (not the browser zoom),

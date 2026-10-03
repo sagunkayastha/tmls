@@ -1,5 +1,5 @@
 "use strict";
-// tmls web: rows on the right, the selected session's terminal on the left.
+// tmls web: rows on the left (like the terminal UI), the selected session's terminal beside them.
 const $ = (id) => document.getElementById(id);
 const MARK = { running: "●", waiting: "?", done: "◆", failed: "✕", idle: "○" };
 const FONT_MIN = 10, FONT_MAX = 28;

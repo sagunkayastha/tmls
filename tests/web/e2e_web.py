@@ -46,7 +46,7 @@ def mobile_checks(browser, desktop):
     m.click("#menu")
     m.wait_for_selector("#rows.open")
     check("phone: ☰ opens the drawer", True)
-    m.click("#shade", position={"x": 20, "y": 400})  # the strip beside the drawer
+    m.click("#shade", position={"x": 370, "y": 400})  # the strip beside the drawer (it opens from the left)
     m.wait_for_function("!document.getElementById('rows').classList.contains('open')")
     check("phone: tapping beside the drawer closes it", True)
     m.evaluate("window.__sent = []; const real = sock.send.bind(sock); sock.send = (d) => { window.__sent.push(d); real(d); }; 0")
