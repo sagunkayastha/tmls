@@ -1,6 +1,7 @@
 """tmls: tmux sessions from every host on the left, the chosen one live on the right."""
 import argparse
 import asyncio
+import hashlib
 import os
 import re
 import shutil
@@ -22,7 +23,10 @@ REFRESH_SECONDS = 5
 
 
 def slug(host, name):
-    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{host}-{name}")
+    """A widget-id-safe key that stays unique: the readable part can collide ("my work" and
+    "my_work"), so a short hash of the exact host and name is appended."""
+    digest = hashlib.sha1(f"{host}\0{name}".encode()).hexdigest()[:8]
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{host}-{name}") + "-" + digest
 
 
 def launch_window(argv):
