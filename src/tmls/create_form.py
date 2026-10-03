@@ -46,8 +46,8 @@ class NewSession(ModalScreen):
             with Horizontal():
                 yield Label("Start")
                 with RadioSet(id="start"):
-                    yield RadioButton("shell", value=True, id="shell")
-                    yield RadioButton("claude", id="claude")
+                    yield RadioButton("shell", id="shell")
+                    yield RadioButton("claude", value=True, id="claude")
                     for i, name in enumerate(self.presets):
                         yield RadioButton(name, id=f"preset-{i}")
             yield Static("", id="error", markup=False)

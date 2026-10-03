@@ -855,7 +855,7 @@ async def test_plus_on_a_host_line_creates_a_session_there_and_opens_it(fake_hos
         await pilot.pause()
         await pilot.click("#create")
         assert await wait_for(pilot, lambda: tab_names(app) == ["proj ×"])
-    assert made == [("box", "proj", "~/proj", "shell")]
+    assert made == [("box", "proj", "~/proj", "claude")]  # claude is the default Start
 
 
 async def test_ask_panel_sends_saved_recent_or_typed_messages_to_the_shown_session(clock_hosts, monkeypatch):

@@ -65,8 +65,8 @@ command.
 - **`ct`**: run instead of `claude` to start Claude inside a tmux session named after the
   folder (or rejoin it), so tmls can open it in a tab. Arguments go to `claude`; inside tmux
   it's plain `claude`.
-- **New session**: `+` on a host line opens a small form (host, folder, name, start a
-  shell or `claude`). The session is created with `tmux new-session` in that folder and
+- **New session**: `+` on a host line opens a small form (host, folder, name, start
+  `claude` (the default) or a shell). The session is created with `tmux new-session` in that folder and
   opens in a tab. Name follows the git repository name when Folder is inside one (or
   the folder name otherwise); editing Name yourself keeps your choice. Optional named
   agent commands appear below `claude` in Start. Put them
