@@ -68,7 +68,8 @@ function attach(key) {
   const ws = new WebSocket(wsUrl(`/api/term?host=${encodeURIComponent(row.host)}&name=${encodeURIComponent(row.name)}`));
   ws.binaryType = "arraybuffer";
   sock = ws;
-  ws.onopen = () => { overlay(null); refit(); term.focus(); };
+  // Not over the phone's open list: focusing the terminal there pops the keyboard over the rows.
+  ws.onopen = () => { overlay(null); refit(); if (!$("rows").classList.contains("open")) term.focus(); };
   ws.onmessage = (e) => {
     if (typeof e.data === "string") {
       const msg = JSON.parse(e.data);

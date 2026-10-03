@@ -119,6 +119,11 @@ def mobile_checks(browser, desktop):
     check("phone: Back on a session goes back to the list", m.evaluate("tmlsBack()") is True
           and m.evaluate("document.getElementById('rows').classList.contains('open')"))
     check("phone: Back on the list leaves the app", m.evaluate("tmlsBack()") is False)
+    m.evaluate("document.activeElement.blur(); sock.close()")  # the app back from the background: a reconnect
+    m.wait_for_function("sock && sock.readyState === 1", timeout=10000)
+    m.wait_for_timeout(300)
+    check("phone: a reconnect with the list open doesn't pop the keyboard over it",
+          not m.evaluate("document.activeElement.className.includes('xterm-helper-textarea')"))
     ctx.close()
 
 
