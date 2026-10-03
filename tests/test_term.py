@@ -15,6 +15,7 @@ def test_special_keys():
     assert key_to_bytes("up", None) == b"\x1b[A"
     assert key_to_bytes("enter", "\r") == b"\r"
     assert key_to_bytes("backspace", "\x08") == b"\x7f"
+    assert key_to_bytes("shift+backspace", None) == b"\x7f"  # kitty sends it as its own key
     assert key_to_bytes("shift+tab", None) == b"\x1b[Z"
     assert key_to_bytes("ctrl+left", None) == b"\x1b[1;5D"
 
