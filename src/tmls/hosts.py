@@ -130,7 +130,8 @@ def rank(status, since):
 
 
 def list_argv(host):
-    script = f"date +%s; tmux list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLAUDE}; }}"
+    # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing
+    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLAUDE}; }}"
     if host == LOCAL:
         return ["sh", "-c", script]
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, script]
@@ -156,14 +157,14 @@ def status(s, seen, started):
 
 def attach_argv(host, name):
     # -u: non-interactive ssh often has no UTF-8 locale, and tmux then draws "_" and "lqqk"
-    tmux = ["tmux", "-u", "attach", "-t", name]
+    # "=": the exact name; a bare name is a prefix match (a stale "work" row would attach "workshop")
+    tmux = ["tmux", "-u", "attach", "-t", "=" + name]
     return tmux if host == LOCAL else ["ssh", "-t", host, shlex.join(tmux)]
 
 
 def attach_command(host, name):
-    """The attach command as a user would type it (for Copy)."""
-    argv = attach_argv(host, name)
-    return shlex.join(argv) if host == LOCAL else f'ssh -t {host} "{argv[-1]}"'
+    """The attach command as a user would type it (for Copy), safe to paste into a shell."""
+    return shlex.join(attach_argv(host, name))
 
 
 def read_config(path=CONFIG):

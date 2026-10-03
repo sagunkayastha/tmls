@@ -1,3 +1,6 @@
+import shlex
+import subprocess
+
 from tmls import hosts
 
 
@@ -107,17 +110,40 @@ def test_status_from_output_without_claude():
 
 
 def test_local_commands_skip_ssh():
-    assert hosts.attach_argv(hosts.LOCAL, "work") == ["tmux", "-u", "attach", "-t", "work"]
-    
+    assert hosts.attach_argv(hosts.LOCAL, "work") == ["tmux", "-u", "attach", "-t", "=work"]
+
 
 def test_remote_commands_quote_names():
     argv = hosts.attach_argv("nas", "my notes")
-    assert argv == ["ssh", "-t", "nas", "tmux -u attach -t 'my notes'"]
+    assert argv == ["ssh", "-t", "nas", "tmux -u attach -t '=my notes'"]
     assert hosts.list_argv("nas")[:4] == ["ssh", "-o", "BatchMode=yes", "-o"]
 
 
 def test_copy_command_is_shell_ready():
-    assert hosts.attach_command("nas", "my notes") == "ssh -t nas \"tmux -u attach -t 'my notes'\""
+    assert hosts.attach_command("nas", "work") == "ssh -t nas 'tmux -u attach -t =work'"
+
+
+def test_attach_command_is_shell_safe():
+    cmd = hosts.attach_command("nas", 'x"; touch /tmp/pwned; "')
+    assert shlex.split(cmd) == hosts.attach_argv("nas", 'x"; touch /tmp/pwned; "')
+    assert "$" not in hosts.attach_command("nas", "cost$5").replace("'=cost$5'", "")
+
+
+def test_pasted_copy_command_reaches_ssh_unchanged():
+    # a real shell, with ssh replaced by a function that prints its arguments
+    for name in ['x"; touch pwned; "', "cost$5", "it's `w` $(x)", "my notes"]:
+        cmd = hosts.attach_command("nas", name)
+        out = subprocess.run(["sh", "-c", "ssh() { printf '%s\\n' \"$@\"; }; " + cmd],
+                             capture_output=True, text=True, check=True).stdout
+        assert out.splitlines() == hosts.attach_argv("nas", name)[1:]
+
+
+def test_attach_targets_exact_name():
+    assert hosts.attach_argv(hosts.LOCAL, "work")[-1] == "=work"
+
+
+def test_listing_forces_utf8():
+    assert "tmux -u list-windows" in hosts.list_argv(hosts.LOCAL)[-1]
 
 
 def test_parse_skips_lines_that_are_not_windows():

@@ -105,7 +105,7 @@ command.
 - **Open** puts the same attach command in a new terminal window (`$TERMINAL`, else
   kitty, else `x-terminal-emulator`).
 - **Copy** puts the attach command on the clipboard, for example
-  `ssh -t nas "tmux attach -t work"`, so you can paste it anywhere.
+  `ssh -t nas 'tmux -u attach -t =work'`, so you can paste it anywhere.
 - **Sketch** (optional) opens your [sketchpad](https://github.com/sagunkayastha/sketchpad)
   in the browser. See [Sketchpad button](#sketchpad-button).
 - **Quit** (or Ctrl+Q) closes tmls and hangs up its tmux clients. Sessions keep running.
