@@ -60,7 +60,7 @@ function attach(key) {
       return;
     }
     if (sock !== ws) return;
-    if (retries >= 5) { overlay("session ended", true); return; }
+    if (retries >= 5) { overlay("connection lost", true); return; }
     retries += 1;
     overlay("reconnecting…");
     retryTimer = setTimeout(() => attach(key), 2000);
@@ -211,6 +211,7 @@ let events = null;
 function connectEvents() {
   const ws = new WebSocket(wsUrl("/api/events"));
   events = ws;
+  ws.onopen = () => { $("feed").hidden = true; $("rows").classList.remove("stale"); };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.t === "rows") {
@@ -230,7 +231,10 @@ function connectEvents() {
   };
   ws.onclose = (e) => {
     if (e.code === 4401) { location.href = "/login"; return; }
-    if (events === ws) setTimeout(connectEvents, 2000);
+    if (events !== ws) return;
+    $("feed").hidden = false;
+    $("rows").classList.add("stale");
+    setTimeout(connectEvents, 2000);
   };
 }
 

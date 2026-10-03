@@ -103,6 +103,13 @@ def main():
             page.click("#tab-terminal")
             check("Terminal tab comes back", page.is_visible("#term") and not page.is_visible("#sketch"))
 
+            page.evaluate("events.close()")
+            page.wait_for_selector("#rows.stale", timeout=5000)
+            check("a lost live feed dims the rows and says it is reconnecting",
+                  page.is_visible("#feed") and "reconnecting" in page.inner_text("#feed"))
+            page.wait_for_selector("#rows:not(.stale)", timeout=10000)
+            check("the feed comes back by itself", not page.is_visible("#feed"))
+
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]
             page.goto(BASE + "/")
