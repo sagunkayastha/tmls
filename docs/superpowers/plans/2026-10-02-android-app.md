@@ -95,6 +95,12 @@ Written but NOT yet verified:
    session (create one with `+`, e.g. `tmls-app`; never attach to New_Vision/Season-36: attaching resizes
    their windows), keyboard, key bar, swipe-scroll (archbox tmux has `mouse on`), Back button, rotate.
    Screenshots to `android/out/shots/`. Kill the throwaway afterwards.
+5b. **Smoothness (user requirement: "smooth like the Claude app and other apps")** — see the spec's
+   *Smooth* section. Build the listed behaviours in step 2 (dark window bg, WebView hidden until first
+   paint, IME inset animation, predictive back, crossfade). On the device measure and record: cold start
+   (`am start -W`, median of 3, ≤ 1500 ms), `dumpsys gfxinfo` after scripted swipes/drawer/keyboard/rotate
+   (janky ≤ 5 %, p90 ≤ 16 ms), a DevTools trace over `adb forward` (no long task > 50 ms while typing or
+   scrolling), and a `screenrecord` for the user. Fix until green before step 6.
 6. **Release + update flow:** `android/make.sh` (creates `~/.config/tmls-android/` keystore; publishes to
    `~/stacks/tmls/apk/`). Add to `~/stacks/tmls/docker-compose.yml`: volume `./apk:/home/tmls/apk:ro` and
    `--apk-dir /home/tmls/apk` in `command`; `docker compose up -d`. Install the release APK on the phone

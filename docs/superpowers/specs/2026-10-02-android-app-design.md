@@ -39,6 +39,29 @@ apps have (hub `archbox` app, fin).
   `/`), all behind the login, files from `--apk-dir` (default `~/.config/tmls/apk`). In the
   container: `~/stacks/tmls/apk` mounted at `/home/tmls/apk`.
 
+## Smooth, like the Claude app (user requirement, 2026-10-02)
+
+The app must feel native, not like a web page in a box. Built in:
+- Dark window background in the theme (`#15191F`) and the WebView hidden until the first page has
+  painted: no white flash on start, on rotate, or between screens.
+- WebView kept alive across rotation/resize (`configChanges`), hardware-accelerated (default), no
+  zoom, no overscroll glow, no pull-to-refresh.
+- Edge-to-edge with the keyboard animated through `WindowInsets` (IME insets), so the page follows
+  the keyboard instead of jumping; the terminal refits once the animation ends.
+- Predictive back (`enableOnBackInvokedCallback`): Back closes the drawer/modal first, then the app.
+- Compose screens switch with a short crossfade; Setup/Unreachable never block the UI thread
+  (network on IO dispatcher).
+
+Measured on the Samsung (A52s, 120 Hz) — numbers recorded in PROGRESS.md:
+- **Cold start:** `adb shell am start -W` → `TotalTime` ≤ 1500 ms to first frame (3 runs, median).
+- **Frame pacing:** `dumpsys gfxinfo dev.sagun.tmls reset`, then scripted swipes (terminal scroll,
+  drawer open/close, keyboard show/hide, rotate), then `dumpsys gfxinfo` → janky frames ≤ 5 %,
+  90th percentile ≤ 16 ms.
+- **Web side:** debug build enables WebView debugging; a DevTools performance trace over
+  `adb forward` shows no long task > 50 ms during typing/scrolling.
+- **Screen recording** (`adb shell screenrecord`) of start → session → keyboard → scroll → back,
+  saved to `android/out/shots/` for the user to watch.
+
 ## Build, test, install (archbox)
 
 Same layout as `hub/android`: `android/Dockerfile.build` (JDK 17 + SDK 35 + Gradle 8.9, nothing on the

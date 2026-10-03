@@ -3,7 +3,7 @@ import json
 
 from tmls.web import server
 
-from tests.web.test_approve import client_logged_in
+from .test_approve import client_logged_in
 
 
 async def test_app_files_need_the_login(aiohttp_client, tmp_path):
@@ -13,19 +13,19 @@ async def test_app_files_need_the_login(aiohttp_client, tmp_path):
         assert resp.status == 302 and resp.headers["Location"] == "/login", path
 
 
-async def test_nothing_published_is_404(aiohttp_client, tmp_path):
+async def test_nothing_published_is_404(aiohttp_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "APK_DIR", tmp_path / "apk")
     client = await client_logged_in(aiohttp_client, tmp_path)
-    client.app["apk_dir"] = tmp_path / "apk"
     for path in ("/app/latest.json", "/app/tmls.apk"):
         resp = await client.get(path)
         assert resp.status == 404, path
 
 
-async def test_manifest_and_apk_are_served_as_published(aiohttp_client, tmp_path):
-    client = await client_logged_in(aiohttp_client, tmp_path)
+async def test_manifest_and_apk_are_served_as_published(aiohttp_client, monkeypatch, tmp_path):
     apk_dir = tmp_path / "apk"
     apk_dir.mkdir()
-    client.app["apk_dir"] = apk_dir
+    monkeypatch.setattr(server, "APK_DIR", apk_dir)
+    client = await client_logged_in(aiohttp_client, tmp_path)
     manifest = {"versionCode": 7, "versionName": "1.261002.7", "size": 3, "sha256": "ab" * 32}
     (apk_dir / "latest.json").write_text(json.dumps(manifest))
     (apk_dir / "tmls.apk").write_bytes(b"PK\x03")

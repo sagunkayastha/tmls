@@ -28,6 +28,26 @@ def term_text(page):
     return page.evaluate("document.querySelector('.xterm-rows').textContent")
 
 
+def app_checks(browser, desktop):
+    """The Android app's WebView (user agent "... TmlsApp/1"): a ⟳ App button asks the app to
+    check for an update via /app/update; a plain browser following it just lands on the page."""
+    check("a browser gets no ⟳ App button", desktop.locator("#app-update").count() == 0)
+    ctx = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+                              user_agent="Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile TmlsApp/1")
+    ctx.add_cookies(desktop.context.cookies())
+    a = ctx.new_page()
+    a.goto(BASE + "/")
+    a.wait_for_selector("#app-update")
+    check("the app gets a ⟳ App button", a.inner_text("#app-update").strip() == "⟳ App")
+    a.click("#shade", position={"x": 370, "y": 400})  # the rows drawer starts open on a phone
+    a.wait_for_function("!document.getElementById('rows').classList.contains('open')")
+    with a.expect_request(lambda r: r.url.endswith("/app/update")):
+        a.click("#app-update")
+    a.wait_for_load_state()
+    check(f"⟳ App goes to /app/update, which lands back on the page ({a.url})", a.url == BASE + "/")
+    ctx.close()
+
+
 def mobile_checks(browser, desktop):
     """A phone: the rows are a drawer behind ☰, the terminal gets the width, and a key bar
     supplies Esc, Tab, Ctrl and arrows. Same login (cookies), fresh storage (no saved session)."""
@@ -232,6 +252,7 @@ def main():
             check("Esc closes the New session modal", page.is_hidden("#new"))
 
             mobile_checks(browser, page)  # before the logout: it reuses this login's cookies
+            app_checks(browser, page)
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]
             page.goto(BASE + "/")
