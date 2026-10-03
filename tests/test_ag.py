@@ -31,6 +31,18 @@ def test_same_claude_name_on_two_hosts_needs_the_host():
         raise AssertionError("expected Ambiguous")
 
 
+def test_read_with_an_ambiguous_name_says_so_without_a_traceback(monkeypatch, capsys):
+    both = {**CLAUDES, "nas": [dict(CLAUDES[hosts.LOCAL][0])]}
+
+    async def survey(names):
+        return both, TMUX
+    monkeypatch.setattr(ag, "_survey", survey)
+    monkeypatch.setattr(ag, "_hosts", lambda: list(both))
+    assert ag.main(["read", "tmls"]) != 0
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "local:tmls" in err and "nas:tmls" in err
+
+
 def test_message_line_attests_only_what_it_is_told():
     line = json.loads(ag.message_line("hi <there>", sender="tmls", mode="bypass"))
     assert line["type"] == "user"

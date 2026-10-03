@@ -1,3 +1,6 @@
+import shlex
+import subprocess
+
 from tmls import hosts
 
 
@@ -107,14 +110,83 @@ def test_status_from_output_without_claude():
 
 
 def test_local_commands_skip_ssh():
-    assert hosts.attach_argv(hosts.LOCAL, "work") == ["tmux", "-u", "attach", "-t", "work"]
-    
+    assert hosts.attach_argv(hosts.LOCAL, "work") == ["tmux", "-u", "attach", "-t", "=work"]
+
 
 def test_remote_commands_quote_names():
     argv = hosts.attach_argv("nas", "my notes")
-    assert argv == ["ssh", "-t", "nas", "tmux -u attach -t 'my notes'"]
+    assert argv == ["ssh", "-t", "nas", "tmux -u attach -t '=my notes'"]
     assert hosts.list_argv("nas")[:4] == ["ssh", "-o", "BatchMode=yes", "-o"]
 
 
 def test_copy_command_is_shell_ready():
-    assert hosts.attach_command("nas", "my notes") == "ssh -t nas \"tmux -u attach -t 'my notes'\""
+    assert hosts.attach_command("nas", "work") == "ssh -t nas 'tmux -u attach -t =work'"
+
+
+def test_attach_command_is_shell_safe():
+    cmd = hosts.attach_command("nas", 'x"; touch /tmp/pwned; "')
+    assert shlex.split(cmd) == hosts.attach_argv("nas", 'x"; touch /tmp/pwned; "')
+    assert "$" not in hosts.attach_command("nas", "cost$5").replace("'=cost$5'", "")
+
+
+def test_pasted_copy_command_reaches_ssh_unchanged(tmp_path):
+    # a real shell, with ssh replaced by a function that prints its arguments
+    for name in ['x"; touch pwned; "', "cost$5", "it's `w` $(x)", "my notes"]:
+        cmd = hosts.attach_command("nas", name)
+        out = subprocess.run(["sh", "-c", "ssh() { printf '%s\\n' \"$@\"; }; " + cmd],
+                             capture_output=True, text=True, cwd=tmp_path).stdout
+        assert out.splitlines() == hosts.attach_argv("nas", name)[1:]
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_attach_targets_exact_name():
+    assert hosts.attach_argv(hosts.LOCAL, "work")[-1] == "=work"
+
+
+def test_listing_forces_utf8():
+    assert "tmux -u list-windows" in hosts.list_argv(hosts.LOCAL)[-1]
+
+
+def test_parse_skips_lines_that_are_not_windows():
+    out = "Welcome to the box\n1700000000\nwork:1:0:1699999990\nmotd line\n---\n"
+    sessions = hosts.parse("box", out)
+    assert [s.name for s in sessions] == ["work"]
+
+
+async def test_list_host_offline_when_output_is_garbage(monkeypatch):
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"garbage\n", b""
+
+    async def fake_exec(*argv, **kw):
+        return Proc()
+    monkeypatch.setattr(hosts.asyncio, "create_subprocess_exec", fake_exec)
+    online, sessions = await hosts.list_host("box")
+    assert (online, sessions) == (False, [])
+
+
+def test_half_written_status_file_keeps_its_failed_and_usage_lines():
+    # B's file was caught mid-write; the "failed" and "usage" after it are B's, not A's
+    out = ("1000\nA:1:0:990\nB:1:0:990\n---\n"
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n'
+           '{"status":"idle","statusUpdatedAt":9\n'
+           'failed\n'
+           'usage "model":"claude-haiku-4-5" "input_tokens":190000\n')
+    a = {s.name: s for s in hosts.parse("nas", out)}["A"]
+    assert (a.failed, a.model, a.context) == (False, None, 0)
+
+
+def test_parse_records_claudes_own_pane():
+    out = ("1000\nBudget:1:0:990\nnone:1:0:990\nodd:1:0:990\nplain:1:0:10\n---\n"
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"Budget:@7.%7"}\n'
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"none"}\n'
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"odd:@1.1"}\n')
+    got = {s.name: s.pane for s in hosts.parse("nas", out)}
+    assert got == {"Budget": "%7", "none": None, "odd": None, "plain": None}
+
+
+def test_blank_line_after_a_status_file_keeps_its_failed_line():
+    out = '1000\nA:1:0:990\n---\n{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n\nfailed\n'
+    assert hosts.parse("nas", out)[0].failed is True

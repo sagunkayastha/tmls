@@ -50,29 +50,46 @@ class Session:
     title: str | None = None    # Claude's name for the conversation (/rename, or one it made up)
     model: str | None = None    # model of Claude's newest reply
     context: int = 0            # tokens in context at Claude's newest reply
+    pane: str | None = None     # Claude's own tmux pane ("%7"); after a split it needn't be the active one
 
 
 def parse(host, out):
     """First line is the host's `date +%s`, then one line per window (newest output wins), then
-    after "---" Claude Code's session files."""
+    after "---" Claude Code's session files. Lines a login script printed are skipped; ValueError
+    when there's no clock line."""
     tmux, _, claude = out.partition("\n---\n")
-    now, *lines = tmux.splitlines()
+    lines = tmux.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.isdigit()), None)
+    if start is None:
+        raise ValueError("no clock line in the listing")
+    now, lines = lines[start], lines[start + 1:]
     sessions = {}
     for line in lines:
-        name, windows, attached, activity = line.rsplit(":", 3)
+        try:
+            name, windows, attached, activity = line.rsplit(":", 3)
+            int(windows), int(activity)
+        except ValueError:
+            continue
         if name not in sessions or int(activity) > sessions[name].activity:
             sessions[name] = Session(host, name, int(windows), attached != "0", int(activity), int(now))
     files = []
+    skipping = False  # the last file didn't parse (caught mid-write): its lines aren't the previous one's
     for line in claude.splitlines():
-        if line == "failed" and files:
-            files[-1]["failed"] = True
-            continue
-        if line.startswith("usage") and files:
-            files[-1].update(usage(line))
+        if not line.strip():
+            continue  # `cat "$f"; echo` after a file that ends in a newline
+        if line == "failed" or line.startswith("usage"):
+            if skipping or not files:
+                continue
+            if line == "failed":
+                files[-1]["failed"] = True
+            else:
+                files[-1].update(usage(line))
             continue
         try:
             files.append(json.loads(line))
+            skipping = False
         except ValueError:
+            skipping = True
             continue
     for c in files:
         s = sessions.get((c.get("tmux") or "").split(":")[0])
@@ -84,6 +101,8 @@ def parse(host, out):
             s.claude, s.claude_since = status, since
             s.waiting, s.failed, s.title = c.get("waitingFor"), bool(c.get("failed")), c.get("name")
             s.model, s.context = c.get("model"), c.get("context", 0)
+            m = re.search(r"%\d+$", c.get("tmux") or "")
+            s.pane = m.group(0) if m else None
     return list(sessions.values())
 
 
@@ -111,7 +130,8 @@ def rank(status, since):
 
 
 def list_argv(host):
-    script = f"date +%s; tmux list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLAUDE}; }}"
+    # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing
+    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLAUDE}; }}"
     if host == LOCAL:
         return ["sh", "-c", script]
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, script]
@@ -137,14 +157,14 @@ def status(s, seen, started):
 
 def attach_argv(host, name):
     # -u: non-interactive ssh often has no UTF-8 locale, and tmux then draws "_" and "lqqk"
-    tmux = ["tmux", "-u", "attach", "-t", name]
+    # "=": the exact name; a bare name is a prefix match (a stale "work" row would attach "workshop")
+    tmux = ["tmux", "-u", "attach", "-t", "=" + name]
     return tmux if host == LOCAL else ["ssh", "-t", host, shlex.join(tmux)]
 
 
 def attach_command(host, name):
-    """The attach command as a user would type it (for Copy)."""
-    argv = attach_argv(host, name)
-    return shlex.join(argv) if host == LOCAL else f'ssh -t {host} "{argv[-1]}"'
+    """The attach command as a user would type it (for Copy), safe to paste into a shell."""
+    return shlex.join(attach_argv(host, name))
 
 
 def read_config(path=CONFIG):
@@ -177,5 +197,8 @@ async def list_host(host):
     except (OSError, asyncio.TimeoutError):
         return False, []
     if proc.returncode == 0:
-        return True, parse(host, out.decode())
+        try:
+            return True, parse(host, out.decode())
+        except ValueError:  # not a listing (e.g. a login script's output only): treat as unreachable
+            return False, []
     return b"no server running" in err, []
