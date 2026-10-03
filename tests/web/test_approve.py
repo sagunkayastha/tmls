@@ -26,7 +26,7 @@ async def test_approve_happy_path_and_changed_prompt(aiohttp_client, monkeypatch
     second = await client.post("/api/approve", json=body)
     assert second.status == 409 and "isn't asking" in (await second.json())["error"]
     assert answer.call_count == 2
-    answer.assert_any_await("local", "Season-36", ["Bash", "rm x"], True)
+    answer.assert_any_await("local", "Season-36", ["Bash", "rm x"], True, pane=None)
 
 
 async def test_approve_missing_fields_and_cross_origin(aiohttp_client, monkeypatch, tmp_path):
@@ -43,3 +43,20 @@ async def test_approve_missing_fields_and_cross_origin(aiohttp_client, monkeypat
                                                        "shown": ["Bash"], "yes": False})
     assert unknown.status == 400
     answer.assert_not_awaited()
+
+
+async def test_approve_passes_claudes_pane_and_rejects_anything_else(aiohttp_client, monkeypatch, tmp_path):
+    client = await client_logged_in(aiohttp_client, tmp_path)
+    answer = AsyncMock(return_value=None)
+    monkeypatch.setattr(server.approve, "answer", answer)
+    body = {"host": "local", "name": "x", "shown": ["Bash"], "yes": True}
+    assert (await client.post("/api/approve", json={**body, "pane": "%7"})).status == 200
+    answer.assert_awaited_with("local", "x", ["Bash"], True, pane="%7")
+    assert (await client.post("/api/approve", json=body)).status == 200
+    answer.assert_awaited_with("local", "x", ["Bash"], True, pane=None)
+    assert (await client.post("/api/approve", json={**body, "pane": None})).status == 200
+    answer.assert_awaited_with("local", "x", ["Bash"], True, pane=None)
+    calls = answer.await_count
+    for bad in ("evil; rm", "%", "%7\n", "7", 7, ["%7"]):
+        assert (await client.post("/api/approve", json={**body, "pane": bad})).status == 400
+    assert answer.await_count == calls

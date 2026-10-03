@@ -32,7 +32,7 @@ async def poll_once(app):
             if not s.claude and lines.get(k, (None,))[0] != s.activity:  # plain tmux: only on new output
                 screens[k] = (s.activity, _screen(host, s.name))
             if s.claude == "waiting":
-                prompts_up[k] = approve.current(host, s.name)
+                prompts_up[k] = approve.current(host, s.name, pane=s.pane)
     for (k, (activity, _)), text in zip(screens.items(), await asyncio.gather(*(c for _, c in screens.values()))):
         lines[k] = (activity, text)
     shown = dict(zip(prompts_up, await asyncio.gather(*prompts_up.values())))

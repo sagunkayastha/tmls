@@ -50,11 +50,11 @@ def prompt():
     return json.loads(path.read_text()) if path.exists() else ["Bash", "rm x"]
 
 
-async def current(host, name):
+async def current(host, name, pane=None):
     return prompt() if name == "beta" else None
 
 
-async def answer(host, name, shown, yes):
+async def answer(host, name, shown, yes, pane=None):
     with open(folder / "approved.jsonl", "a") as f:
         f.write(json.dumps([host, name, shown, yes]) + "\n")
     return None if shown == prompt() else f"{name} isn't asking that any more"

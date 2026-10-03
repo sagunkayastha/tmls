@@ -12,6 +12,7 @@ not read; ask for a reply when it matters.
 import argparse
 import asyncio
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -44,8 +45,9 @@ def codex_argv(host, thread, text):
     return _argv(host, f"{find} --thread {shlex.quote(thread)} --message {shlex.quote(text)}")
 
 
-def read_argv(host, name, lines):
-    return _argv(host, f"tmux capture-pane -p -t {shlex.quote(f'={name}:')} -S -{int(lines)}")
+def read_argv(host, name, lines, pane=None):
+    # pane: Claude's own ("%7"); after a split the window's active pane may be a shell
+    return _argv(host, f"tmux capture-pane -p -t {shlex.quote(pane or f'={name}:')} -S -{int(lines)}")
 
 
 def message_line(text, sender, mode):
@@ -136,12 +138,13 @@ def cmd_read(args):
             print(f"{args.name} isn't in tmux; its screen can't be read", file=sys.stderr)
             return 1
         name = what["tmux"].split(":")[0]
+        pane = re.search(r"%\d+$", what["tmux"])
     elif kind == "tmux":
-        name = what
+        name, pane = what, None
     else:
         print(f"no session named {args.name}", file=sys.stderr)
         return 1
-    code, out = _run(read_argv(host, name, args.n))
+    code, out = _run(read_argv(host, name, args.n, pane and pane.group(0)))
     print(out)
     return code
 

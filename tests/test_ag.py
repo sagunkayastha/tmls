@@ -76,6 +76,7 @@ def test_remote_commands_quote_their_arguments():
     assert argv[:3] == ["ssh", "-o", "BatchMode=yes"] and "'/run/x y.sock'" in argv[-1]
     assert ag.codex_argv("archbox", "my thread", "a; b")[-1].endswith("--thread 'my thread' --message 'a; b'")
     assert ag.read_argv(hosts.LOCAL, "Season-36", 40)[-1] == "tmux capture-pane -p -t =Season-36: -S -40"
+    assert ag.read_argv(hosts.LOCAL, "Season-36", 40, "%7")[-1] == "tmux capture-pane -p -t %7 -S -40"
 
 
 def test_survey_lists_claude_even_without_a_tmux_server():

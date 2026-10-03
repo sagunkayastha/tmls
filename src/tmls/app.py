@@ -170,7 +170,8 @@ class Approval(Vertical):
     async def on_button_pressed(self, event):
         event.stop()
         yes = event.button.has_class("yes")
-        error = await approve.answer(self.session.host, self.session.name, self.shown, yes)
+        error = await approve.answer(self.session.host, self.session.name, self.shown, yes,
+                                    pane=self.session.pane)
         self.app.notify(error or f"{'Approved' if yes else 'Denied'} in {self.session.name}.",
                         severity="error" if error else "information", markup=False)
         await self.remove()
@@ -529,7 +530,7 @@ class Tmls(App):
         asking = [s for _, _, ss in self._results for s in ss
                   if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"
                   and s.host != hosts.KITTY]
-        shown = await asyncio.gather(*(approve.current(s.host, s.name) for s in asking))
+        shown = await asyncio.gather(*(approve.current(s.host, s.name, s.pane) for s in asking))
         boxes = [Approval(s, req) for s, req in zip(asking, shown) if req]
         if boxes and panel.display:
             await panel.mount_all(boxes, before=0)
@@ -572,7 +573,7 @@ class Tmls(App):
             self.notify(f"Queued for {session.name} ({len(pending)} waiting).", markup=False)
             await self._render_rows()
             return
-        error = await prompts.send(session.host, session.name, text)
+        error = await prompts.send(session.host, session.name, text, pane=session.pane)
         self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information",
                     markup=False)
 
@@ -588,7 +589,7 @@ class Tmls(App):
             if not pending or self.marks.get(key) not in {"done", "idle"}:
                 return
             message = pending[0]
-            error = await prompts.send(session.host, session.name, message)
+            error = await prompts.send(session.host, session.name, message, pane=session.pane)
             if error:
                 self.notify(f"Could not send queued message to {session.name}: {error}", severity="error",
                             markup=False)

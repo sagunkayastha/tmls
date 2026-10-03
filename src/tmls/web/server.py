@@ -1,6 +1,7 @@
 """tmls in a browser: one big terminal, status rows, approve, sketch."""
 import argparse
 import asyncio
+import re
 import time
 from pathlib import Path
 
@@ -110,13 +111,15 @@ async def approve_prompt(request):
     try:
         data = await request.json()
         host, name, shown, yes = (data[field] for field in ("host", "name", "shown", "yes"))
-        if (not isinstance(host, str) or not isinstance(name, str) or not name
+        pane = data.get("pane")  # Claude's own tmux pane ("%7"); absent for sessions without one
+        if (not (pane is None or isinstance(pane, str) and re.fullmatch(r"%[0-9]+", pane))
+                or not isinstance(host, str) or not isinstance(name, str) or not name
                 or not isinstance(shown, list) or not all(isinstance(line, str) for line in shown)
                 or not isinstance(yes, bool) or host not in (*request.app["hosts"], hosts.LOCAL)):
             raise ValueError
     except (ValueError, KeyError, TypeError):
         return web.json_response({"ok": False, "error": "invalid approval request"}, status=400)
-    error = await approve.answer(host, name, shown, yes)
+    error = await approve.answer(host, name, shown, yes, pane=pane)
     if error:
         return web.json_response({"ok": False, "error": error}, status=409)
     return web.json_response({"ok": True})

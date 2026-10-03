@@ -63,3 +63,8 @@ def test_rows_carry_a_display_label(monkeypatch):
     local = hosts.Session(hosts.LOCAL, "a", 1, False, 0, 100)
     out = rows.build(rows.State(), [(hosts.LOCAL, True, [local])], {})
     assert out[0]["host"] == hosts.LOCAL and out[0]["label"] == "archbox"
+
+
+def test_rows_carry_claudes_pane():
+    out = rows.build(rows.State(), [("box", True, [sess("a", pane="%7"), sess("b")])], {})
+    assert [r["pane"] for r in out] == ["%7", None]

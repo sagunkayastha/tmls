@@ -45,7 +45,8 @@ def build(state, found, extras):
             extra = extras.get(k, {})
             out.append({"key": k, "host": host, "label": hosts.label(host), "name": s.name, "mark": mark,
                         "line": second_line(s, mark, extra.get("line")), "waiting": s.waiting,
-                        "shown": extra.get("shown") if mark == "waiting" else None, "online": True})
+                        "shown": extra.get("shown") if mark == "waiting" else None, "pane": s.pane,
+                        "online": True})
     state.marks = {r["key"]: r["mark"] for r in out}
     state.rows = {r["key"]: r for r in out}
     return out

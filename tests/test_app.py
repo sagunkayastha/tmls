@@ -93,7 +93,7 @@ async def test_sessions_whose_names_sanitize_alike_both_get_rows(fake_hosts, mon
     async def list_host(host):
         return True, [hosts.Session(host, n, 1, False, 0, 3600) for n in sorted(names)]  # idle: Ask sends
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     async def rename(host, old, new):
@@ -863,7 +863,7 @@ async def test_ask_panel_sends_saved_recent_or_typed_messages_to_the_shown_sessi
     from tmls import prompts
     sent = []
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     async def recent(host, name):
@@ -900,7 +900,7 @@ async def test_working_ask_queues_typed_and_saved_messages_then_can_clear(clock_
     from tmls import prompts
     sent = []
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     monkeypatch.setattr(prompts, "send", send)
@@ -935,7 +935,7 @@ async def test_ask_queues_while_a_permission_prompt_waits_instead_of_typing_into
     from tmls import prompts
     sent = []
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     async def list_host(host):
@@ -960,7 +960,7 @@ async def test_session_names_with_markup_brackets_can_be_asked_and_notified(cloc
     sent = []
     odd = "x[/]y"
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     async def recent(host, name):
@@ -989,7 +989,7 @@ async def test_queue_releases_one_message_per_done_or_idle_change(clock_hosts, m
     from tmls import prompts
     sent = []
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     monkeypatch.setattr(prompts, "send", send)
@@ -1036,7 +1036,7 @@ async def test_failed_transition_keeps_queue_until_a_later_turn(clock_hosts, mon
         return True, [hosts.Session(host, "beta", 1, False, state["now"], state["now"],
                                     state["status"], state["now"] - 10, failed=state["failed"])]
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     monkeypatch.setattr(hosts, "list_host", list_host)
@@ -1061,7 +1061,7 @@ async def test_failed_transition_keeps_queue_until_a_later_turn(clock_hosts, mon
 async def test_open_ask_title_tracks_delivery_count(clock_hosts, monkeypatch):
     from tmls import prompts
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         return None
 
     async def recent(host, name):
@@ -1089,7 +1089,7 @@ async def test_failed_queue_keeps_messages_and_rename_moves_it(clock_hosts, monk
     from tmls import prompts
     sent = []
 
-    async def send(host, name, text):
+    async def send(host, name, text, pane=None):
         sent.append((host, name, text))
 
     monkeypatch.setattr(prompts, "send", send)
@@ -1115,10 +1115,10 @@ async def test_waiting_permission_prompts_can_be_answered_from_the_alerts_panel(
         return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590, waiting="permission prompt"),
                       hosts.Session(host, "quiz", 1, False, 3600, 3600, "waiting", 3590, waiting="input needed")]
 
-    async def current(host, name):
+    async def current(host, name, pane=None):
         return ["Bash command", "touch /tmp/x"]
 
-    async def answer(host, name, shown, yes):
+    async def answer(host, name, shown, yes, pane=None):
         answered.append((host, name, shown, yes))
     monkeypatch.setattr(hosts, "list_host", list_host)
     monkeypatch.setattr(approve, "current", current)
@@ -1147,7 +1147,7 @@ async def test_alerts_panel_does_not_read_permission_prompts_of_kitty_only_sessi
         return [hosts.Session(hosts.KITTY, "notes", 1, False, 0, 3600, "waiting", 3590, win,
                               waiting="permission prompt")]
 
-    async def current(host, name):
+    async def current(host, name, pane=None):
         asked.append(host)
         return ["Bash command", "touch /tmp/x"]
     monkeypatch.setattr(hosts, "list_host", list_host)
@@ -1223,3 +1223,58 @@ async def test_enter_in_the_name_field_renames(fake_hosts, monkeypatch):
         await pilot.press("enter")
         assert await wait_for(pilot, lambda: called == [("box", "alpha", "renamed")])
         assert await wait_for(pilot, lambda: not isinstance(app.screen, manage.SessionActions))
+
+
+async def test_ask_sends_and_delivers_queued_messages_to_claudes_pane(clock_hosts, monkeypatch):
+    from tmls import prompts
+    sent = []
+    state = {"status": "idle", "now": 3600}
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "beta", 1, False, state["now"], state["now"], state["status"],
+                                    state["now"] - 10, pane="%7")]
+
+    async def send(host, name, text, pane=None):
+        sent.append((host, name, text, pane))
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(prompts, "send", send)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'beta')}"))
+        await open_session(app, pilot, "beta")
+        await app.send_prompt("now")
+        assert sent == [("box", "beta", "now", "%7")]
+        state.update(status="busy", now=3620)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["beta"].endswith("●"))
+        await app.send_prompt("later")
+        state.update(status="idle", now=3640)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: sent[-1] == ("box", "beta", "later", "%7"))
+
+
+async def test_alerts_panel_reads_and_answers_the_prompt_in_claudes_pane(clock_hosts, monkeypatch):
+    from tmls import approve
+    seen, answered = [], []
+
+    async def list_host(host):
+        return True, [hosts.Session(host, "ask", 1, False, 3600, 3600, "waiting", 3590,
+                                    waiting="permission prompt", pane="%7")]
+
+    async def current(host, name, pane=None):
+        seen.append(pane)
+        return ["Bash command", "touch /tmp/x"]
+
+    async def answer(host, name, shown, yes, pane=None):
+        answered.append(pane)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(approve, "current", current)
+    monkeypatch.setattr(approve, "answer", answer)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        await pilot.click("#alerts-button")
+        assert await wait_for(pilot, lambda: len(app.query(tmls_app.Approval)) == 1)
+        await pilot.click(app.query_one(tmls_app.Approval).query_one(".yes"))
+        assert await wait_for(pilot, lambda: answered == ["%7"])
+        assert seen == ["%7"]

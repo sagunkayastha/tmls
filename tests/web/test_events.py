@@ -20,7 +20,7 @@ async def make(aiohttp_client, monkeypatch, listing):
     async def run(argv, stdin=None):
         return 0, "line1\nlast line\n"
 
-    async def current(host, name):
+    async def current(host, name, pane=None):
         return listing.get("shown")
 
     monkeypatch.setattr(hosts, "list_host", list_host)
