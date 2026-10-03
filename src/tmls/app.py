@@ -1,6 +1,7 @@
 """tmls: tmux sessions from every host on the left, the chosen one live on the right."""
 import argparse
 import asyncio
+import hashlib
 import os
 import re
 import shutil
@@ -22,7 +23,10 @@ REFRESH_SECONDS = 5
 
 
 def slug(host, name):
-    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{host}-{name}")
+    """A widget-id-safe key that stays unique: the readable part can collide ("my work" and
+    "my_work"), so a short hash of the exact host and name is appended."""
+    digest = hashlib.sha1(f"{host}\0{name}".encode()).hexdigest()[:8]
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{host}-{name}") + "-" + digest
 
 
 def launch_window(argv):
@@ -128,7 +132,7 @@ class AddSession(Static):
     """The + on a host line: a new tmux session there."""
 
     def __init__(self, host):
-        super().__init__("+", id=f"add-{slug(host, '')}".rstrip("-"))
+        super().__init__("+", id=f"add-{slug(host, '')}")
         self.host = host
 
     def on_click(self):
@@ -158,7 +162,7 @@ class Approval(Vertical):
 
     def compose(self):
         yield Static(Text("? ", style="bold #e5c07b") + f"{self.session.name} · permission prompt")
-        yield Static("\n".join(self.shown[:8]), classes="request")
+        yield Static("\n".join(self.shown[:8]), classes="request", markup=False)
         with Horizontal(classes="answers"):
             yield Button("Yes", classes="yes", variant="success")
             yield Button("No", classes="no", variant="error")
@@ -168,7 +172,7 @@ class Approval(Vertical):
         yes = event.button.has_class("yes")
         error = await approve.answer(self.session.host, self.session.name, self.shown, yes)
         self.app.notify(error or f"{'Approved' if yes else 'Denied'} in {self.session.name}.",
-                        severity="error" if error else "information")
+                        severity="error" if error else "information", markup=False)
         await self.remove()
 
 
@@ -251,6 +255,8 @@ class Tmls(App):
         self.current = None      # slug of the tab being shown
         self._listing = None
         self._results = []       # [(host, online, sessions)] from the last poll
+        self._refreshing = False  # a poll is in flight
+        self._refresh_again = False  # a refresh was asked for during it
         self.started = {}        # host -> host clock at first poll, minus QUIET: older output isn't news
         self.seen = {}           # slug -> host clock when its tab was last on screen
         self._render_lock = asyncio.Lock()  # refresh and clicks both redraw the list
@@ -289,20 +295,32 @@ class Tmls(App):
         self.set_interval(REFRESH_SECONDS, self.refresh_sessions)
 
     def refresh_sessions(self):
-        self.run_worker(self._refresh(), exclusive=True, group="refresh")
+        if self._refreshing:
+            # a slow host is still answering; cancelling would throw away every host's result,
+            # and that poll may predate a rename or kill, so poll again once it is done
+            self._refresh_again = True
+            return
+        self._refreshing = True
+        self.run_worker(self._refresh(), group="refresh")
 
     async def _refresh(self):
-        names = hosts.hosts(self.remotes)
-        results = await asyncio.gather(*(hosts.list_host(h) for h in names))
-        found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
-        kitty = await local.list_sessions()
-        if kitty:
-            found.append((hosts.KITTY, True, kitty))
-        for h, _, ss in found:
-            if ss:
-                self.started.setdefault(h, ss[0].now - hosts.QUIET)
-        self._results = found  # only now: a redraw while awaiting must not see hosts without `started`
-        await self._render_rows(bool(self._results))
+        try:
+            names = hosts.hosts(self.remotes)
+            results = await asyncio.gather(*(hosts.list_host(h) for h in names))
+            found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
+            kitty = await local.list_sessions()
+            if kitty:
+                found.append((hosts.KITTY, True, kitty))
+            for h, _, ss in found:
+                if ss:
+                    self.started.setdefault(h, ss[0].now - hosts.QUIET)
+            self._results = found  # only now: a redraw while awaiting must not see hosts without `started`
+            await self._render_rows(bool(self._results))
+        finally:
+            self._refreshing = False
+        if self._refresh_again:  # not in finally: a cancelled poll (app exiting) mustn't start another
+            self._refresh_again = False
+            self.refresh_sessions()
 
     def _mark(self, s):
         key = slug(s.host, s.name)
@@ -337,7 +355,7 @@ class Tmls(App):
                         self.run_worker(self._deliver_queued(s), group=f"queue-{key}")
                     elif m == "failed":
                         self.notify(f"{s.name} failed; {len(self.queue[key])} queued message(s) kept.",
-                                    severity="warning")
+                                    severity="warning", markup=False)
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
         if listing == self._listing:
@@ -351,7 +369,7 @@ class Tmls(App):
                                   "lists none", classes="host-label"))
         for h, online, sm in rows:
             label = hosts.label(h) if online else f"{hosts.label(h)} · offline"
-            title = Static(label, classes="host-label", id=f"host-{slug(h, '')}".rstrip("-"))
+            title = Static(label, classes="host-label", id=f"host-{slug(h, '')}")
             title.styles.border_left = ("solid", self._host_color(h))
             header = [title]
             if online and h != hosts.KITTY:
@@ -370,7 +388,7 @@ class Tmls(App):
                 # not inline: this runs in the clicked row's handler, and the redraw removes that row
                 self.run_worker(self._render_rows(), group="render")
             else:
-                self.notify(f"{session.name} isn't in a kitty window tmls can reach.")
+                self.notify(f"{session.name} isn't in a kitty window tmls can reach.", markup=False)
             return
         if key not in self.open_sessions:
             self.open_sessions[key] = session
@@ -487,7 +505,7 @@ class Tmls(App):
             notifications.save(self.notifications)
         except OSError as error:
             setattr(self.notifications, key, old)
-            self.notify(f"Could not save notification switch: {error}", severity="error")
+            self.notify(f"Could not save notification switch: {error}", severity="error", markup=False)
         labels = {"desktop": "Desktop", "sound": "Sound", "silence_focused": "Silence focused"}
         button.label = f"{labels[key]} {'ON' if getattr(self.notifications, key) else 'OFF'}"
 
@@ -509,7 +527,8 @@ class Tmls(App):
     async def _show_approvals(self, panel):
         """Sessions at a permission prompt right now, with the live request and Yes/No."""
         asking = [s for _, _, ss in self._results for s in ss
-                  if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"]
+                  if self.marks.get(slug(s.host, s.name)) == "waiting" and s.waiting == "permission prompt"
+                  and s.host != hosts.KITTY]
         shown = await asyncio.gather(*(approve.current(s.host, s.name) for s in asking))
         boxes = [Approval(s, req) for s, req in zip(asking, shown) if req]
         if boxes and panel.display:
@@ -547,19 +566,20 @@ class Tmls(App):
         if session is None:
             return
         key = slug(session.host, session.name)
-        if self.marks.get(key) == "running":
+        if self.marks.get(key) in ("running", "waiting"):
             pending = self.queue.setdefault(key, [])
             pending.append(text)
-            self.notify(f"Queued for {session.name} ({len(pending)} waiting).")
+            self.notify(f"Queued for {session.name} ({len(pending)} waiting).", markup=False)
             await self._render_rows()
             return
         error = await prompts.send(session.host, session.name, text)
-        self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information")
+        self.notify(error or f"Sent to {session.name}.", severity="error" if error else "information",
+                    markup=False)
 
     def _ask_title(self, session):
         count = len(self.queue.get(slug(session.host, session.name), ()))
-        self.query_one("#ask").border_title = (f"Send to {session.name} · {count} queued" if count
-                                               else f"Send to {session.name}")
+        self.query_one("#ask").border_title = Text(f"Send to {session.name} · {count} queued" if count
+                                                    else f"Send to {session.name}")
 
     async def _deliver_queued(self, session):
         key = slug(session.host, session.name)
@@ -570,7 +590,8 @@ class Tmls(App):
             message = pending[0]
             error = await prompts.send(session.host, session.name, message)
             if error:
-                self.notify(f"Could not send queued message to {session.name}: {error}", severity="error")
+                self.notify(f"Could not send queued message to {session.name}: {error}", severity="error",
+                            markup=False)
                 return
             if self.queue.get(key) is pending and pending and pending[0] == message:
                 pending.pop(0)
@@ -579,7 +600,7 @@ class Tmls(App):
                 if self.query_one("#ask").display and self.current == key:
                     self._ask_title(session)
                 await self._render_rows()
-            self.notify(f"Sent queued message to {session.name}.")
+            self.notify(f"Sent queued message to {session.name}.", markup=False)
         finally:
             self._sending.discard(key)
 
@@ -603,7 +624,7 @@ class Tmls(App):
         try:
             path, text = await viewer.load_file(session.host, session.name, event.target)
         except viewer.ViewerError as error:
-            self.notify(f"{event.target}: {error}", severity="error")
+            self.notify(f"{event.target}: {error}", severity="error", markup=False)
             return
         for old in self.query(FileViewer):
             await old.remove()
@@ -644,11 +665,11 @@ class Tmls(App):
             return
         if event.button.id == "open":
             launch_window(hosts.attach_argv(session.host, session.name))
-            self.notify(f"Opened {session.name} in a new window.")
+            self.notify(f"Opened {session.name} in a new window.", markup=False)
         elif event.button.id == "copy":
             cmd = hosts.attach_command(session.host, session.name)
             self.copy_to_clipboard(cmd)
-            self.notify(f"Copied: {cmd}")
+            self.notify(f"Copied: {cmd}", markup=False)
 
 
 def main():
