@@ -72,16 +72,23 @@ def parse(host, out):
         if name not in sessions or int(activity) > sessions[name].activity:
             sessions[name] = Session(host, name, int(windows), attached != "0", int(activity), int(now))
     files = []
+    skipping = False  # the last file didn't parse (caught mid-write): its lines aren't the previous one's
     for line in claude.splitlines():
-        if line == "failed" and files:
-            files[-1]["failed"] = True
-            continue
-        if line.startswith("usage") and files:
-            files[-1].update(usage(line))
+        if not line.strip():
+            continue  # `cat "$f"; echo` after a file that ends in a newline
+        if line == "failed" or line.startswith("usage"):
+            if skipping or not files:
+                continue
+            if line == "failed":
+                files[-1]["failed"] = True
+            else:
+                files[-1].update(usage(line))
             continue
         try:
             files.append(json.loads(line))
+            skipping = False
         except ValueError:
+            skipping = True
             continue
     for c in files:
         s = sessions.get((c.get("tmux") or "").split(":")[0])

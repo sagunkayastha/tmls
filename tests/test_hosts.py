@@ -138,3 +138,19 @@ async def test_list_host_offline_when_output_is_garbage(monkeypatch):
     monkeypatch.setattr(hosts.asyncio, "create_subprocess_exec", fake_exec)
     online, sessions = await hosts.list_host("box")
     assert (online, sessions) == (False, [])
+
+
+def test_half_written_status_file_keeps_its_failed_and_usage_lines():
+    # B's file was caught mid-write; the "failed" and "usage" after it are B's, not A's
+    out = ("1000\nA:1:0:990\nB:1:0:990\n---\n"
+           '{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n'
+           '{"status":"idle","statusUpdatedAt":9\n'
+           'failed\n'
+           'usage "model":"claude-haiku-4-5" "input_tokens":190000\n')
+    a = {s.name: s for s in hosts.parse("nas", out)}["A"]
+    assert (a.failed, a.model, a.context) == (False, None, 0)
+
+
+def test_blank_line_after_a_status_file_keeps_its_failed_line():
+    out = '1000\nA:1:0:990\n---\n{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n\nfailed\n'
+    assert hosts.parse("nas", out)[0].failed is True
