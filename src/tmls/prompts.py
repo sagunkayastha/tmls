@@ -1,6 +1,7 @@
 """Messages for a session: saved prompts, what you typed to its Claude before, and sending."""
 import asyncio
 import json
+import secrets
 import shlex
 
 from tmls import hosts
@@ -75,7 +76,8 @@ async def send(host, name, text, pane=None):
     the tab needn't be open and a multi-line message arrives whole instead of line by line.
     `pane` (Claude's own, "%7") is the target when given, else the window's active pane."""
     t = shlex.quote(pane or f"={name}:")
-    script = (f"tmux load-buffer -b tmls-send - && tmux paste-buffer -p -d -b tmls-send -t {t} "
+    buf = f"tmls-{secrets.token_hex(4)}"  # one per send: two sends in the same tick can't swap texts
+    script = (f"tmux load-buffer -b {buf} - && tmux paste-buffer -p -d -b {buf} -t {t} "
               f"&& sleep 0.2 && tmux send-keys -t {t} Enter")
     code, out = await _run(_run_argv(host, script), stdin=text.encode())
     return None if code == 0 else (out.strip() or f"couldn't send to {name}")

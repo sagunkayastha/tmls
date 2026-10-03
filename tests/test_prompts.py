@@ -74,3 +74,12 @@ async def test_send_targets_claudes_pane_when_given(scripts):
     assert await prompts.send("box", "work", "hi") is None
     assert targets(scripts[0]) == ["%7", "%7"]
     assert targets(scripts[1]) == ["=work:", "=work:"]
+
+
+async def test_each_send_uses_its_own_buffer(scripts):
+    await prompts.send("box", "a", "one")
+    await prompts.send("box", "b", "two")
+    buffers = [re.findall(r"-b (\S+)", s) for s in scripts]
+    for load, paste in buffers:
+        assert load == paste and re.fullmatch(r"tmls-[0-9a-f]+", load)
+    assert buffers[0][0] != buffers[1][0]
