@@ -2,13 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- resizes-content: the on-screen keyboard shrinks the page, so the terminal refits above it -->
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>tmls</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
+  <button id="menu" title="Sessions">☰</button>
   <button id="tab-terminal" class="tab on">Terminal</button>
   <button id="tab-sketch" class="tab">Sketch</button>
   <span id="title">pick a session</span>
@@ -26,10 +28,17 @@
     <div id="term"></div>
     <div id="sketch" hidden></div>
     <div id="overlay" hidden><p id="overlay-text"></p><button id="reattach" hidden>Reattach</button></div>
-    <p id="empty">Pick a session on the right.</p>
+    <p id="empty">Pick a session<span class="wide"> on the right</span>.</p>
   </section>
+  <div id="shade"></div>
   <aside id="rows"></aside>
 </main>
+<!-- phones: the keys a soft keyboard lacks; Ctrl arms the next key -->
+<div id="keys">
+  <button data-key="Escape">Esc</button><button data-key="Tab">Tab</button><button data-key="Ctrl">Ctrl</button>
+  <button data-key="Up">↑</button><button data-key="Down">↓</button><button data-key="Left">←</button><button data-key="Right">→</button>
+  <button data-key="/">/</button><button data-key="-">-</button><button data-key="|">|</button>
+</div>
 <div id="new" hidden>
   <form id="new-form" autocomplete="off">
     <div id="new-title">New session</div>

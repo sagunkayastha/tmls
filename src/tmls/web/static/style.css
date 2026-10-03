@@ -4,6 +4,7 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+body { height: 100dvh; }  /* phones: the visible height, under the browser bar and keyboard */
 body { background: var(--bg); color: var(--text); font: 14px system-ui, sans-serif;
        display: flex; flex-direction: column; }
 button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
@@ -63,3 +64,19 @@ main { flex: 1; display: flex; min-height: 0; }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel);
          border: 1px solid var(--fail); border-radius: 8px; padding: 8px 14px; z-index: 9; }
 .xterm-viewport { scrollbar-color: var(--line) transparent; }
+
+/* ---- phones: the terminal gets the width; rows slide in from ☰; a key bar under the terminal ---- */
+#menu, #keys, #shade { display: none; }
+#keys { gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); overflow-x: auto; }
+#keys button { flex: none; padding: 6px 12px; }
+#keys button.on { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 700px) {
+  #menu { display: inline-block; }
+  #zoom-out, #zoom-in, #zoom-size, .wide { display: none; }
+  #keys { display: flex; }
+  #rows { position: fixed; top: 0; right: 0; bottom: 0; z-index: 7; width: min(85vw, 20rem); background: var(--bg);
+          transform: translateX(100%); transition: transform .2s; }
+  #rows.open { transform: none; box-shadow: -8px 0 24px rgba(0, 0, 0, .5); }
+  #shade.open { display: block; position: fixed; inset: 0; z-index: 6; background: rgba(0, 0, 0, .45); }
+  #alerts { left: 10px; right: 10px; width: auto; }
+}

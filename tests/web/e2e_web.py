@@ -28,6 +28,40 @@ def term_text(page):
     return page.evaluate("document.querySelector('.xterm-rows').textContent")
 
 
+def mobile_checks(browser, desktop):
+    """A phone: the rows are a drawer behind ☰, the terminal gets the width, and a key bar
+    supplies Esc, Tab, Ctrl and arrows. Same login (cookies), fresh storage (no saved session)."""
+    ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3,
+                              is_mobile=True, has_touch=True)
+    ctx.add_cookies(desktop.context.cookies())
+    m = ctx.new_page()
+    m.goto(BASE + "/")
+    m.wait_for_selector('.row[data-key="box/alpha"]')
+    check("phone: with nothing selected the rows drawer is open", m.evaluate("document.getElementById('rows').classList.contains('open')"))
+    m.click('.row[data-key="box/alpha"]')
+    m.wait_for_function("!document.getElementById('rows').classList.contains('open')")
+    check("phone: picking a session closes the drawer", True)
+    check("phone: the terminal gets the full width", m.evaluate("document.getElementById('pane').offsetWidth") >= 380)
+    m.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
+    m.click("#menu")
+    m.wait_for_selector("#rows.open")
+    check("phone: ☰ opens the drawer", True)
+    m.click("#shade", position={"x": 20, "y": 400})  # the strip beside the drawer
+    m.wait_for_function("!document.getElementById('rows').classList.contains('open')")
+    check("phone: tapping beside the drawer closes it", True)
+    m.evaluate("window.__sent = []; const real = sock.send.bind(sock); sock.send = (d) => { window.__sent.push(d); real(d); }; 0")
+    for key in ("Escape", "Tab", "Up"):
+        m.click(f'#keys button[data-key="{key}"]')
+    sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
+    check("phone: the key bar sends Esc, Tab and arrows", sent == ["\x1b", "\t", "\x1b[A"])
+    check("phone: the key bar leaves the terminal focused", m.evaluate("document.activeElement.className.includes('xterm-helper-textarea')"))
+    m.click('#keys button[data-key="Ctrl"]')
+    m.keyboard.type("c")
+    sent = m.evaluate("window.__sent.filter(d => typeof d === 'string').map(d => JSON.parse(d)).filter(f => f.t === 'in').map(f => f.d)")
+    check("phone: Ctrl then c sends ^C, and Ctrl disarms", sent[-1] == "\x03" and not m.evaluate("document.querySelector('#keys button[data-key=\"Ctrl\"]').classList.contains('on')"))
+    ctx.close()
+
+
 def main():
     folder = Path(tempfile.mkdtemp(prefix="tmls-e2e-"))
     srv = subprocess.Popen(["uv", "run", "python", "tests/web/e2e_server.py", str(folder), str(PORT)], cwd=ROOT)
@@ -171,6 +205,7 @@ def main():
             page.keyboard.press("Escape")
             check("Esc closes the New session modal", page.is_hidden("#new"))
 
+            mobile_checks(browser, page)  # before the logout: it reuses this login's cookies
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]
             page.goto(BASE + "/")

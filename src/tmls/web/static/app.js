@@ -29,7 +29,12 @@ function sendSize() {
 }
 function refit() { if (!$("term").hidden) { fit.fit(); sendSize(); } }
 new ResizeObserver(refit).observe($("pane"));
-term.onData((d) => { if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ t: "in", d })); });
+function sendKeys(d) { if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ t: "in", d })); }
+let ctrlArmed = false;  // the key bar's Ctrl: the next typed key becomes a control character
+term.onData((d) => {
+  if (ctrlArmed && d.length === 1) { d = String.fromCharCode(d.toUpperCase().charCodeAt(0) & 0x1f); armCtrl(false); }
+  sendKeys(d);
+});
 
 function overlay(text, reattach = false) {
   $("overlay").hidden = !text;
@@ -82,6 +87,30 @@ function select(key) {
   drawTitle();
   drawRows();
   if (!$("sketch").hidden) showSketch();
+  openRows(false);
+}
+
+// ---- phones: rows as a drawer, a key bar ----
+const phone = matchMedia("(max-width: 700px)");
+function openRows(open) {
+  $("rows").classList.toggle("open", open);
+  $("shade").classList.toggle("open", open);
+}
+$("menu").onclick = () => openRows(!$("rows").classList.contains("open"));
+$("shade").onclick = () => openRows(false);
+const KEYS = { Escape: "\x1b", Tab: "\t", Up: "\x1b[A", Down: "\x1b[B", Left: "\x1b[D", Right: "\x1b[C" };
+function armCtrl(on) {
+  ctrlArmed = on;
+  document.querySelector('#keys button[data-key="Ctrl"]').classList.toggle("on", on);
+}
+for (const b of document.querySelectorAll("#keys button")) {
+  b.onpointerdown = (e) => e.preventDefault();  // the terminal keeps the focus (and the keyboard)
+  b.onclick = () => {
+    const key = b.dataset.key;
+    if (key === "Ctrl") armCtrl(!ctrlArmed);
+    else sendKeys(KEYS[key] || key);
+    term.focus();
+  };
 }
 $("reattach").onclick = () => { retries = 0; if (current) { term.reset(); attach(current); } };
 
@@ -336,6 +365,7 @@ function connectEvents() {
       if (!current) {
         const saved = store.get("tmls-current");
         if (saved && rows.has(saved)) select(saved);
+        else if (msg.full && phone.matches) openRows(true);  // a phone shows the list first
       }
       drawRows();
       drawTitle();
