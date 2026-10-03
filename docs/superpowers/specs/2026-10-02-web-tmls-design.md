@@ -101,7 +101,8 @@ Follows the user's existing archbox pattern (`~/stacks/<app>/`):
 ## Errors
 
 - **Terminal drop** (ssh dies, session killed): pane dims "reconnecting…", retries every 2 s up to
-  5 times, then "session ended" with a [Reattach] button.
+  5 times, then "connection lost" with a [Reattach] button. A session that really ended says
+  "session ended".
 - **Host offline**: its rows grey out with "offline"; attaching shows the ssh error in the pane.
 - **Approve refused** (prompt changed): toast "prompt changed, nothing sent"; the row refreshes.
 - **Browser closed / tab closed**: the pty and its tmux client are hung up; sessions keep running.

@@ -140,6 +140,9 @@ laptop   # off most of the time
 Hosts are whatever `ssh <host>` accepts, so put aliases and keys in `~/.ssh/config`.
 Listing uses `ssh -o BatchMode=yes`, so a host that needs a password shows as offline.
 
+`tmls-web --bind ADDR [--port 8794] [--trust-proxy ADDR]` serves the browser version;
+`--trust-proxy` names a reverse proxy whose `X-Forwarded-For` is believed for the login lockout.
+
 ## Sketchpad button
 
 [sketchpad](https://github.com/sagunkayastha/sketchpad) is a drawing board that sends
@@ -175,11 +178,13 @@ widget. `app.py` is the layout and the session/tab bookkeeping.
 - Tested on Linux only.
 - In the browser, the mouse wheel only scrolls tmux history when the session has `set -g mouse on`;
   otherwise it sends arrow keys like a plain terminal.
+- In the browser, a host with no sessions has no `+` yet; create its first session from the terminal UI
+  or `tmux new-session`.
 
 ## Development
 
 ```sh
-uv run pytest        # 207 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
+uv run pytest        # 247 tests: parsing, status marks, key and mouse mapping, a real pty, and Textual pilot tests with fake hosts
 ```
 
 ## License
