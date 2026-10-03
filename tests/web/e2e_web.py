@@ -50,7 +50,8 @@ def main():
             page.fill('input[name="password"]', "nope")
             page.press('input[name="password"]', "Enter")
             page.wait_for_selector("#error:has-text('Wrong')")
-            check("wrong password shows the error on the form", True)
+            check("wrong password shows the error on the form and keeps the username",
+                  page.input_value('input[name="username"]') == "tester")
             page.fill('input[name="username"]', "tester")
             page.fill('input[name="password"]', "pw")
             page.press('input[name="password"]', "Enter")
@@ -59,6 +60,15 @@ def main():
                   page.locator('.row[data-key="box/beta"]').count() == 1)
             check("plain session shows its last screen line",
                   page.inner_text('.row[data-key="box/alpha"] .line') == "build ok")
+            page.evaluate("""window.__el = document.querySelector('.row[data-key="box/alpha"]')""")
+            page.wait_for_timeout(1500)  # several fake poll ticks with nothing changing
+            check("an unchanged row keeps its element across poll ticks",
+                  page.evaluate("""document.querySelector('.row[data-key="box/alpha"]') === window.__el"""))
+            prompt_lines = page.evaluate("""[...document.querySelectorAll('.row[data-key="box/beta"] .prompt > div')]
+                                            .map((d) => d.textContent)""")
+            check(f"a waiting row shows its prompt line by line ({prompt_lines})", prompt_lines == ["Bash", "rm x"])
+            check("the waiting row's tooltip is the prompt",
+                  "rm x" in (page.get_attribute('.row[data-key="box/beta"]', "title") or ""))
 
             page.click('.row[data-key="box/alpha"]')
             page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")
@@ -72,6 +82,10 @@ def main():
             page.click("#zoom-in")
             page.click("#zoom-in")
             check("A+ twice makes the font 18px", page.inner_text("#zoom-size") == "18px")
+            page.keyboard.type("zoomtype")
+            page.keyboard.press("Enter")
+            page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('zoomtype')", timeout=5000)
+            check("after A+ typing still reaches the terminal", True)
             page.reload()
             page.wait_for_selector('.row[data-key="box/alpha"]')
             check("font size survives a reload", page.inner_text("#zoom-size") == "18px")
@@ -94,6 +108,28 @@ def main():
                   src.endswith("embed=1&target=box%2Fbeta") or src.endswith("embed=1&target=box%2Falpha"))
             page.click("#tab-terminal")
             check("Terminal tab comes back", page.is_visible("#term") and not page.is_visible("#sketch"))
+
+            page.evaluate("events.close()")
+            page.wait_for_selector("#rows.stale", timeout=5000)
+            check("a lost live feed dims the rows and says it is reconnecting",
+                  page.is_visible("#feed") and "reconnecting" in page.inner_text("#feed"))
+            page.wait_for_selector("#rows:not(.stale)", timeout=10000)
+            check("the feed comes back by itself", not page.is_visible("#feed"))
+
+            page.evaluate("""events.onmessage({data: JSON.stringify({t: 'alerts', items: [
+              {key: 'box/gamma', name: 'gamma', mark: 'done'}, {key: 'box/delta', name: 'delta', mark: 'failed'}]})})""")
+            check("new alerts are counted on the bell", page.inner_text("#bell-count") == "2")
+            page.click("#bell")
+            check("the bell lists the alerts", page.locator("#alerts .alert").count() == 2)
+            page.click("#bell")
+            page.click("#bell")
+            check("alerts are still listed after a look, and none are unread",
+                  page.locator("#alerts .alert").count() == 2 and page.inner_text("#bell-count") == "")
+            page.keyboard.press("Escape")
+            check("Esc closes the alert list", page.is_hidden("#alerts"))
+            page.click("#bell")
+            page.click("#title")
+            check("a click outside closes the alert list", page.is_hidden("#alerts"))
 
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]

@@ -113,7 +113,8 @@ async def test_repeated_wrong_passwords_lock_out(aiohttp_client, tmp_path, monke
     for _ in range(server.MAX_FAILS):
         await client.post("/login", data={"username": "me", "password": "bad"}, allow_redirects=False)
     response = await client.post("/login", data={"username": "me", "password": "pw"}, allow_redirects=False)
-    assert response.status == 429 and auth.COOKIE not in response.cookies
+    assert response.status == 302 and response.headers["Location"] == "/login?error=locked"
+    assert auth.COOKIE not in response.cookies
 
 
 def test_sketchpad_cookie_is_not_a_tmls_cookie():

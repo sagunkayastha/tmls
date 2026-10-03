@@ -11,7 +11,8 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 
 const rows = new Map();        // key -> row from the server
 let current = null;            // selected key
-let unread = [];               // alerts not yet looked at
+let alerts = [];               // newest last, kept after a look
+let unreadCount = 0;
 let fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Number(store.get("tmls-font")) || 14));
 
 // ---- terminal ----
@@ -60,7 +61,7 @@ function attach(key) {
       return;
     }
     if (sock !== ws) return;
-    if (retries >= 5) { overlay("session ended", true); return; }
+    if (retries >= 5) { overlay("connection lost", true); return; }
     retries += 1;
     overlay("reconnecting…");
     retryTimer = setTimeout(() => attach(key), 2000);
@@ -80,7 +81,7 @@ function select(key) {
   drawRows();
   if (!$("sketch").hidden) showSketch();
 }
-$("reattach").onclick = () => { retries = 0; if (current) attach(current); };
+$("reattach").onclick = () => { retries = 0; if (current) { term.reset(); attach(current); } };
 
 // ---- font zoom ----
 function setFont(size) {
@@ -89,9 +90,11 @@ function setFont(size) {
   $("zoom-size").textContent = `${fontSize}px`;
   store.set("tmls-font", String(fontSize));
   refit();
+  if (current && $("sketch").hidden) term.focus();
 }
 $("zoom-in").onclick = () => setFont(fontSize + 2);
 $("zoom-out").onclick = () => setFont(fontSize - 2);
+$("zoom-in").onmousedown = $("zoom-out").onmousedown = (e) => e.preventDefault();  // never take focus from the terminal
 window.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "=" || e.key === "+") { e.preventDefault(); setFont(fontSize + 2); }
@@ -104,9 +107,12 @@ function drawTitle() {
   $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
 }
 
+function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.key === current]); }
+
 function drawRows() {
   const box = $("rows");
-  box.replaceChildren();
+  const old = new Map([...box.querySelectorAll(".row")].map((el) => [el.dataset.key, el]));
+  const children = [];
   const byHost = new Map();
   for (const row of rows.values()) {
     if (!byHost.has(row.host)) byHost.set(row.host, []);
@@ -116,9 +122,16 @@ function drawRows() {
     const head = document.createElement("div");
     head.className = "host" + (list.every((r) => !r.online) ? " offline" : "");
     head.textContent = list[0].label || host;  // "local" is the machine tmls runs on
-    box.append(head);
-    for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) box.append(rowEl(row));
+    children.push(head);
+    for (const row of list.sort((a, b) => a.name.localeCompare(b.name))) {
+      const sig = rowSig(row), prev = old.get(row.key);
+      if (prev && prev.dataset.sig === sig) { children.push(prev); continue; }  // same node: a click in flight still lands
+      const el = rowEl(row);
+      el.dataset.sig = sig;
+      children.push(el);
+    }
   }
+  box.replaceChildren(...children);
 }
 
 function rowEl(row) {
@@ -133,13 +146,26 @@ function rowEl(row) {
   name.className = "name";
   name.textContent = row.name;
   top.append(mark, name);
-  const line = document.createElement("div");
-  line.className = "line";
-  line.textContent = row.line || "";
-  line.title = row.line || "";
-  el.append(top, line);
-  if (row.mark === "waiting" && row.shown) {
-    line.textContent = row.shown.join(" · ") || row.line;
+  el.append(top);
+  const waiting = row.mark === "waiting" && row.shown;
+  if (waiting && row.shown.length) {
+    const prompt = document.createElement("div");
+    prompt.className = "prompt";
+    for (const text of row.shown.slice(0, 8)) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      prompt.append(div);
+    }
+    el.title = row.shown.join("\n");
+    el.append(prompt);
+  } else {
+    const line = document.createElement("div");
+    line.className = "line";
+    line.textContent = row.line || "";
+    line.title = row.line || "";
+    el.append(line);
+  }
+  if (waiting) {
     const actions = document.createElement("div");
     actions.className = "actions";
     for (const [label, yes] of [["Yes", true], ["No", false]]) {
@@ -171,34 +197,39 @@ function toast(text) {
 }
 
 // ---- alerts ----
-function drawBell() { $("bell-count").textContent = unread.length ? String(unread.length) : ""; }
+function drawBell() { $("bell-count").textContent = unreadCount ? String(unreadCount) : ""; }
 $("bell").onclick = () => {
   const box = $("alerts");
   if (!box.hidden) { box.hidden = true; return; }
   box.replaceChildren();
-  if (!unread.length) {
+  if (!alerts.length) {
     const none = document.createElement("div");
     none.className = "none";
-    none.textContent = "No new alerts";
+    none.textContent = "No alerts yet";
     box.append(none);
   }
-  for (const a of unread.slice().reverse()) {
+  for (const a of alerts.slice().reverse()) {
     const el = document.createElement("div");
     el.className = "alert";
     el.textContent = `${MARK[a.mark]} ${a.name} · ${rows.get(a.key)?.label || a.key.split("/")[0]}`;
     el.onclick = () => { box.hidden = true; select(a.key); };
     box.append(el);
   }
-  unread = [];
+  unreadCount = 0;
   drawBell();
   box.hidden = false;
 };
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") $("alerts").hidden = true; });
+document.addEventListener("click", (e) => {
+  if (!$("alerts").hidden && !e.target.closest("#alerts, #bell")) $("alerts").hidden = true;
+});
 
 // ---- live rows ----
 let events = null;
 function connectEvents() {
   const ws = new WebSocket(wsUrl("/api/events"));
   events = ws;
+  ws.onopen = () => { $("feed").hidden = true; $("rows").classList.remove("stale"); };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.t === "rows") {
@@ -212,13 +243,19 @@ function connectEvents() {
       drawRows();
       drawTitle();
     } else if (msg.t === "alerts") {
-      unread.push(...msg.items.filter((a) => a.key !== current));
+      const items = msg.items.filter((a) => a.key !== current);
+      alerts.push(...items);
+      alerts = alerts.slice(-50);
+      unreadCount += items.length;
       drawBell();
     }
   };
   ws.onclose = (e) => {
     if (e.code === 4401) { location.href = "/login"; return; }
-    if (events === ws) setTimeout(connectEvents, 2000);
+    if (events !== ws) return;
+    $("feed").hidden = false;
+    $("rows").classList.add("stale");
+    setTimeout(connectEvents, 2000);
   };
 }
 

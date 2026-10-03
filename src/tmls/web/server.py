@@ -63,25 +63,34 @@ async def login_page(request):
     return web.FileResponse(STATIC / "login.html")
 
 
+def client_address(request):
+    """Who is logging in. Behind a --trust-proxy address that is the proxy's X-Forwarded-For entry:
+    the last one, since a proxy appends what it saw and anything before that came from the client."""
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[-1].strip()
+    if forwarded and request.remote in request.app["trusted_proxies"]:
+        return forwarded
+    return request.remote
+
+
 async def login(request):
     """The password is a shell login: wrong ones cost a second, and five in a row from one
     address lock it out for five minutes. scrypt runs off the event loop so terminals keep going."""
     creds = auth.load(request.app["auth_file"])
     if not creds:
         return web.Response(status=401, text="no credentials: set a sketchpad password first")
-    fails, now = request.app["fails"], time.monotonic()
-    count, since = fails.get(request.remote, (0, now))
+    fails, now, client = request.app["fails"], time.monotonic(), client_address(request)
+    count, since = fails.get(client, (0, now))
     if now - since > LOCKOUT:
         count, since = 0, now
     if count >= MAX_FAILS:
-        return web.Response(status=429, text="too many wrong passwords; try again in a few minutes")
+        raise web.HTTPFound("/login?error=locked")
     data = await request.post()
     user, password = str(data.get("username", "")), str(data.get("password", ""))
     if not await asyncio.to_thread(auth.check_login, creds, user, password):
-        fails[request.remote] = (count + 1, since)
+        fails[client] = (count + 1, since)
         await asyncio.sleep(FAIL_DELAY)
         raise web.HTTPFound("/login?error=1")  # the form shows the message
-    fails.pop(request.remote, None)
+    fails.pop(client, None)
     response = web.HTTPFound("/")
     response.set_cookie(auth.COOKIE, auth.make_cookie(creds["secret"], user),
                         max_age=auth.SESSION_TTL, httponly=True, samesite="Lax", path="/",
@@ -122,7 +131,7 @@ async def config(request):
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
-    app["fails"] = {}
+    app["fails"], app["trusted_proxies"] = {}, set()
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)
     app.router.add_get("/login", login_page)
@@ -140,7 +149,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="tmls-web")
     parser.add_argument("--bind", action="append", required=True, help="address to listen on (repeatable)")
     parser.add_argument("--port", type=int, default=8794)
+    parser.add_argument("--trust-proxy", action="append", default=[], metavar="ADDR",
+                        help="a reverse proxy whose X-Forwarded-For names the client (repeatable)")
     args = parser.parse_args(argv)
     app = make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config()))
+    app["trusted_proxies"] = set(args.trust_proxy)
     app["sketchpad"] = hosts.read_config(hosts.SKETCHPAD)
     web.run_app(app, host=args.bind, port=args.port)

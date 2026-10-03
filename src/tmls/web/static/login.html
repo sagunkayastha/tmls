@@ -1,7 +1,23 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>tmls login</title>
-<style>body{font:16px system-ui;background:#15191f;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}form{display:grid;gap:12px;width:min(320px,90vw)}input,button{font:inherit;padding:12px;border-radius:8px}button{cursor:pointer}</style></head>
+<style>body{font:16px system-ui;background:#15191f;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}form{display:grid;gap:12px;width:min(320px,90vw)}input,button{font:inherit;padding:12px;border-radius:8px}button{cursor:pointer}#error{color:#e06c75;min-height:1.2em}</style></head>
 <body><form method="post" action="/login"><h1>tmls</h1><input name="username" autocomplete="username" placeholder="Username" required><input name="password" type="password" autocomplete="current-password" placeholder="Password" required><button>Log in</button><p id="error" role="alert"></p></form>
-<script>if(new URLSearchParams(location.search).has('error'))document.getElementById('error').textContent='Wrong username or password.';</script></body>
+<script>
+const form = document.querySelector("form"), button = form.querySelector("button");
+const error = new URLSearchParams(location.search).get("error");
+if (error !== null) {
+  // the username comes back from this tab's storage, never from the URL
+  try { form.username.value = sessionStorage.getItem("tmls-user") || ""; } catch {}
+  if (form.username.value) form.password.focus();
+  document.getElementById("error").textContent = error === "locked"
+    ? "Too many wrong passwords; try again in a few minutes." : "Wrong username or password.";
+}
+form.addEventListener("submit", () => {
+  try { sessionStorage.setItem("tmls-user", form.username.value); } catch {}
+  button.disabled = true;  // a second click must not count as a second wrong password
+  button.textContent = "Checking…";
+});
+addEventListener("pageshow", () => { button.disabled = false; button.textContent = "Log in"; });  // Back to this page
+</script></body>
 </html>

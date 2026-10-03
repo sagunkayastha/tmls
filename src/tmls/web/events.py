@@ -42,7 +42,9 @@ async def poll_once(app):
             extras[k] = {"line": lines.get(k, (None, None))[1], "shown": shown.get(k)}
     old_rows, old_marks = dict(state.rows), dict(state.marks)
     new = rows.build(state, found, extras)
-    await broadcast(app, {"t": "rows", **rows.diff(old_rows, new)})
+    changed = rows.diff(old_rows, new)
+    if changed["set"] or changed["gone"]:
+        await broadcast(app, {"t": "rows", **changed})
     items = rows.alerts(old_marks, new)
     if items:
         await broadcast(app, {"t": "alerts", "items": items})
@@ -83,8 +85,13 @@ async def handle_events(request):
 
 async def handle_seen(request):
     app = request.app
-    data = await request.json()
-    k = data.get("key", "")
+    try:
+        data = await request.json()
+        k = data["key"] if isinstance(data, dict) and isinstance(data.get("key"), str) else None
+    except ValueError:
+        k = None
+    if k is None:
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
     host = k.split("/", 1)[0]
     if host not in app["now"]:
         return web.json_response({"ok": False, "error": "unknown session"}, status=404)
