@@ -129,13 +129,14 @@ def test_attach_command_is_shell_safe():
     assert "$" not in hosts.attach_command("nas", "cost$5").replace("'=cost$5'", "")
 
 
-def test_pasted_copy_command_reaches_ssh_unchanged():
+def test_pasted_copy_command_reaches_ssh_unchanged(tmp_path):
     # a real shell, with ssh replaced by a function that prints its arguments
     for name in ['x"; touch pwned; "', "cost$5", "it's `w` $(x)", "my notes"]:
         cmd = hosts.attach_command("nas", name)
         out = subprocess.run(["sh", "-c", "ssh() { printf '%s\\n' \"$@\"; }; " + cmd],
-                             capture_output=True, text=True, check=True).stdout
+                             capture_output=True, text=True, cwd=tmp_path).stdout
         assert out.splitlines() == hosts.attach_argv("nas", name)[1:]
+    assert not (tmp_path / "pwned").exists()
 
 
 def test_attach_targets_exact_name():
