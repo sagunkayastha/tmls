@@ -173,6 +173,11 @@ host, including the machine running the container, is reached over ssh. `deploy/
 After a `git pull`, `docker compose up -d --build` again. `--trust-proxy` in the compose file names
 the sidecar's fixed address, so the login lockout counts per real client.
 
+Already have a reverse proxy on your tailnet (say Caddy in another stack, with your own domain)?
+Drop the sidecar, attach `tmls-web` to that stack's network (`networks: {proxy: {name: <stack>_default,
+external: true}}`) and point the proxy at `tmls-web:8794`. If that proxy can't see the real client
+address, leave `--trust-proxy` out.
+
 ## Sketchpad button
 
 [sketchpad](https://github.com/sagunkayastha/sketchpad) is a drawing board that sends
