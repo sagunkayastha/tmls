@@ -179,9 +179,10 @@ async def suggest_name(request):
 async def config(request):
     """Sketchpad's addresses (~/.config/tmls/sketchpad, one per line: home first, then away);
     the page uses the one whose scheme matches its own, so https never frames http.
-    Presets are the New session form's named agent commands."""
+    Presets are the New session form's named agent commands. app: an Android app is published."""
     return web.json_response({"sketchpad": request.app.get("sketchpad", []),
-                              "presets": list(create.load_presets())})
+                              "presets": list(create.load_presets()),
+                              "app": (request.app["apk_dir"] / "tmls.apk").is_file()})
 
 
 APK_DIR = Path.home() / ".config" / "tmls" / "apk"

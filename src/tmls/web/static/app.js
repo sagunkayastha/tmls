@@ -11,6 +11,7 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 
 const rows = new Map();        // key -> row from the server
 let hostList = [];             // [{host, label, online}] from the server, sessions or not
+let offerApp = false;          // an Android browser and an app published: the list links to it
 let current = null;            // selected key
 let newWait = null;            // waits for a just-created session's row; any select() ends it
 let alerts = [];               // newest last, kept after a look
@@ -235,6 +236,13 @@ function drawRows() {
       el.dataset.sig = sig;
       children.push(el);
     }
+  }
+  if (offerApp) {  // an Android browser, not the app: where to get it
+    const link = document.createElement("a");
+    link.id = "get-app";
+    link.href = "/app/tmls.apk";
+    link.textContent = "Get the Android app ↓";
+    children.push(link);
   }
   box.replaceChildren(...children);
 }
@@ -480,6 +488,8 @@ function showTerminal() {
 }
 let sketchUrls = [];
 fetch("/api/config").then((r) => r.json()).then((c) => {
+  offerApp = !!c.app && /Android/.test(navigator.userAgent) && !navigator.userAgent.includes("TmlsApp/");
+  if (offerApp) drawRows();
   sketchUrls = c.sketchpad || [];
   presets = c.presets || [];
   if (!sketchUrls.length) { $("tab-sketch").disabled = true; $("tab-sketch").title = "Add sketchpad's URL to ~/.config/tmls/sketchpad"; }

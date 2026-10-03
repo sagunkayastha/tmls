@@ -28,6 +28,20 @@ def term_text(page):
     return page.evaluate("(() => { const b = term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + ' '; return s; })()")
 
 
+def get_app_checks(browser, desktop):
+    """An Android browser (not the app) gets a "Get the Android app" link in the list."""
+    check("a desktop browser gets no app link", desktop.locator("#get-app").count() == 0)
+    ctx = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+                              user_agent="Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/130 Mobile Safari/537.36")
+    ctx.add_cookies(desktop.context.cookies())
+    g = ctx.new_page()
+    g.goto(BASE + "/")
+    g.wait_for_selector("#get-app", timeout=5000)
+    check("an Android browser gets the app link in the list", g.get_attribute("#get-app", "href") == "/app/tmls.apk"
+          and g.is_visible("#get-app"))
+    ctx.close()
+
+
 def app_checks(browser, desktop):
     """The Android app's WebView (user agent "... TmlsApp/1"): a ⟳ App button asks the app to
     check for an update via /app/update; a plain browser following it just lands on the page."""
@@ -39,6 +53,7 @@ def app_checks(browser, desktop):
     a.goto(BASE + "/")
     a.wait_for_selector("#app-update")
     check("the app gets a ⟳ button", a.inner_text("#app-update").strip() == "⟳")
+    check("the app itself gets no app link", a.locator("#get-app").count() == 0)
     a.click("#shade", position={"x": 370, "y": 400})  # the rows drawer starts open on a phone
     a.wait_for_function("!document.getElementById('rows').classList.contains('open')")
     with a.expect_request(lambda r: r.url.endswith("/app/update")):
@@ -276,6 +291,7 @@ def main():
 
             mobile_checks(browser, page)  # before the logout: it reuses this login's cookies
             app_checks(browser, page)
+            get_app_checks(browser, page)
             status = page.evaluate("fetch('/logout', {method: 'POST', redirect: 'manual'}).then(r => r.type + ' ' + r.status)")
             cookies = [c["name"] for c in page.context.cookies()]
             page.goto(BASE + "/")

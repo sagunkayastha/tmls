@@ -47,3 +47,14 @@ async def test_update_link_lands_a_browser_on_the_page(aiohttp_client, tmp_path)
 
 def test_apk_dir_argument():
     assert str(server.parse_args(["--bind", "127.0.0.1", "--apk-dir", "/x/apk"]).apk_dir) == "/x/apk"
+
+
+async def test_config_says_when_an_app_is_published(aiohttp_client, monkeypatch, tmp_path):
+    # the page offers "Get the Android app" only when there is one to get
+    apk_dir = tmp_path / "apk"
+    apk_dir.mkdir()
+    monkeypatch.setattr(server, "APK_DIR", apk_dir)
+    client = await client_logged_in(aiohttp_client, tmp_path)
+    assert (await (await client.get("/api/config")).json())["app"] is False
+    (apk_dir / "tmls.apk").write_bytes(b"PK")
+    assert (await (await client.get("/api/config")).json())["app"] is True
