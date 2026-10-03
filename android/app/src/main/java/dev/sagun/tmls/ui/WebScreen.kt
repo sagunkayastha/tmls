@@ -24,6 +24,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import dev.sagun.tmls.BuildConfig
 import android.Manifest
 import android.content.pm.PackageManager
@@ -38,6 +39,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -99,6 +102,15 @@ fun WebScreen(
         fileCallback = null
     }
 
+    // A camera input (capture="environment", sketchpad's Camera…): the camera app takes the picture.
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val uri = cameraUri
+        fileCallback?.onReceiveValue(if (saved && uri != null) arrayOf(uri) else null)
+        fileCallback = null
+        cameraUri = null
+    }
+
     // Sketch's "This phone's last screenshot": window.tmlsApp.postMessage("last-screenshot") from a
     // page of this server; the photos permission is asked the first time.
     val context = LocalContext.current
@@ -118,6 +130,15 @@ fun WebScreen(
     }
     val photosPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES
         else Manifest.permission.READ_EXTERNAL_STORAGE
+
+    // In the background or with the screen off, the page must know it's hidden: it lets go of its
+    // tmux session then, so a laptop showing the same session gets its size back. The WebView
+    // doesn't mark the page hidden by itself, so the app says so (tmlsVisible in app.js).
+    // On pause, not stop: by stop Android has frozen the page and the message waits until it's back.
+    LifecycleResumeEffect(webView) {
+        webView?.evaluateJavascript("typeof tmlsVisible === 'function' && tmlsVisible(true)", null)
+        onPauseOrDispose { webView?.evaluateJavascript("typeof tmlsVisible === 'function' && tmlsVisible(false)", null) }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -159,8 +180,14 @@ fun WebScreen(
                                                    params: FileChooserParams): Boolean {
                         fileCallback?.onReceiveValue(null)  // one picker at a time
                         fileCallback = callback
-                        Log.i("tmls", "file chooser: ${params.acceptTypes.joinToString()}")
-                        pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        Log.i("tmls", "file chooser: ${params.acceptTypes.joinToString()} capture=${params.isCaptureEnabled}")
+                        if (params.isCaptureEnabled) {
+                            val photo = File(File(context.cacheDir, "camera").apply { mkdirs() }, "photo-${System.currentTimeMillis()}.jpg")
+                            cameraUri = FileProvider.getUriForFile(context, "${context.packageName}.files", photo)
+                            takePicture.launch(cameraUri!!)
+                        } else {
+                            pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
                         return true
                     }
                 }

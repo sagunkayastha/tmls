@@ -136,6 +136,30 @@ def mobile_checks(browser, desktop):
     check("phone: Back on a session goes back to the list", m.evaluate("tmlsBack()") is True
           and m.evaluate("document.getElementById('rows').classList.contains('open')"))
     check("phone: Back on the list leaves the app", m.evaluate("tmlsBack()") is False)
+    m.evaluate("""Object.defineProperty(document, 'hidden', {value: true, configurable: true});
+                  document.dispatchEvent(new Event('visibilitychange'))""")
+    check("phone: out of sight (app in the background, screen off) it lets go of the session",
+          m.evaluate("sock === null"))
+    m.evaluate("""Object.defineProperty(document, 'hidden', {value: false, configurable: true});
+                  document.dispatchEvent(new Event('visibilitychange'))""")
+    m.wait_for_function("sock && sock.readyState === 1", timeout=10000)
+    check("phone: and attaches again when it's looked at", m.evaluate("rows.has(current)"))
+    m.evaluate("tmlsVisible(false)")
+    check("phone: the app going to the background lets go too (tmlsVisible)", m.evaluate("sock === null"))
+    m.evaluate("tmlsVisible(true)")
+    m.wait_for_function("sock && sock.readyState === 1", timeout=10000)
+    check("phone: and coming back attaches again", True)
+    m.reload()
+    m.wait_for_selector('.row[data-key="box/alpha"]')
+    m.wait_for_timeout(500)
+    check("phone: opening the app shows the list and attaches nothing (other screens keep their size)",
+          m.evaluate("sock === null && current === null")
+          and m.evaluate("document.getElementById('rows').classList.contains('open')"))
+    check("phone: the last session is marked in the list",
+          m.locator(".row.last").count() == 1)
+    m.evaluate("select('box/alpha')")
+    m.wait_for_function("sock && sock.readyState === 1", timeout=10000)
+    m.evaluate("openRows(true)")  # where the checks below expect the list
     m.evaluate("showSketch()")
     check("phone: the key bar is hidden while Sketch shows", m.is_hidden("#keys"))
     m.evaluate("showTerminal()")

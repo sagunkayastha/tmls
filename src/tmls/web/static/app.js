@@ -97,6 +97,23 @@ function attach(key) {
   };
 }
 
+// Out of sight (the app in the background, the screen off, another tab), let go of the session so
+// the other screens on it get their size back (tmux sizes a window to its latest client); attach
+// again when looked at.
+function setSeen(seen) {
+  if (!seen) {
+    clearTimeout(retryTimer);
+    if (sock) { sock.onclose = null; sock.close(); sock = null; }
+  } else if (current && rows.has(current) && !sock) {
+    term.reset();
+    attach(current);
+  }
+}
+document.addEventListener("visibilitychange", () => setSeen(!document.hidden));
+// The Android app calls this when it goes to the background or comes back (its WebView doesn't
+// mark the page hidden by itself).
+window.tmlsVisible = setSeen;
+
 function select(key) {
   if (!rows.has(key)) return;
   clearInterval(newWait);  // a manual pick wins over the row we were waiting for
@@ -202,7 +219,7 @@ function drawTitle() {
   $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
 }
 
-function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.pane, row.key === current]); }
+function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.pane, row.key === current, !current]); }
 
 function drawRows() {
   const box = $("rows");
@@ -265,7 +282,8 @@ function drawRows() {
 
 function rowEl(row) {
   const el = document.createElement("div");
-  el.className = "row" + (row.key === current ? " current" : "") + (row.online ? "" : " offline");
+  const last = !current && row.key === store.get("tmls-current");  // the phone's last session, not attached
+  el.className = "row" + (row.key === current ? " current" : "") + (last ? " last" : "") + (row.online ? "" : " offline");
   el.dataset.key = row.key;
   const top = document.createElement("div");
   const mark = document.createElement("span");
@@ -458,7 +476,9 @@ function connectEvents() {
       for (const row of msg.set) rows.set(row.key, row);
       if (!current) {
         const saved = store.get("tmls-current");
-        if (saved && rows.has(saved)) select(saved);
+        // A phone opens on the list, attaching nothing: attaching makes tmux resize the session to the
+        // phone, and a laptop showing it redraws at phone width. The last session is marked instead.
+        if (saved && rows.has(saved) && !phone.matches) select(saved);
         else if (msg.full && phone.matches && !listShown) { listShown = true; openRows(true); }  // a phone shows the list first, once
       }
       drawRows();

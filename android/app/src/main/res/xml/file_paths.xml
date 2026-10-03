@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Photos taken for a page's camera input: handed to the camera app, then to the page. -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+</paths>
