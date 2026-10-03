@@ -53,10 +53,13 @@ new ResizeObserver(() => {
 }).observe($("pane"));
 function sendKeys(d) { if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ t: "in", d })); }
 let ctrlArmed = false;  // the key bar's Ctrl: the next typed key becomes a control character
-term.onData((d) => {
+function termInput(d) {
   if (ctrlArmed && d.length === 1) { d = String.fromCharCode(d.toUpperCase().charCodeAt(0) & 0x1f); armCtrl(false); }
   sendKeys(d);
-});
+}
+term.onData(termInput);
+// The Android app's own terminal input (its keyboard can't type into xterm cleanly): exact keystrokes.
+window.tmlsType = termInput;
 
 function overlay(text, reattach = false) {
   $("overlay").hidden = !text;
@@ -110,6 +113,16 @@ function setSeen(seen) {
   }
 }
 document.addEventListener("visibilitychange", () => setSeen(!document.hidden));
+// The Android app types plain characters into the terminal (a keyboard's word suggestions
+// re-send text when the terminal redraws) and keeps suggestions for other fields: say which has focus.
+if (window.tmlsApp) {
+  const imeFor = () => window.tmlsApp.postMessage(
+    document.activeElement && document.activeElement.classList.contains("xterm-helper-textarea") ? "ime:terminal" : "ime:text");
+  document.addEventListener("focusin", imeFor);
+  document.addEventListener("focusout", () => setTimeout(imeFor, 0));
+  // A tap on the terminal brings the keyboard back even when the terminal already had focus.
+  $("term").addEventListener("touchend", () => window.tmlsApp.postMessage("ime:terminal"));
+}
 // The Android app calls this when it goes to the background or comes back (its WebView doesn't
 // mark the page hidden by itself).
 window.tmlsVisible = setSeen;

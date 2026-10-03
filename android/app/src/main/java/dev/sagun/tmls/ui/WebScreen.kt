@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -152,7 +153,7 @@ fun WebScreen(
         factory = { context ->
             var painted = false
             var signedInFired = false
-            WebView(context).apply {
+            val web = TerminalWebView(context).apply {
                 // AndroidView's default WRAP_CONTENT makes Chromium size the page to its content, and
                 // every vh/dvh unit is 0 (tmls-web's body is 100dvh: the page collapsed).
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -195,8 +196,13 @@ fun WebScreen(
                     // Offered to every frame, answered only for this server's pages (sketchpad's frame
                     // is the same host on another port, or a sibling name).
                     WebViewCompat.addWebMessageListener(this, "tmlsApp", setOf("*")) { _, message, origin, _, reply ->
-                        if (message.data != "last-screenshot") return@addWebMessageListener
                         if (!Origins.trusted(origin.toString(), url)) return@addWebMessageListener
+                        when (message.data) {
+                            "ime:terminal" -> { terminalInput(true); return@addWebMessageListener }
+                            "ime:text" -> { terminalInput(false); return@addWebMessageListener }
+                            "last-screenshot" -> {}
+                            else -> return@addWebMessageListener
+                        }
                         if (ContextCompat.checkSelfPermission(context, photosPermission) == PackageManager.PERMISSION_GRANTED) {
                             sendScreenshot(reply)
                         } else {
@@ -248,6 +254,12 @@ fun WebScreen(
                 }
                 webView = this
                 loadUrl(url)
+            }
+            // The terminal's native input sits beside the page, invisible (see TerminalWebView).
+            FrameLayout(context).apply {
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                addView(web.keys, FrameLayout.LayoutParams(1, 1))
+                addView(web, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
         },
     )
