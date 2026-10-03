@@ -11,6 +11,7 @@ const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${lo
 
 const rows = new Map();        // key -> row from the server
 let current = null;            // selected key
+let newWait = null;            // waits for a just-created session's row; any select() ends it
 let alerts = [];               // newest last, kept after a look
 let unreadCount = 0;
 let fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Number(store.get("tmls-font")) || 14));
@@ -70,6 +71,7 @@ function attach(key) {
 
 function select(key) {
   if (!rows.has(key)) return;
+  clearInterval(newWait);  // a manual pick wins over the row we were waiting for
   current = key;
   store.set("tmls-current", key);
   $("empty").hidden = true;
@@ -207,13 +209,17 @@ function toast(text) {
 // ---- new session ----
 let presets = [];              // agent preset names, from /api/config
 let newHost = null, autoName = "", nameTimer = null;
+let newOpened = 0;             // counts openNew calls, so a late /api/create answer can't reach a newer form
 // like create.default_name: the folder's last part, "home" for ~
 const defaultName = (folder) => folder.replace(/^[~/]+|[~/]+$/g, "") ? folder.replace(/\/+$/, "").split("/").pop() : "home";
 const postJson = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 function openNew(host, label) {
   newHost = host;
+  newOpened += 1;
   clearTimeout(nameTimer);
+  $("alerts").hidden = true;  // the +'s stopPropagation keeps the outside-click handler from closing it
+  $("new-create").disabled = false;
   $("new-title").textContent = `New session on ${label}`;
   $("new-folder").value = "~";
   $("new-name").value = autoName = "home";
@@ -259,29 +265,28 @@ async function suggestName(host, folder) {  // the host's git repo name, when Fo
 
 $("new-form").onsubmit = async (e) => {
   e.preventDefault();
-  const host = newHost, name = $("new-name").value.trim();
+  const host = newHost, name = $("new-name").value.trim(), opened = newOpened;
   const start = $("new-start").querySelector("input:checked")?.value || "shell";
   $("new-error").textContent = "";
   $("new-create").disabled = true;
+  let error = null;
   try {
     const r = await postJson("/api/create", { host, folder: $("new-folder").value, name, start });
     if (r.status === 401) { location.href = "/login"; return; }
-    if (!r.ok) {
-      $("new-error").textContent = (await r.json().catch(() => ({}))).error || `create failed (${r.status})`;
-      return;
-    }
+    if (!r.ok) error = (await r.json().catch(() => ({}))).error || `create failed (${r.status})`;
   } catch {
-    $("new-error").textContent = "couldn't reach tmls";
-    return;
-  } finally {
-    $("new-create").disabled = false;
+    error = "couldn't reach tmls";
   }
+  if (opened !== newOpened || $("new").hidden) return;  // closed or reopened meanwhile: not this form's answer
+  $("new-create").disabled = false;
+  if (error) { $("new-error").textContent = error; return; }
   closeNew();
   const key = `${host}/${name}`;
   let tries = 0;
-  const wait = setInterval(() => {  // the row arrives with the next poll
-    if (rows.has(key)) { clearInterval(wait); select(key); }
-    else if (++tries >= 50) clearInterval(wait);
+  clearInterval(newWait);
+  newWait = setInterval(() => {  // the row arrives with the next poll
+    if (rows.has(key)) select(key);
+    else if (++tries >= 50) clearInterval(newWait);
   }, 300);
 };
 $("new-cancel").onclick = closeNew;

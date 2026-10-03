@@ -151,7 +151,17 @@ def main():
             page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-gamma')")
             check("the terminal attaches to the new session", True)
             page.click(".host .add")
+            page.fill("#new-name", "delta")
+            page.press("#new-name", "Enter")
+            page.wait_for_selector("#new", state="hidden")
+            page.click('.row[data-key="box/alpha"]')
+            page.wait_for_timeout(1500)  # delta's row arrives meanwhile
+            check("picking another row right after Create keeps that row selected",
+                  page.get_attribute(".row.current", "data-key") == "box/alpha")
+            page.click("#bell")
+            page.evaluate("document.querySelector('.host .add').click()")  # the open list covers box's +
             page.wait_for_selector("#new:not([hidden])")
+            check("+ closes the alert list", page.is_hidden("#alerts"))
             page.keyboard.press("Escape")
             check("Esc closes the New session modal", page.is_hidden("#new"))
 
