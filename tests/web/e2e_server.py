@@ -2,7 +2,7 @@
 
 alpha is a plain tmux session, beta is Claude waiting on a permission prompt. Terminals run
 `cat` instead of tmux. approve.answer calls are appended to DIR/approved.jsonl; the prompt
-beta shows can be changed by writing DIR/prompt.json.
+beta shows can be changed by writing DIR/prompt.json. Created sessions join box's list.
 """
 import hashlib
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tmls import approve, hosts, prompts
+from tmls import approve, create, hosts, prompts
 from tmls.web import server
 
 folder, port = Path(sys.argv[1]), int(sys.argv[2])
@@ -21,10 +21,24 @@ salt = "00" * 16
     "hash": hashlib.scrypt(b"pw", salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()}))
 
 
+created = []
+
+
 async def list_host(host):
     return True, [hosts.Session("box", "alpha", 1, False, 0, 1000),
                   hosts.Session("box", "beta", 1, False, 0, 1000, claude="waiting", claude_since=990,
-                                waiting="permission prompt", title="beta")]
+                                waiting="permission prompt", title="beta"), *created]
+
+
+async def create_session(host, name, folder, start):
+    if name in ("alpha", "beta", *(s.name for s in created)):
+        return f"a session named {name} already exists"
+    created.append(hosts.Session("box", name, 1, False, 0, 1000))
+    return None
+
+
+async def suggest_name(host, folder):
+    return "repo-" + folder.rsplit("/", 1)[-1]
 
 
 async def run(argv, stdin=None):
@@ -47,6 +61,8 @@ async def answer(host, name, shown, yes):
 
 
 hosts.list_host, prompts._run, approve.current, approve.answer = list_host, run, current, answer
+create.create, create.suggest_name = create_session, suggest_name
+create.load_presets = lambda: {"Opus plan": ("claude", "--model", "opus")}
 app = server.make_app(folder / "auth.json", ["box"])
 app["poll_interval"] = 0.3
 app["attach_argv"] = lambda host, name: ["sh", "-c", 'echo "attached-$0"; exec cat', name]

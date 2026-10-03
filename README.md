@@ -72,6 +72,7 @@ command.
   agent commands appear below `claude` in Start. Put them
   in `~/.config/tmls/agent-presets.json` as argv lists, for example
   `{"Opus plan": ["claude", "--model", "opus", "--permission-mode", "plan"]}`.
+  Also in the browser: `+` on a host header.
 - **Rename or kill**: click `⋯` at the end of a tmux session row. Rename changes the
   session name and reopens its tab under the new name. Kill always asks you to confirm,
   shows running commands in the warning, and closes the session's tab. The same menu can

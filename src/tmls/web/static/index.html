@@ -30,6 +30,16 @@
   </section>
   <aside id="rows"></aside>
 </main>
+<div id="new" hidden>
+  <form id="new-form" autocomplete="off">
+    <div id="new-title">New session</div>
+    <label><span>Folder</span><input id="new-folder" spellcheck="false"></label>
+    <label><span>Name</span><input id="new-name" spellcheck="false"></label>
+    <div class="start"><span>Start</span><div id="new-start"></div></div>
+    <div id="new-error"></div>
+    <div class="buttons"><button type="button" id="new-cancel">Cancel</button><button id="new-create">Create</button></div>
+  </form>
+</div>
 <div id="toast" hidden></div>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
