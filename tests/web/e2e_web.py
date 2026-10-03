@@ -63,6 +63,11 @@ def main():
             page.wait_for_timeout(1500)  # several fake poll ticks with nothing changing
             check("an unchanged row keeps its element across poll ticks",
                   page.evaluate("""document.querySelector('.row[data-key="box/alpha"]') === window.__el"""))
+            prompt_lines = page.evaluate("""[...document.querySelectorAll('.row[data-key="box/beta"] .prompt > div')]
+                                            .map((d) => d.textContent)""")
+            check(f"a waiting row shows its prompt line by line ({prompt_lines})", prompt_lines == ["Bash", "rm x"])
+            check("the waiting row's tooltip is the prompt",
+                  "rm x" in (page.get_attribute('.row[data-key="box/beta"]', "title") or ""))
 
             page.click('.row[data-key="box/alpha"]')
             page.wait_for_function("document.querySelector('.xterm-rows').textContent.includes('attached-alpha')")

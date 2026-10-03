@@ -39,6 +39,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .row.offline { opacity: .45; }
 .row .name { font-weight: 600; }
 .row .line { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .prompt { color: var(--dim); font-size: 12px; white-space: normal; word-break: break-word; }
 .row .actions { display: flex; gap: 6px; margin-top: 4px; }
 .mark { display: inline-block; width: 1.2em; }
 .mark.running { color: var(--run); } .mark.waiting { color: var(--wait); }

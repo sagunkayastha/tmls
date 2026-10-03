@@ -145,13 +145,26 @@ function rowEl(row) {
   name.className = "name";
   name.textContent = row.name;
   top.append(mark, name);
-  const line = document.createElement("div");
-  line.className = "line";
-  line.textContent = row.line || "";
-  line.title = row.line || "";
-  el.append(top, line);
-  if (row.mark === "waiting" && row.shown) {
-    line.textContent = row.shown.join(" · ") || row.line;
+  el.append(top);
+  const waiting = row.mark === "waiting" && row.shown;
+  if (waiting && row.shown.length) {
+    const prompt = document.createElement("div");
+    prompt.className = "prompt";
+    for (const text of row.shown.slice(0, 8)) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      prompt.append(div);
+    }
+    el.title = row.shown.join("\n");
+    el.append(prompt);
+  } else {
+    const line = document.createElement("div");
+    line.className = "line";
+    line.textContent = row.line || "";
+    line.title = row.line || "";
+    el.append(line);
+  }
+  if (waiting) {
     const actions = document.createElement("div");
     actions.className = "actions";
     for (const [label, yes] of [["Yes", true], ["No", false]]) {
