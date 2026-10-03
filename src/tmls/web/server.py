@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tmls import approve, hosts
+from tmls import approve, create, hosts
 from tmls.web import auth, events, term
 
 STATIC = Path(__file__).parent / "static"
@@ -122,10 +122,47 @@ async def approve_prompt(request):
     return web.json_response({"ok": True})
 
 
+async def create_session(request):
+    """New tmux session from the + on a host header. Only configured hosts, as for approve."""
+    try:
+        data = await request.json()
+        host, folder, name, start = (data[f] for f in ("host", "folder", "name", "start"))
+        if not all(isinstance(v, str) for v in (host, folder, name, start)) or host not in (*request.app["hosts"], hosts.LOCAL):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
+    presets = create.load_presets()
+    if start not in ("shell", "claude"):
+        if start not in presets:
+            return web.json_response({"ok": False, "error": "unknown start option"}, status=400)
+        start = presets[start]
+    error = create.check_name(name.strip())
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=400)
+    error = await create.create(host, name.strip(), folder.strip() or "~", start)
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=409)
+    return web.json_response({"ok": True})
+
+
+async def suggest_name(request):
+    """The folder's git repo name on that host, else its basename."""
+    try:
+        data = await request.json()
+        host, folder = data["host"], data["folder"]
+        if not isinstance(host, str) or not isinstance(folder, str) or host not in (*request.app["hosts"], hosts.LOCAL):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
+    return web.json_response({"ok": True, "name": await create.suggest_name(host, folder.strip() or "~")})
+
+
 async def config(request):
     """Sketchpad's addresses (~/.config/tmls/sketchpad, one per line: home first, then away);
-    the page uses the one whose scheme matches its own, so https never frames http."""
-    return web.json_response({"sketchpad": request.app.get("sketchpad", [])})
+    the page uses the one whose scheme matches its own, so https never frames http.
+    Presets are the New session form's named agent commands."""
+    return web.json_response({"sketchpad": request.app.get("sketchpad", []),
+                              "presets": list(create.load_presets())})
 
 
 def make_app(auth_file, hosts_list):
@@ -138,6 +175,8 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/login", login)
     app.router.add_post("/logout", logout)
     app.router.add_post("/api/approve", approve_prompt)
+    app.router.add_post("/api/create", create_session)
+    app.router.add_post("/api/suggest-name", suggest_name)
     term.setup(app)
     app.router.add_get("/api/config", config)
     app.router.add_static("/static", STATIC)
