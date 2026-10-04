@@ -168,6 +168,34 @@ async def test_list_host_offline_when_output_is_garbage(monkeypatch):
     assert (online, sessions) == (False, [])
 
 
+async def test_list_host_online_without_a_tmux_server(monkeypatch):
+    for err in (b"no server running on /tmp/tmux-1000/default\n",
+                b"error connecting to /tmp/tmux-1000/default (No such file or directory)\n"):
+        class Proc:
+            returncode = 1
+
+            async def communicate(self, err=err):
+                return b"", err
+
+        async def fake_exec(*argv, **kw):
+            return Proc()
+        monkeypatch.setattr(hosts.asyncio, "create_subprocess_exec", fake_exec)
+        assert await hosts.list_host("box") == (True, [])
+
+
+async def test_list_host_offline_when_ssh_fails(monkeypatch):
+    class Proc:
+        returncode = 255
+
+        async def communicate(self):
+            return b"", b"ssh: connect to host box port 22: Connection refused\n"
+
+    async def fake_exec(*argv, **kw):
+        return Proc()
+    monkeypatch.setattr(hosts.asyncio, "create_subprocess_exec", fake_exec)
+    assert await hosts.list_host("box") == (False, [])
+
+
 def test_half_written_status_file_keeps_its_failed_and_usage_lines():
     # B's file was caught mid-write; the "failed" and "usage" after it are B's, not A's
     out = ("1000\nA:1:0:990\nB:1:0:990\n---\n"

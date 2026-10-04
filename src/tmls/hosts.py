@@ -202,4 +202,5 @@ async def list_host(host):
             return True, parse(host, out.decode())
         except ValueError:  # not a listing (e.g. a login script's output only): treat as unreachable
             return False, []
-    return b"no server running" in err, []
+    # tmux < 3.7: "no server running"; 3.7: "error connecting to <socket> (No such file or directory)".
+    return b"no server running" in err or b"error connecting to" in err, []
