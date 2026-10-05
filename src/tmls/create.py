@@ -27,11 +27,16 @@ def default_name(folder):
 
 
 def check_name(name):
-    """Why tmux can't use this name, or None. tmux rewrites ":" and "." in names."""
+    """Why tmux can't use this name, or None. tmux rewrites ":" and "." in names, expands "#{...}"
+    and runs "#(...)" in them, and reads a leading "-" as a flag."""
     if not name:
         return "the session needs a name"
     if ":" in name or "." in name:
         return "names can't contain : or ."
+    if "#" in name or "\0" in name:
+        return "names can't contain #"
+    if name.startswith("-"):
+        return "names can't start with -"
     return None
 
 

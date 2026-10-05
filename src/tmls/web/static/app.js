@@ -97,7 +97,7 @@ function attach(key) {
     if (retries >= 5) { overlay("connection lost", true); return; }
     retries += 1;
     overlay("reconnecting…");
-    retryTimer = setTimeout(() => attach(key), 2000);
+    retryTimer = setTimeout(() => attach(current || key), 2000);  // current: the name may have changed
   };
 }
 
@@ -174,6 +174,7 @@ window.tmlsKeyboard = (px) => { $("keys").style.transform = px > 0 ? `translateY
 window.tmlsBack = () => {
   if (!$("copyview").hidden) { $("copyview").hidden = true; return true; }
   if (!$("new").hidden) { closeNew(); return true; }
+  if (!$("manage").hidden) { closeManage(); return true; }
   if (!$("alerts").hidden) { $("alerts").hidden = true; return true; }
   if (phone.matches && current && !$("rows").classList.contains("open")) { openRows(true); return true; }
   return false;
@@ -416,6 +417,7 @@ function rowEl(row) {
   el.className = "row" + (row.key === current ? " current" : "") + (last ? " last" : "") + (row.online ? "" : " offline");
   el.dataset.key = row.key;
   const top = document.createElement("div");
+  top.className = "top";
   const mark = document.createElement("span");
   mark.className = `mark ${row.mark}`;
   mark.textContent = MARK[row.mark] || "";
@@ -423,6 +425,14 @@ function rowEl(row) {
   name.className = "name";
   name.textContent = row.name;
   top.append(mark, name);
+  if (row.online) {  // rename / kill: a button, not a long-press, so it works the same on a phone
+    const more = document.createElement("button");
+    more.className = "more";
+    more.title = "Rename or kill";
+    more.textContent = "⋯";
+    more.onclick = (e) => { e.stopPropagation(); openManage(row); };
+    top.append(more);
+  }
   el.append(top);
   const waiting = row.mark === "waiting" && row.shown;
   if (waiting && row.shown.length) {
@@ -558,7 +568,120 @@ $("new-form").onsubmit = async (e) => {
   }, 300);
 };
 $("new-cancel").onclick = closeNew;
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("new").hidden) closeNew(); });
+
+// ---- rename / kill ----
+let manageRow = null, manageOpened = 0;
+
+function openManage(row) {
+  manageRow = row;
+  manageOpened += 1;
+  $("alerts").hidden = true;  // the ⋯'s stopPropagation keeps the outside-click handler from closing it
+  $("manage-title").textContent = `${row.label || row.host} · ${row.name}`;
+  $("manage-name").value = row.name;
+  $("manage-warning").textContent = $("manage-error").textContent = "";
+  $("manage-kill").textContent = "Kill…";
+  delete $("manage-kill").dataset.armed;
+  $("manage-rename").textContent = "Rename";
+  $("manage-kill").disabled = $("manage-rename").disabled = false;
+  $("manage").hidden = false;
+  if (!phone.matches) $("manage-name").select();  // not on a phone: the keyboard would cover the dialog
+}
+
+function closeManage() {
+  $("manage").hidden = true;
+  manageRow = null;
+  if (current && $("sketch").hidden && !$("rows").classList.contains("open")) term.focus();
+}
+
+// Answers for a dialog closed or reopened meanwhile are dropped.
+async function manageCall(url, body) {
+  const opened = manageOpened;
+  $("manage-error").textContent = "";
+  $("manage-kill").disabled = $("manage-rename").disabled = true;
+  let data = null, error = null;
+  try {
+    const r = await postJson(url, body);
+    if (r.status === 401) { location.href = "/login"; return null; }
+    data = await r.json().catch(() => ({}));
+    if (!r.ok) error = data.error || `failed (${r.status})`;
+  } catch {
+    error = "couldn't reach tmls";
+  }
+  if (opened !== manageOpened || $("manage").hidden) return null;
+  $("manage-kill").disabled = $("manage-rename").disabled = false;
+  if (error) { $("manage-error").textContent = error; return null; }
+  return data;
+}
+
+// A rename, from this page or another: the row, the open session, the phone's last session and
+// the alerts all take the new name. The terminal stays attached: tmux's client follows the rename.
+function followRename(oldKey, newKey, name) {
+  const row = rows.get(oldKey);
+  if (row) { rows.delete(oldKey); rows.set(newKey, { ...row, key: newKey, name }); }
+  if (store.get("tmls-current") === oldKey) store.set("tmls-current", newKey);
+  for (const a of alerts) if (a.key === oldKey) { a.key = newKey; a.name = name; }
+  if (current === oldKey) current = newKey;
+  drawRows();
+  drawTitle();
+}
+
+// A kill, from this page or another. Sketch keeps the pane if it is showing.
+function sessionGone(key) {
+  rows.delete(key);
+  alerts = alerts.filter((a) => a.key !== key);
+  if (current === key) {
+    clearTimeout(retryTimer);
+    if (sock) { sock.onclose = null; sock.close(); sock = null; }
+    current = null;
+    term.reset();
+    overlay(null);
+    $("empty").hidden = !$("sketch").hidden;
+  }
+  drawRows();
+  drawTitle();
+}
+
+$("manage-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const row = manageRow, name = $("manage-name").value.trim();
+  if (!row || $("manage-rename").disabled) return;
+  if (name === row.name) { closeManage(); return; }
+  $("manage-rename").textContent = "Renaming…";
+  const ok = await manageCall("/api/rename", { host: row.host, name: row.name, new: name });
+  $("manage-rename").textContent = "Rename";
+  if (!ok) return;
+  followRename(row.key, `${row.host}/${name}`, name);  // the server's broadcast repeats it, harmlessly
+  closeManage();
+};
+
+$("manage-kill").onclick = async () => {
+  const row = manageRow, button = $("manage-kill");
+  if (!row) return;
+  if (!button.dataset.armed) {  // first press: say what dies with it
+    button.textContent = "Checking…";
+    const data = await manageCall("/api/kill", { host: row.host, name: row.name });
+    if (!data) { button.textContent = "Kill…"; return; }
+    $("manage-warning").textContent = `Kill ${row.name}? This ends its tmux session.` +
+      (data.running.length ? `\nRunning: ${data.running.join(", ")}` : "");
+    button.textContent = "Confirm kill";
+    button.disabled = true;  // a nervous double tap must not land on Confirm
+    const opened = manageOpened;
+    setTimeout(() => { if (opened === manageOpened) { button.disabled = false; button.dataset.armed = "1"; } }, 600);
+    return;
+  }
+  button.textContent = "Killing…";
+  const ok = await manageCall("/api/kill", { host: row.host, name: row.name, confirm: true });
+  if (!ok) { button.textContent = "Confirm kill"; return; }
+  sessionGone(row.key);
+  closeManage();
+  toast(`Killed ${row.name}`);
+};
+$("manage-cancel").onclick = closeManage;
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("new").hidden) closeNew();
+  if (!$("manage").hidden) closeManage();
+});
 
 // ---- alerts ----
 function drawBell() { $("bell-count").textContent = unreadCount ? String(unreadCount) : ""; }
@@ -613,6 +736,10 @@ function connectEvents() {
       }
       drawRows();
       drawTitle();
+    } else if (msg.t === "renamed") {
+      followRename(msg.old, msg.new, msg.name);
+    } else if (msg.t === "killed") {
+      if (rows.has(msg.key) || current === msg.key) sessionGone(msg.key);
     } else if (msg.t === "alerts") {
       const items = msg.items.filter((a) => a.key !== current);
       alerts.push(...items);

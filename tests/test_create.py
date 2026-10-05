@@ -38,6 +38,8 @@ def test_names():
     assert create.default_name("~") == "home"
     assert create.check_name("bloom_26") is None
     assert create.check_name("") and create.check_name("a:b") and create.check_name("a.b")
+    # tmux expands #{...} and runs #(...) in a name; a leading - reads as a flag
+    assert create.check_name("x#{session_id}") and create.check_name("-foo") and create.check_name("a\0b")
 
 
 async def test_auto_name_uses_git_root_for_nested_local_folder(tmp_path):

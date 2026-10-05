@@ -2,8 +2,9 @@
 
 alpha is a plain tmux session, beta is Claude waiting on a permission prompt. Terminals run
 `cat` instead of tmux. approve.answer calls are appended to DIR/approved.jsonl; the prompt
-beta shows can be changed by writing DIR/prompt.json. Created sessions join box's list.
+beta shows can be changed by writing DIR/prompt.json. Created sessions join box's list, and only they can be renamed or killed.
 """
+import dataclasses
 import hashlib
 import json
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from tmls import approve, create, hosts, prompts
+from tmls import approve, create, hosts, prompts, tmux_ops
 from tmls.web import server
 
 folder, port = Path(sys.argv[1]), int(sys.argv[2])
@@ -36,6 +37,25 @@ async def create_session(host, name, folder, start):
     if name in ("alpha", "beta", *(s.name for s in created)):
         return f"a session named {name} already exists"
     created.append(hosts.Session("box", name, 1, False, 0, 1000))
+    return None
+
+
+async def rename_session(host, old, new):
+    for i, s in enumerate(created):
+        if s.name == old:
+            created[i] = dataclasses.replace(s, name=new)
+            return None
+    return f"can't find session: {old}"
+
+
+async def running_commands(host, name):
+    return ["claude"] if name == "beta" else []
+
+
+async def kill_session(host, name):
+    if not any(s.name == name for s in created):
+        return f"can't find session: {name}"
+    created[:] = [s for s in created if s.name != name]
     return None
 
 
@@ -64,6 +84,7 @@ async def answer(host, name, shown, yes, pane=None):
 
 hosts.list_host, prompts._run, approve.current, approve.answer = list_host, run, current, answer
 create.create, create.suggest_name = create_session, suggest_name
+tmux_ops.rename, tmux_ops.kill, tmux_ops.running_commands = rename_session, kill_session, running_commands
 create.load_presets = lambda: {"Opus plan": ("claude", "--model", "opus")}
 app = server.make_app(folder / "auth.json", ["box", "spare"])
 app["poll_interval"] = 0.3

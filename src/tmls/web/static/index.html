@@ -51,10 +51,19 @@
   <form id="new-form" autocomplete="off">
     <div id="new-title">New session</div>
     <label><span>Folder</span><input id="new-folder" spellcheck="false"></label>
-    <label><span>Name</span><input id="new-name" spellcheck="false"></label>
+    <label><span>Name</span><input id="new-name" spellcheck="false" autocapitalize="none" autocorrect="off"></label>
     <div class="start"><span>Start</span><div id="new-start"></div></div>
     <div id="new-error"></div>
     <div class="buttons"><button type="button" id="new-cancel">Cancel</button><button id="new-create">Create</button></div>
+  </form>
+</div>
+<div id="manage" hidden>
+  <form id="manage-form" autocomplete="off">
+    <div id="manage-title"></div>
+    <label><span>Name</span><input id="manage-name" spellcheck="false" autocapitalize="none" autocorrect="off"></label>
+    <div id="manage-warning"></div>
+    <div id="manage-error"></div>
+    <div class="buttons"><button type="button" id="manage-kill" class="danger">Kill…</button><span class="grow"></span><button type="button" id="manage-cancel">Cancel</button><button id="manage-rename">Rename</button></div>
   </form>
 </div>
 <div id="toast" hidden></div>

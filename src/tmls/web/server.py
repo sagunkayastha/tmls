@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
-from tmls import approve, create, hosts
+from tmls import approve, create, hosts, tmux_ops
 from tmls.web import auth, events, term
 
 STATIC = Path(__file__).parent / "static"
@@ -195,6 +195,65 @@ async def create_session(request):
     return web.json_response({"ok": True})
 
 
+def _session(data, hosts_list):
+    """host and name of an existing session, from a JSON body. Only configured hosts, as for approve."""
+    host, name = data["host"], data["name"]
+    if (not isinstance(host, str) or not isinstance(name, str) or not name or "\0" in name
+            or host not in (*hosts_list, hosts.LOCAL)):
+        raise ValueError
+    return host, name
+
+
+async def rename_session(request):
+    """Rename from a row's ⋯. The row's seen time goes with the new name, so it doesn't turn unread,
+    and every open page hears of it at once: the one showing the session follows the new name."""
+    try:
+        data = await request.json()
+        host, name = _session(data, request.app["hosts"])
+        new = data["new"]
+        if not isinstance(new, str):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
+    new = new.strip()
+    error = create.check_name(new)
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=400)
+    error = await tmux_ops.rename(host, name, new)
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=409)
+    old_key, new_key = f"{host}/{name}", f"{host}/{new}"
+    seen = request.app["state"].seen
+    if old_key in seen:  # copied, not moved: a poll in flight may still list the old name
+        seen[new_key] = seen[old_key]
+    await events.broadcast(request.app, {"t": "renamed", "old": old_key, "new": new_key, "name": new})
+    return web.json_response({"ok": True})
+
+
+async def kill_session(request):
+    """Kill from a row's ⋯, in two steps like the TUI: without confirm it only says what is still
+    running in the session, so the page can ask; with confirm it kills."""
+    try:
+        data = await request.json()
+        host, name = _session(data, request.app["hosts"])
+        confirm = data.get("confirm", False)
+        if not isinstance(confirm, bool):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
+    if not confirm:
+        try:
+            running = await tmux_ops.running_commands(host, name)
+        except tmux_ops.ManageError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=409)
+        return web.json_response({"ok": True, "confirm": True, "running": running})
+    error = await tmux_ops.kill(host, name)
+    if error:
+        return web.json_response({"ok": False, "error": error}, status=409)
+    await events.broadcast(request.app, {"t": "killed", "key": f"{host}/{name}"})
+    return web.json_response({"ok": True})
+
+
 async def suggest_name(request):
     """The folder's git repo name on that host, else its basename."""
     try:
@@ -242,6 +301,13 @@ async def app_update(request):
     raise web.HTTPSeeOther("/")
 
 
+async def revalidate_static(request, response):
+    """The page's own js and css: ask every time (a 304 when unchanged). With only Last-Modified a
+    browser keeps using the old app.js for hours after a deploy, so new buttons don't show."""
+    if request.path.startswith("/static/") and "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
     app["auth_file"], app["hosts"] = auth_file, hosts_list
@@ -254,12 +320,15 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/api/approve", approve_prompt)
     app.router.add_post("/api/create", create_session)
     app.router.add_post("/api/suggest-name", suggest_name)
+    app.router.add_post("/api/rename", rename_session)
+    app.router.add_post("/api/kill", kill_session)
     term.setup(app)
     app.router.add_get("/api/config", config)
     app.router.add_get("/app/latest.json", app_manifest)
     app.router.add_get("/app/tmls.apk", app_apk)
     app.router.add_get("/app/update", app_update)
     app.router.add_static("/static", STATIC)
+    app.on_response_prepare.append(revalidate_static)
     events.setup(app)
     return app
 
