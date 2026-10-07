@@ -59,6 +59,9 @@ are indented four spaces), and counts the rows above `s0-recv` = k. tmls starts 
 — the first `j` lands on row 0 — so the nav uses k+1 presses:
 `wait:4000,expect:s0-recv:15000,key:j×(k+1),key:enter,wait:2000`.
 If `s0-recv` is not found the script prints the dump and fails that path; override with `NAV=…`.
+The awk heuristic assumes the session list is **unscrolled** (every row from the first session
+down to `s0-recv` is on screen in the 120×40 PTY). With enough sessions/sub-lines to scroll the
+list, the count is wrong — set `NAV=` by hand.
 Safety: `s0 send` sends no events until it sees `S0READY`, so a wrong row only costs a timeout.
 
 ## Clock skew caveat
@@ -114,7 +117,7 @@ not kitty's keyboard handling. True keyboard-to-app latency additionally needs `
 into the focused kitty window feeding a bare `s0 recv`; that is a user-run step (needs the
 desktop session) and is not scripted here.
 
-## Known result from the dry runs (2026-10-07, EVENTS=200)
+## Known result from the dry runs (2026-10-07, EVENTS=200, alphabet before d69ca3f)
 
 All three tmls paths lose the stream at the same point: 59/200 arrive, 141 missing, 8 corrupt.
 - Every `AltLetter` event (`ESC <letter>`) arrives re-encoded as caret text (`^a` = `5e61`), or

@@ -110,14 +110,21 @@ detect_nav() {
 
 # Recv inside a default-server tmux session named s0-recv (what tmls lists).
 tmls_pre() { # tmls_pre <recv log>
-  if tmux has-session -t '=s0-recv' 2>/dev/null; then
+  if nontmux tmux has-session -t '=s0-recv' 2>/dev/null; then
     echo "   stale s0-recv session on default server — killing it (ours)"
-    tmux kill-session -t '=s0-recv'
+    nontmux tmux kill-session -t '=s0-recv'
   fi
   local argv; mapfile -t argv < <(recv_argv "$S0" "$1")
   nontmux tmux new-session -d -s s0-recv -x 200 -y 50 "$(q "${argv[@]}")"
 }
-tmls_post() { tmux kill-session -t '=s0-recv' 2>/dev/null || true; }
+tmls_post() { nontmux tmux kill-session -t '=s0-recv' 2>/dev/null || true; }
+
+# Private-socket (-L s0) s0-recv cleanup, local and on pcl. The remote target is explicitly
+# single-quoted so a zsh login shell does not `=word`-expand it (printf %q leaves `=s0-recv` bare).
+p3_local_post() { nontmux tmux -L s0 kill-session -t '=s0-recv' 2>/dev/null || true; }
+p3_pcl_post() {
+  ssh -o BatchMode=yes "$PCL" "tmux -L s0 kill-session -t '=s0-recv' 2>/dev/null || true" || true
+}
 
 # ---- paths: each sets SEND_LOG / RECV_LOG (local paths) and SKEW (empty or note) ----
 
@@ -141,7 +148,8 @@ path_P2-ssh-pcl() {
 }
 
 path_P3-tmux-local() {
-  nontmux tmux -L s0 kill-session -t '=s0-recv' 2>/dev/null || true
+  trap p3_local_post EXIT   # path runs in its own subshell
+  p3_local_post
   local argv; mapfile -t argv < <(recv_argv "$S0" "$RECV_LOG")
   send_local "$NAME" -- tmux -L s0 new-session -s s0-recv "$(q "${argv[@]}")"
 }
@@ -149,7 +157,8 @@ path_P3-tmux-local() {
 path_P3-ssh-tmux-pcl() {
   pcl_init; SKEW=$SKEW_NOTE
   local rlog=$PCL_DIR/$NAME.recv.jsonl argv rc=0
-  ssh -o BatchMode=yes "$PCL" 'tmux -L s0 kill-session -t =s0-recv 2>/dev/null || true'
+  trap p3_pcl_post EXIT   # path runs in its own subshell
+  p3_pcl_post
   mapfile -t argv < <(recv_argv "$PCL_S0" "$rlog")
   send_local "$NAME" -- ssh -t "$PCL" "$(q tmux -L s0 new-session -s s0-recv "$(q "${argv[@]}")")" || rc=$?
   scp -q "$PCL:$rlog" "$RECV_LOG"
