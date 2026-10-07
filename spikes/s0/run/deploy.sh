@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build s0 on archbox and deploy it to the PC (pcl) at ~/.local/bin/s0.
-# Creates directories only; never deletes anything on either host.
+# Creates directories and replaces ~/.local/bin/s0 on pcl (temp file + rename); deletes nothing else.
 set -euo pipefail
 
 PCL=${PCL:-pcl}
@@ -14,8 +14,11 @@ BIN=$REPO/target/release/s0
 
 echo "== deploy to $PCL:~/.local/bin/s0"
 ssh -o BatchMode=yes "$PCL" 'mkdir -p "$HOME/.local/bin"'
-scp -q "$BIN" "$PCL:.local/bin/s0"
-ssh -o BatchMode=yes "$PCL" 'chmod 755 "$HOME/.local/bin/s0"'
+# Copy to a temp name, then rename over the old binary: writing into a running executable fails
+# with ETXTBSY (text file busy) while a run is active; a rename just swaps the directory entry.
+TMPNAME=.s0.new.$$
+scp -q "$BIN" "$PCL:.local/bin/$TMPNAME"
+ssh -o BatchMode=yes "$PCL" "chmod 755 \"\$HOME/.local/bin/$TMPNAME\" && mv -f \"\$HOME/.local/bin/$TMPNAME\" \"\$HOME/.local/bin/s0\""
 
 echo "== log dir on $PCL"
 # pcl normally has no /data: fall back to ~/s0-logs (paths.sh uses the same rule).

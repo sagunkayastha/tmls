@@ -6,6 +6,9 @@
 #        SSH_FLAGS (-t: ssh flags for the P2 paths; -T = no remote PTY control run)
 # Logs: /data/scratch/s0/runs/<RUN_ID>/  (pcl side: ~/s0-logs/<RUN_ID>/, fetched back with scp)
 # Only ever kills the tmux session `s0-recv` (default server or private `-L s0`); never kill-server.
+# Ready gate: every recv prints `S0READY:<READY_TOKEN>` (a per-run nonce) and every send waits for
+# exactly that text after its last nav key, so a nav that lands on any other screen (e.g. one of
+# the user's own sessions) never gets events typed into it — it only times out.
 set -euo pipefail
 
 LOAD_ARG=${1:-}
@@ -30,6 +33,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 S0=$REPO/target/release/s0
 export TMPDIR=/data/scratch/s0
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}
+READY_TOKEN=$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')
 OUT=/data/scratch/s0/runs/$RUN_ID
 mkdir -p "$TMPDIR" "$OUT"
 SUMMARY=$OUT/summary.md
@@ -60,7 +64,7 @@ pcl_init() {
 
 write_summary() {
   {
-    echo "# S0 run $RUN_ID — load $LOAD, EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS"
+    echo "# S0 run $RUN_ID — ready-token $READY_TOKEN, load $LOAD, EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS"
     echo
     echo "host $(uname -n), started $(date -u -d @"$START" +%FT%TZ)"
     echo
@@ -75,24 +79,24 @@ send_local() {
   local extra=()
   while [[ $1 != -- ]]; do extra+=("$1"); shift; done; shift
   nontmux "$S0" send --log "$OUT/$name.send.jsonl" --events "$EVENTS" --rate "$RATE" \
-    --marker-gap-ms "$MARKER_GAP_MS" --cols 120 --rows 40 "${extra[@]}" -- "$@" 2> "$OUT/$name.send.stderr"
+    --marker-gap-ms "$MARKER_GAP_MS" --ready-token "$READY_TOKEN" --cols 120 --rows 40 "${extra[@]}" \
+    -- "$@" 2> "$OUT/$name.send.stderr"
 }
 
 recv_argv() { # recv_argv <s0 binary> <log>
-  printf '%s\n' "$1" recv --log "$2" --quit-after "$EVENTS" "${FLOOD_ARGS[@]}"
+  printf '%s\n' "$1" recv --log "$2" --quit-after "$EVENTS" --ready-token "$READY_TOKEN" "${FLOOD_ARGS[@]}"
 }
 
-# Find how many `j` presses reach the s0-recv row in tmls; sets TMLS_NAV.
+# Find how many `j` presses reach the s0-recv row in tmls; sets TMLS_NAV. Runs again before EVERY
+# tmls path (the session list can change between paths); the per-path nav file is only a debug
+# artefact, never read back.
 TMLS_NAV=""
 detect_nav() {
-  [[ -n "$TMLS_NAV" ]] && return 0
   if [[ -n "${NAV:-}" ]]; then TMLS_NAV=$NAV; return 0; fi
-  # Paths run in subshells: cache the detected nav for the rest of this run.
-  if [[ -s "$OUT/tmls-nav.txt" ]]; then TMLS_NAV=$(<"$OUT/tmls-nav.txt"); return 0; fi
-  local dump=$OUT/tmls-nav-dump.stderr k
+  local dump=$OUT/$NAME.tmls-nav-dump.stderr k
   echo "   detecting tmls row for s0-recv (dump run, times out by design)..."
-  nontmux "$S0" send --log "$OUT/tmls-nav-dump.send.jsonl" --events 1 --rate "$RATE" --marker-gap-ms "$MARKER_GAP_MS" \
-    --cols 120 --rows 40 --dump-screen --ready-timeout-ms 3000 --nav 'wait:6000' \
+  nontmux "$S0" send --log "$OUT/$NAME.tmls-nav-dump.send.jsonl" --events 1 --rate "$RATE" --marker-gap-ms "$MARKER_GAP_MS" \
+    --ready-token "$READY_TOKEN" --cols 120 --rows 40 --dump-screen --ready-timeout-ms 3000 --nav 'wait:6000' \
     -- bash -lc "$TMLS_CMD" 2> "$dump" || true
   k=$(awk '
     /│ archbox/ { inside = 1; next }
@@ -108,7 +112,7 @@ detect_nav() {
   local keys="" i
   for ((i = 0; i <= k; i++)); do keys+="key:j,"; done
   TMLS_NAV="wait:4000,expect:s0-recv:15000,${keys}key:enter,wait:2000"
-  echo "$TMLS_NAV" > "$OUT/tmls-nav.txt"
+  echo "$TMLS_NAV" > "$OUT/$NAME.tmls-nav.txt"
   echo "   s0-recv is row index $k → NAV=$TMLS_NAV"
 }
 
@@ -207,7 +211,7 @@ path_P5-tmls-ssh-pcl() {
   local slog=$PCL_DIR/$NAME.send.jsonl rc=0
   # Sender runs on pcl: pcl's s0 send → ssh -t archbox → tmls → tmux attach → recv (archbox).
   ssh -o BatchMode=yes "$PCL" "$(q "$PCL_S0" send --log "$slog" --events "$EVENTS" --rate "$RATE" --marker-gap-ms "$MARKER_GAP_MS" \
-      --cols 120 --rows 40 --nav "$TMLS_NAV" -- ssh -t "$ARCHBOX" "$(q bash -lc "$TMLS_CMD")")" \
+      --ready-token "$READY_TOKEN" --cols 120 --rows 40 --nav "$TMLS_NAV" -- ssh -t "$ARCHBOX" "$(q bash -lc "$TMLS_CMD")")" \
       2> "$OUT/$NAME.send.stderr" || rc=$?
   scp -q "$PCL:$slog" "$SEND_LOG"
   return $rc
@@ -217,7 +221,7 @@ path_P5-tmls-ssh-pcl() {
 
 START=$(date +%s)
 : > "$ROWS"; : > "$FAILED"
-echo "S0 run $RUN_ID  load=$LOAD  EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS  → $OUT"
+echo "S0 run $RUN_ID  ready-token=$READY_TOKEN  load=$LOAD  EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS  → $OUT"
 for p in $PATHS; do
   NAME=$p-$LOAD
   SEND_LOG=$OUT/$NAME.send.jsonl

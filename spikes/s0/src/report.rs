@@ -20,20 +20,26 @@ pub struct Report {
     pub corrupt_examples: Vec<CorruptExample>,
     pub dropped_acks: Option<u64>, pub recv_exit: Option<String>, pub saw_done: Option<bool>,
     pub skew_note: Option<String>,
+    /// Non-empty log lines (either log) that were not JSON or not a known record/done line.
+    pub unparsed_lines: u32,
     /// `yes` or `NO:<reasons>`; see [`Report::complete_status`]. Filled by `main`.
     pub complete: String,
 }
 
 impl Report {
     /// A row is a gate result only when the run finished: every event was sent, the receiver
-    /// stopped on `--quit-after` (not EOF/error) and the sender saw `S0DONE`.
+    /// stopped on `--quit-after` (not EOF/error) and both logs parsed cleanly. `saw_done` is not
+    /// part of the rule: the receiver writes and flushes its done line (`exit=quit_after`) *before*
+    /// it prints `S0DONE`, so `recv_exit == quit_after` already proves its log is complete; whether
+    /// `S0DONE` then reached the sender's screen (often not, on tmls paths) is reported in its own
+    /// `saw_done` column.
     pub fn complete_status(&self) -> String {
         let mut why = Vec::new();
         if self.sent < self.events { why.push("sent<events".to_string()); }
         if self.recv_exit.as_deref() != Some("quit_after") {
             why.push(format!("recv_exit={}", self.recv_exit.as_deref().unwrap_or("–")));
         }
-        if self.saw_done != Some(true) { why.push("no_done".into()); }
+        if self.unparsed_lines > 0 { why.push(format!("unparsed={}", self.unparsed_lines)); }
         if why.is_empty() { "yes".into() } else { format!("NO:{}", why.join(",")) }
     }
 }
@@ -90,31 +96,48 @@ pub fn build(send: &[SendRecord], recv: &[RecvRecord], events: u32, path: &str, 
     rep
 }
 
-fn load_lines(path: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
-    Ok(std::fs::read_to_string(path)?.lines().filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok()).collect())
-}
-
-pub fn load_send(path: &Path) -> anyhow::Result<(Vec<SendRecord>, Option<bool>)> {
-    let (mut recs, mut saw) = (Vec::new(), None);
-    for v in load_lines(path)? {
-        if v.get("done").is_some() { saw = v.get("saw_done").and_then(|x| x.as_bool()); continue; }
-        if let Ok(r) = serde_json::from_value(v) { recs.push(r); }
+/// Non-empty lines parsed as JSON, plus the count of lines that were not JSON.
+fn load_lines(path: &Path) -> anyhow::Result<(Vec<serde_json::Value>, u32)> {
+    let (mut vals, mut bad) = (Vec::new(), 0);
+    for l in std::fs::read_to_string(path)?.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str(l) { Ok(v) => vals.push(v), Err(_) => bad += 1 }
     }
-    Ok((recs, saw))
+    Ok((vals, bad))
 }
 
-pub fn load_recv(path: &Path) -> anyhow::Result<(Vec<RecvRecord>, Option<u64>, Option<String>)> {
+/// What the sender log holds besides its records.
+#[derive(Debug, Default, PartialEq)]
+pub struct SendMeta { pub saw_done: Option<bool>, pub events: Option<u32>, pub unparsed: u32 }
+
+/// Unparsable = not JSON, or JSON that is neither a done line nor a valid record.
+pub fn load_send(path: &Path) -> anyhow::Result<(Vec<SendRecord>, SendMeta)> {
+    let (vals, mut unparsed) = load_lines(path)?;
+    let (mut recs, mut m) = (Vec::new(), SendMeta::default());
+    for v in vals {
+        if v.get("done").is_some() {
+            m.saw_done = v.get("saw_done").and_then(|x| x.as_bool());
+            m.events = v.get("events").and_then(|x| x.as_u64()).and_then(|x| u32::try_from(x).ok());
+            continue;
+        }
+        match serde_json::from_value(v) { Ok(r) => recs.push(r), Err(_) => unparsed += 1 }
+    }
+    m.unparsed = unparsed;
+    Ok((recs, m))
+}
+
+/// (records, dropped_acks, exit, unparsable lines)
+pub fn load_recv(path: &Path) -> anyhow::Result<(Vec<RecvRecord>, Option<u64>, Option<String>, u32)> {
+    let (vals, mut unparsed) = load_lines(path)?;
     let (mut recs, mut dropped, mut exit) = (Vec::new(), None, None);
-    for v in load_lines(path)? {
+    for v in vals {
         if v.get("done").is_some() {
             dropped = v.get("dropped_acks").and_then(|x| x.as_u64());
             exit = v.get("exit").and_then(|x| x.as_str()).map(String::from);
             continue;
         }
-        if let Ok(r) = serde_json::from_value(v) { recs.push(r); }
+        match serde_json::from_value(v) { Ok(r) => recs.push(r), Err(_) => unparsed += 1 }
     }
-    Ok((recs, dropped, exit))
+    Ok((recs, dropped, exit, unparsed))
 }
 
 fn fmt_quad(q: [Option<f64>; 4]) -> String {
@@ -143,11 +166,14 @@ pub struct Opts {
 }
 
 pub fn main(o: Opts) -> anyhow::Result<()> {
-    let (send, saw_done) = load_send(&o.send)?;
-    let (recv, dropped, exit) = load_recv(&o.recv)?;
-    let events = o.events.unwrap_or(send.len() as u32);
+    let (send, meta) = load_send(&o.send)?;
+    let (recv, dropped, exit, recv_unparsed) = load_recv(&o.recv)?;
+    // Default: what the sender was asked to send (its done line), so a run cut short is not
+    // silently judged against only the events it managed to send.
+    let events = o.events.or(meta.events).unwrap_or(send.len() as u32);
     let mut rep = build(&send, &recv, events, &o.path, &o.load);
-    rep.dropped_acks = dropped; rep.recv_exit = exit; rep.saw_done = saw_done; rep.skew_note = o.skew_note;
+    rep.dropped_acks = dropped; rep.recv_exit = exit; rep.saw_done = meta.saw_done; rep.skew_note = o.skew_note;
+    rep.unparsed_lines = meta.unparsed + recv_unparsed;
     rep.complete = rep.complete_status();
     if let Some(j) = &o.json {
         if let Some(p) = j.parent() { std::fs::create_dir_all(p)?; }
@@ -180,16 +206,41 @@ mod tests {
         assert_eq!(percentile(&v, 99.0), 99.0);
         assert_eq!(percentile(&v, 100.0), 100.0);
     }
+    /// `S0_TEST_DIR` if set, else the system temp dir (archbox runs tests with TMPDIR=/data/scratch/s0).
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let base = std::env::var_os("S0_TEST_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let d = base.join(format!("s0-report-test-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
     #[test]
     fn load_skips_done_lines() {
-        let d = std::path::PathBuf::from("/data/scratch/s0/report_test");
-        std::fs::create_dir_all(&d).unwrap();
+        let d = test_dir("load");
         let sp = d.join("send.jsonl"); let rp = d.join("recv.jsonl");
-        std::fs::write(&sp, "{\"seq\":0,\"kind\":\"Letter\",\"write_start_ns\":1,\"write_end_ns\":2,\"ack_ns\":null}\n{\"done\":true,\"acked\":0,\"saw_done\":true,\"events\":1,\"rate\":50.0,\"cmd\":[]}\n").unwrap();
+        std::fs::write(&sp, "{\"seq\":0,\"kind\":\"Letter\",\"write_start_ns\":1,\"write_end_ns\":2,\"ack_ns\":null}\n{\"done\":true,\"acked\":0,\"saw_done\":true,\"events\":7,\"rate\":50.0,\"cmd\":[]}\n").unwrap();
         std::fs::write(&rp, "{\"seq\":0,\"intact\":true,\"got_hex\":\"\",\"wall_ns\":5,\"idx\":0}\n{\"done\":true,\"arrivals\":1,\"dropped_acks\":3,\"exit\":\"quit_after\"}\n").unwrap();
-        let (sv, saw) = load_send(&sp).unwrap();
-        let (rv, dropped, exit) = load_recv(&rp).unwrap();
-        assert_eq!((sv.len(), saw, rv.len(), dropped, exit.as_deref()), (1, Some(true), 1, Some(3), Some("quit_after")));
+        let (sv, meta) = load_send(&sp).unwrap();
+        let (rv, dropped, exit, bad) = load_recv(&rp).unwrap();
+        assert_eq!((sv.len(), rv.len(), dropped, exit.as_deref(), bad), (1, 1, Some(3), Some("quit_after"), 0));
+        assert_eq!(meta, SendMeta { saw_done: Some(true), events: Some(7), unparsed: 0 });
+    }
+    #[test]
+    fn unparsable_lines_counted_and_events_default_from_done_line() {
+        let d = test_dir("unparsed");
+        let sp = d.join("send.jsonl"); let rp = d.join("recv.jsonl"); let jp = d.join("rep.json");
+        // send: 1 record, a truncated line, a JSON line that is not a record, done line asks for 3.
+        std::fs::write(&sp, "{\"seq\":0,\"kind\":\"Letter\",\"write_start_ns\":1,\"write_end_ns\":2,\"ack_ns\":null}\n{\"seq\":1,\"ki\n{\"x\":1}\n{\"done\":true,\"saw_done\":false,\"events\":3}\n").unwrap();
+        std::fs::write(&rp, "{\"seq\":0,\"intact\":true,\"got_hex\":\"\",\"wall_ns\":5,\"idx\":0}\ngarbage\n{\"done\":true,\"arrivals\":1,\"dropped_acks\":0,\"exit\":\"quit_after\"}\n").unwrap();
+        let (_, meta) = load_send(&sp).unwrap();
+        assert_eq!(meta.unparsed, 2);
+        assert_eq!(load_recv(&rp).unwrap().3, 1);
+        main(Opts { send: sp, recv: rp, path: "p".into(), load: "q".into(), json: Some(jp.clone()),
+                    header: false, skew_note: None, events: None }).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+        assert_eq!(j["events"], 3, "events default = send done line's events, not send.len()");
+        assert_eq!(j["sent"], 1);
+        assert_eq!(j["unparsed_lines"], 3);
+        assert_eq!(j["complete"], "NO:sent<events,unparsed=3");
     }
     #[test]
     fn report_marks_incomplete_runs() {
@@ -203,16 +254,20 @@ mod tests {
         let row = markdown_row(&rep);
         assert!(row.contains("| 5 | 5 | quit_after | true | 0 |"), "{row}");
         assert!(row.trim_end().ends_with("| yes |"), "{row}");
+        // Complete without S0DONE on screen (typical tmls row): saw_done is reported, not gated.
+        rep.saw_done = Some(false);
+        assert_eq!(rep.complete_status(), "yes");
+        assert!(markdown_row(&rep).contains("| 5 | 5 | quit_after | false | 0 |"));
         // Incomplete: 3 of 5 sent, recv hit EOF, no S0DONE.
         let mut rep = build(&send[..3], &recv[..3], 5, "p", "quiet");
         rep.recv_exit = Some("eof".into()); rep.saw_done = Some(false); rep.dropped_acks = None;
-        assert_eq!(rep.complete_status(), "NO:sent<events,recv_exit=eof,no_done");
+        assert_eq!(rep.complete_status(), "NO:sent<events,recv_exit=eof");
         let row = markdown_row(&rep);
         assert!(row.contains("| 3 | 3 | eof | false | – |"), "{row}");
-        assert!(row.trim_end().ends_with("| NO:sent<events,recv_exit=eof,no_done |"), "{row}");
+        assert!(row.trim_end().ends_with("| NO:sent<events,recv_exit=eof |"), "{row}");
         // Missing done lines entirely.
         let rep = build(&send, &recv, 5, "p", "quiet");
-        assert_eq!(rep.complete_status(), "NO:recv_exit=–,no_done");
+        assert_eq!(rep.complete_status(), "NO:recv_exit=–");
         // Header has the same number of columns as a row.
         let cols = |l: &str| l.matches('|').count();
         assert_eq!(cols(HEADER.lines().next().unwrap()), cols(&markdown_row(&rep)));

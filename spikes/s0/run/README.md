@@ -29,17 +29,24 @@ Columns: `events | arrived | missing | dup | corrupt | reorder | acked | sent | 
 saw_done | dropped_acks | one-way p50/p95/p99/max | ack p50/p95/p99/max | complete`.
 
 - **`complete`** — `yes` only when `sent == events`, the receiver exited `quit_after` (not
-  `eof`/`error`) and the sender saw `S0DONE`; otherwise `NO:<reasons>` (`sent<events`,
-  `recv_exit=<x>`, `no_done`). Treat only `complete = yes` rows as gate results.
+  `eof`/`error`) and every log line parsed; otherwise `NO:<reasons>` (`sent<events`,
+  `recv_exit=<x>`, `unparsed=<n>`). Treat only `complete = yes` rows as gate results.
+  `saw_done` is **not** part of the rule: the receiver writes and flushes its done line
+  (`exit=quit_after`) *before* it prints `S0DONE`, so `recv_exit = quit_after` already proves the
+  receiver log is complete. `saw_done` (did `S0DONE` reach the sender's screen — often not through
+  tmls) stays as its own column. (Reports from binaries before this change had a `no_done` reason.)
+- `s0 report --events` defaults to the `events` in the send done line (what the sender was asked
+  to send), else the number of send records. The `.report.json` has `unparsed_lines` (both logs).
 - Loss/corruption come from the **receiver log** (`arrived`/`missing`/`corrupt` count distinct seqs
   in `0..events`; out-of-range seqs go to `out_of_range` in the `.report.json`).
 - `acked` and the ack percentiles are *observed return-output timing* (ack text scanned from the
   path's output stream), not a delivery oracle; under flood, acks share the receiver's stdout queue
   and some are dropped (`dropped_acks`), so the ack sample is smaller than `events`.
 - The send done line carries `done_seen_ms` (last write → `S0DONE` seen) and `marker_gap_ms`.
-  After the last event the sender waits for `S0DONE` up to `--settle-ms` (5 s) before killing the
-  path, so the receiver's log is complete; on tmls paths `S0DONE` may never be on screen, which
-  costs up to that wait and shows as `no_done`.
+  After the last event the sender drains acks up to `--settle-ms` (5 s); once every event is acked
+  it waits at most 1 s more for `S0DONE` (if acks are still missing, up to another `--settle-ms`)
+  before killing the path. On tmls paths `S0DONE` may never be on screen; that shows as
+  `saw_done = false` and does not make the row incomplete.
 
 A path that fails does not stop the matrix: it gets a line under "Failed / notes" in
 `summary.md` and the run continues. If `s0 send` exits non-zero but both logs exist, the row is
@@ -50,7 +57,8 @@ still reported (missing keys are a result, not a harness error) and a note recor
 - archbox: `/data/scratch/s0/runs/<RUN_ID>/`
   - `<path>-<load>.send.jsonl`, `.recv.jsonl`, `.report.json`, `.send.stderr` (screen dumps on timeout)
   - `summary.md` — header + one row per path, then failures/notes
-  - `tmls-nav-dump.stderr`, `tmls-nav.txt` — the tmls row-detection dump and the nav it produced
+  - `<path>-<load>.tmls-nav-dump.stderr`, `<path>-<load>.tmls-nav.txt` — per tmls path, the
+    row-detection dump and the nav it produced (debug artefacts; never read back)
 - pcl: `~/s0-logs/runs/<RUN_ID>/` (pcl has no `/data`; `deploy.sh` falls back to `~/s0-logs`, and
   `paths.sh` uses `/data/scratch/s0` there only if it exists and is writable). Remote logs are
   fetched back to the archbox run dir with `scp` after each path.
@@ -70,14 +78,16 @@ still reported (missing keys are a result, not a harness error) and a note recor
 | `P5-tmls-ssh-loop` | archbox | same pre; child: `ssh -t archbox "bash -lc 'cd ~/Others/tmls && uv run -q tmls archbox'"` |
 | `P5-tmls-ssh-pcl` | **pcl** (`ssh pcl ~/.local/bin/s0 send … -- ssh -t archbox "bash -lc '…tmls archbox'"`) — the laptop path minus Windows | same pre |
 
-Rules the script keeps: `--quit-after $EVENTS` on every recv; the only tmux session it ever
+Rules the script keeps: `--quit-after $EVENTS` and `--ready-token <run nonce>` on every recv,
+the same `--ready-token` on every send; the only tmux session it ever
 kills is `s0-recv` (default server or `-L s0`), never `kill-server`, never the user's sessions.
 All `s0 send` children run with `TMUX`/`TMUX_PANE` unset, so tmls/tmux inside the harness PTY
 never act on the operator's own tmux client.
 
 ### tmls nav (row detection)
 
-Before the first tmls path, the script runs tmls once with
+Before **each** tmls path (no caching across paths — the session list can change), the script runs
+tmls once with
 `--dump-screen --events 1 --ready-timeout-ms 3000 --nav wait:6000` (times out by design), takes
 the lines between `│ archbox` and ` ▸ background`, keeps session rows (`^  [^ ]` — Claude sub-lines
 are indented four spaces), and counts the rows above `s0-recv` = k. tmls starts with **no cursor**
@@ -87,7 +97,13 @@ If `s0-recv` is not found the script prints the dump and fails that path; overri
 The awk heuristic assumes the session list is **unscrolled** (every row from the first session
 down to `s0-recv` is on screen in the 120×40 PTY). With enough sessions/sub-lines to scroll the
 list, the count is wrong — set `NAV=` by hand.
-Safety: `s0 send` sends no events until it sees `S0READY`, so a wrong row only costs a timeout.
+Safety (ready gate): each run draws a random nonce; every `s0 recv` prints `S0READY:<nonce>` and
+every `s0 send` gets `--ready-token <nonce>`, so it types events only after it sees that exact text
+(a plain `S0READY`, or another run's nonce, does not count) **in output that arrived after its last
+nav key**. If the nav lands on the wrong row — including one of your own tmux sessions — that
+screen cannot show the nonce, so the nav keys themselves (`j`…, `enter`) reach that session but no
+events do; the path fails on the ready timeout. The nav keys are still typed blind: check the dump
+when a tmls path times out.
 
 ## Controls
 
@@ -139,13 +155,23 @@ s0 send --log $D/P6-kitty-ssh.send.jsonl --events $N --rate 50 -- \
   ssh -t archbox /home/sgkayast/Others/tmls-rs/target/release/s0 recv \
     --log /data/scratch/s0/runs/P6-$R-kitty-ssh.recv.jsonl --quit-after $N
 
-# P6-kitty-tmls — through tmls on archbox. First create the recv session on archbox:
-ssh archbox "tmux new-session -d -s s0-recv -x 200 -y 50 '/home/sgkayast/Others/tmls-rs/target/release/s0 recv --log /data/scratch/s0/runs/P6-$R-kitty-tmls.recv.jsonl --quit-after $N'"
-#   NAV: one key:j per session row up to and including s0-recv (4 with Queue/drive/home/s0-recv).
-s0 send --log $D/P6-kitty-tmls.send.jsonl --events $N --rate 50 \
-  --nav 'wait:4000,expect:s0-recv:15000,key:j,key:j,key:j,key:j,key:enter,wait:2000' -- \
+# P6-kitty-tmls — through tmls on archbox. Pick a nonce, create the recv session on archbox:
+T=$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')
+ssh archbox "tmux new-session -d -s s0-recv -x 200 -y 50 '/home/sgkayast/Others/tmls-rs/target/release/s0 recv --log /data/scratch/s0/runs/P6-$R-kitty-tmls.recv.jsonl --quit-after $N --ready-token $T'"
+#   NAV: find the row first — do NOT reuse a fixed count. Dump the tmls screen (times out by design):
+s0 send --log $D/nav-dump.send.jsonl --events 1 --cols 120 --rows 40 --dump-screen \
+  --ready-timeout-ms 3000 --nav 'wait:6000' -- ssh -t archbox "bash -lc 'cd ~/Others/tmls && uv run -q tmls archbox'" \
+  2>&1 | sed -n '/│ archbox/,/▸ background/p'
+#   Count the session rows (lines starting with two spaces then text; Claude sub-lines are indented
+#   four) from the top down to and including s0-recv = K. tmls starts with no cursor, so the nav
+#   needs K `key:j` (row index k = K-1 needs k+1 presses). Build it:
+K=<count>; J=$(for i in $(seq $K); do printf 'key:j,'; done)
+s0 send --log $D/P6-kitty-tmls.send.jsonl --events $N --rate 50 --ready-token $T \
+  --nav "wait:4000,expect:s0-recv:15000,${J}key:enter,wait:2000" -- \
   ssh -t archbox "bash -lc 'cd ~/Others/tmls && uv run -q tmls archbox'"
 ssh archbox 'tmux kill-session -t s0-recv 2>/dev/null || true'
+#   A wrong K only costs a ready timeout: the gate waits for S0READY:$T after the last nav key,
+#   which no other screen shows (the j/enter keys themselves do reach whatever row they select).
 ```
 
 Then report on archbox (pull the pcl send logs first):

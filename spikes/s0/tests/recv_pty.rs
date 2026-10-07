@@ -16,7 +16,7 @@ const DEADLINE: Duration = Duration::from_secs(60);
 fn s0_bin() -> std::path::PathBuf { std::path::PathBuf::from(env!("CARGO_BIN_EXE_s0")) }
 
 fn scratch(name: &str) -> std::path::PathBuf {
-    let d = std::path::PathBuf::from("/data/scratch/s0/test");
+    let d = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("s0-test");
     std::fs::create_dir_all(&d).unwrap();
     d.join(format!("{name}-{}.jsonl", std::process::id()))
 }
@@ -234,4 +234,17 @@ fn recv_flood_starts_after_first_arrival() {
     let text = String::from_utf8_lossy(&out);
     let ready = text.find("S0READY").unwrap();
     assert!(ready < text.find("F0").unwrap());
+}
+
+/// `--ready-token T`: the receiver prints `S0READY:T` (and not a bare `S0READY` line).
+#[test]
+fn recv_ready_token_printed() {
+    let log = scratch("token");
+    let mut r = start(&["recv", "--log", log.to_str().unwrap(), "--quit-after", "1", "--ready-token", "abc123"]);
+    let _ = r.go_tx.send(());
+    send_seq(&mut r, 0);
+    let out = r.finish();
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("\x1b[?2004hS0READY:abc123\r\n"), "{text:?}");
+    assert!(!text.contains("S0READY\r\n"), "{text:?}");
 }

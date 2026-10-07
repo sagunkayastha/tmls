@@ -18,6 +18,8 @@ enum Cmd {
         #[arg(long)] quit_after: Option<u64>,
         /// Stdout channel capacity in chunks (test hook)
         #[arg(long, default_value_t = 4096, hide = true)] ack_queue: usize,
+        /// Print `S0READY:<tok>` instead of plain `S0READY` (pair with `send --ready-token`)
+        #[arg(long)] ready_token: Option<String>,
     },
     /// Near end: spawn a path command in a PTY, drive nav, send numbered events, record acks
     Send {
@@ -31,10 +33,12 @@ enum Cmd {
         /// Print the escape-stripped screen to stderr after nav
         #[arg(long)] dump_screen: bool,
         #[arg(long, default_value_t = 5000)] settle_ms: u64,
-        /// Max wait for the receiver's `S0READY` marker (after nav)
+        /// Max wait for the receiver's ready marker (after the last nav key)
         #[arg(long, default_value_t = 30_000)] ready_timeout_ms: u64,
         /// Sleep this long between each event's payload and its marker (0 = off)
         #[arg(long, default_value_t = 0)] marker_gap_ms: u64,
+        /// Open the ready gate only on the exact text `S0READY:<tok>` (plain `S0READY` is ignored)
+        #[arg(long)] ready_token: Option<String>,
         #[arg(last = true, required = true)] cmd: Vec<String>,
     },
     /// Join send/recv logs into counts and latency percentiles
@@ -47,7 +51,7 @@ enum Cmd {
         /// Print the Markdown header row first
         #[arg(long)] header: bool,
         #[arg(long)] skew_note: Option<String>,
-        /// Events sent (default: number of send records)
+        /// Events sent (default: the send done line's `events`, else the number of send records)
         #[arg(long)] events: Option<u32>,
     },
     /// Output flood at a bounded rate
@@ -56,11 +60,11 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Recv { log, flood, ack, quit_after, ack_queue } =>
-            s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue }),
-        Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, marker_gap_ms, cmd } =>
+        Cmd::Recv { log, flood, ack, quit_after, ack_queue, ready_token } =>
+            s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue, ready_token }),
+        Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, marker_gap_ms, ready_token, cmd } =>
             s0::send::main(s0::send::Opts { log, events, rate, cols, rows, nav, dump_screen, settle_ms,
-                                            ready_timeout_ms, marker_gap_ms, cmd }),
+                                            ready_timeout_ms, marker_gap_ms, ready_token, cmd }),
         Cmd::Report { send, recv, path, load, json, header, skew_note, events } =>
             s0::report::main(s0::report::Opts { send, recv, path, load, json, header, skew_note, events }),
         Cmd::Flood { bytes_per_sec } => { s0::flood::main(bytes_per_sec); Ok(()) }

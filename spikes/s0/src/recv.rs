@@ -15,9 +15,21 @@ pub struct Opts { pub log: std::path::PathBuf,
                  /// out-of-range seqs are logged but do not count).
                  pub quit_after: Option<u64>,
                  /// Capacity of the stdout channel (acks + flood lines). Default 4096.
-                 pub ack_queue: usize }
+                 pub ack_queue: usize,
+                 /// Print `S0READY:<token>` instead of `S0READY`, so the sender can tell this
+                 /// receiver from any other screen that happens to show the plain marker.
+                 pub ready_token: Option<String> }
+
+/// A ready token must be short plain text (it is matched in escape-stripped screen output).
+pub fn check_token(t: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                    "--ready-token must be 1-64 chars of [A-Za-z0-9_-]");
+    Ok(())
+}
 
 pub fn main(o: Opts) -> anyhow::Result<()> {
+    if let Some(t) = &o.ready_token { check_token(t)?; }
+    let ready_line = format!("\x1b[?2004h{}\r\n", crate::ack::ready_text(o.ready_token.as_deref())).into_bytes();
     // Open the log first: a bad --log path must fail before the tty goes raw or we signal ready.
     let mut log = Jsonl::create(&o.log)?;
     let stdin = std::io::stdin();
@@ -34,12 +46,13 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     }
     // Writer thread owns stdout. Its first bytes ask the outer terminal for bracketed paste
     // (so a paste comes through as 200~/201~), then print the plain-text readiness marker
-    // `S0READY` (survives pyte/tmls rendering, unlike the escape). Spawned only after raw mode.
+    // `S0READY` / `S0READY:<token>` (survives pyte/tmls rendering, unlike the escape). Spawned
+    // only after raw mode.
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(o.ack_queue.max(1));
     let stop = Arc::new(AtomicBool::new(false));
     let writer = std::thread::spawn(move || {
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(b"\x1b[?2004hS0READY\r\n");
+        let _ = out.write_all(&ready_line);
         let _ = out.flush();
         for chunk in rx { if out.write_all(&chunk).is_err() { break; } let _ = out.flush(); }
     });

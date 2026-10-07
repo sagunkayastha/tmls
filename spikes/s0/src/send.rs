@@ -1,7 +1,10 @@
 //! Near end of a path: spawn the path command in a PTY, run nav, type numbered events, record acks.
 //!
-//! Order: spawn → nav (if any) → wait for `S0READY` → event loop → settle (acks) → wait for
+//! Order: spawn → nav (if any) → wait for the ready marker → event loop → settle (acks) → wait for
 //! `S0DONE` → log → kill child.
+//! Ready gate: with `--ready-token T` only the exact text `S0READY:T` counts (plain `S0READY` does
+//! not), and only if it arrives in a read made after the last nav key was written — so a screen
+//! that showed the marker before/while navigating (e.g. a preview) cannot open the gate.
 //! A reader thread drains the PTY master into an [`AckScanner`] (acks timestamped at read time) and
 //! keeps an escape-stripped copy of the output for `expect:` nav steps and `--dump-screen`.
 use crate::{ack::{AckScanner, Stripper}, event, log::{self, Jsonl, SendRecord}, nav::{self, Step}};
@@ -9,7 +12,7 @@ use anyhow::{bail, Context};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub struct Opts {
@@ -18,6 +21,8 @@ pub struct Opts {
     /// Pause between an event's payload and its marker (0 = none). Control for parsers that
     /// accumulate an escape sequence across bytes that arrive in one read (e.g. `ESC a#000002`).
     pub marker_gap_ms: u64,
+    /// Accept only `S0READY:<token>` as the ready marker.
+    pub ready_token: Option<String>,
     pub cmd: Vec<String>,
 }
 
@@ -54,11 +59,17 @@ pub fn write_full(w: &mut dyn Write, buf: &[u8]) -> std::io::Result<()> {
 }
 
 /// State shared between the reader thread and the main loop.
-struct Shared { screen: Mutex<String>, ready: AtomicBool, done: AtomicBool, eof: AtomicBool,
+struct Shared { screen: Mutex<String>, done: AtomicBool, eof: AtomicBool,
+                /// Monotonic clock origin for `ready_at` / the nav cut.
+                base: Instant,
+                /// 1 + ns since `base` of the most recent read that completed the ready marker;
+                /// 0 = never seen.
+                ready_at: AtomicU64,
                 /// Wall clock (ns) of the read in which `S0DONE` was first seen.
                 done_ns: Mutex<Option<u128>> }
 
 impl Shared {
+    fn mono_ns(&self) -> u64 { self.base.elapsed().as_nanos() as u64 + 1 }
     fn contains(&self, s: &str) -> bool { self.screen.lock().unwrap().contains(s) }
     fn tail(&self) -> String {
         let s = self.screen.lock().unwrap();
@@ -70,10 +81,11 @@ impl Shared {
     }
 }
 
-fn spawn_reader(mut r: Box<dyn Read + Send>, sh: Arc<Shared>, acks: mpsc::Sender<(u32, u128)>) -> mpsc::Receiver<()> {
+fn spawn_reader(mut r: Box<dyn Read + Send>, sh: Arc<Shared>, acks: mpsc::Sender<(u32, u128)>,
+                ready_token: Option<String>) -> mpsc::Receiver<()> {
     let (fin_tx, fin_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut scan = AckScanner::new();
+        let mut scan = AckScanner::with_ready_token(ready_token.as_deref());
         let mut strip = Stripper::new();
         let mut buf = vec![0u8; 65536];
         let mut plain = Vec::new();
@@ -85,6 +97,7 @@ fn spawn_reader(mut r: Box<dyn Read + Send>, sh: Arc<Shared>, acks: mpsc::Sender
                 Ok(n) => n,
             };
             let t = log::now_ns();
+            let t_mono = sh.mono_ns(); // taken before scanning: bytes read before a nav key stay before it
             for seq in scan.feed(&buf[..n]) { let _ = acks.send((seq, t)); }
             plain.clear();
             strip.feed_into(&buf[..n], &mut plain);
@@ -97,7 +110,7 @@ fn spawn_reader(mut r: Box<dyn Read + Send>, sh: Arc<Shared>, acks: mpsc::Sender
                     s.drain(..cut);
                 }
             }
-            if scan.saw_ready { sh.ready.store(true, Ordering::Release); }
+            if scan.ready_in_last_feed { sh.ready_at.store(t_mono, Ordering::Release); }
             if scan.saw_done && !sh.done.load(Ordering::Acquire) {
                 *sh.done_ns.lock().unwrap() = Some(t);
                 sh.done.store(true, Ordering::Release);
@@ -119,12 +132,15 @@ fn wait_for(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
     }
 }
 
-fn run_nav(steps: &[Step], w: &mut dyn Write, sh: &Shared) -> anyhow::Result<()> {
+/// Runs the nav script. Returns the monotonic time (see [`Shared::mono_ns`]) just after the last
+/// key/text write, or 0 if nav wrote nothing: only ready sightings later than that count.
+fn run_nav(steps: &[Step], w: &mut dyn Write, sh: &Shared) -> anyhow::Result<u64> {
+    let mut cut = 0;
     for st in steps {
         match st {
             Step::Wait(ms) => std::thread::sleep(Duration::from_millis(*ms)),
-            Step::Text(t) => write_full(w, t.as_bytes())?,
-            Step::Key(k) => write_full(w, nav::key_bytes(k))?,
+            Step::Text(t) => { write_full(w, t.as_bytes())?; cut = sh.mono_ns(); }
+            Step::Key(k) => { write_full(w, nav::key_bytes(k))?; cut = sh.mono_ns(); }
             Step::ExpectText(t, ms) => {
                 let found = {
                     let end = Instant::now() + Duration::from_millis(*ms);
@@ -138,7 +154,7 @@ fn run_nav(steps: &[Step], w: &mut dyn Write, sh: &Shared) -> anyhow::Result<()>
             }
         }
     }
-    Ok(())
+    Ok(cut)
 }
 
 /// What the run produced so far; logged even when the run fails part-way.
@@ -165,6 +181,7 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     anyhow::ensure!(o.rate > 0.0, "--rate must be > 0");
     anyhow::ensure!(o.events <= 1_000_000, "--events must be <= 1000000 (6-digit marker)");
     anyhow::ensure!(!o.cmd.is_empty(), "no command given after --");
+    if let Some(t) = &o.ready_token { crate::recv::check_token(t)?; }
     let steps = match o.nav.as_deref() { Some(s) => nav::parse(s)?, None => Vec::new() };
     let mut log_out = Jsonl::create(&o.log)?;
 
@@ -180,11 +197,11 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     drop(pair.slave);
     let mut writer = pair.master.take_writer()?;
     let reader = pair.master.try_clone_reader()?;
-    let sh = Arc::new(Shared { screen: Mutex::new(String::new()), ready: AtomicBool::new(false),
+    let sh = Arc::new(Shared { screen: Mutex::new(String::new()), base: Instant::now(), ready_at: AtomicU64::new(0),
                                done: AtomicBool::new(false), eof: AtomicBool::new(false),
                                done_ns: Mutex::new(None) });
     let (ack_tx, ack_rx) = mpsc::channel();
-    let fin_rx = spawn_reader(reader, sh.clone(), ack_tx);
+    let fin_rx = spawn_reader(reader, sh.clone(), ack_tx, o.ready_token.clone());
 
     let mut p = Progress { ack_ns: vec![None; o.events as usize], ..Default::default() };
     let result = drive(&o, &steps, &mut *writer, &sh, &ack_rx, &mut p);
@@ -204,6 +221,7 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
                                       "done_seen_ms": done_seen_ms,
                                       "events": o.events, "sent": p.recs.len(), "rate": o.rate,
                                       "effective_rate": p.effective_rate(), "marker_gap_ms": o.marker_gap_ms,
+                                      "ready_token": o.ready_token.is_some(),
                                       "cmd": o.cmd});
     if let Err(e) = &result { done["error"] = format!("{e:#}").into(); }
     log_out.write(&done)?;
@@ -215,11 +233,13 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
 /// failure part-way (e.g. EIO when ssh drops) still leaves them for the log.
 fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::Receiver<(u32, u128)>,
          p: &mut Progress) -> anyhow::Result<()> {
-    run_nav(steps, w, sh)?;
+    let cut = run_nav(steps, w, sh)?;
     if o.dump_screen { sh.dump("after nav"); }
-    if !wait_for(Duration::from_millis(o.ready_timeout_ms), || sh.ready.load(Ordering::Acquire)) {
-        sh.dump("S0READY timeout");
-        bail!("S0READY not seen within {} ms", o.ready_timeout_ms);
+    let marker = crate::ack::ready_text(o.ready_token.as_deref());
+    // Only a sighting from a read made after the last nav key counts (earlier ones are ignored).
+    if !wait_for(Duration::from_millis(o.ready_timeout_ms), || sh.ready_at.load(Ordering::Acquire) > cut) {
+        sh.dump("ready timeout");
+        bail!("{marker} not seen (after the last nav key) within {} ms", o.ready_timeout_ms);
     }
 
     let n = o.events as usize;
@@ -247,9 +267,11 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
         p.drain(acks);
         sh.done.load(Ordering::Acquire) || p.acked >= n
     });
-    // All acked (or settle ran out) but no S0DONE yet: the receiver may still be logging the last
-    // arrivals. Wait for S0DONE (or the path closing) up to another settle window before the kill.
-    wait_for(Duration::from_millis(o.settle_ms), || {
+    // No S0DONE yet. If everything is acked the receiver has (almost) finished: it flushes its done
+    // line before emitting S0DONE, so give it at most 1 s. If settle ran out with acks missing, the
+    // receiver may still be logging late arrivals: wait up to another settle window before the kill.
+    let done_wait = if p.acked >= n { o.settle_ms.min(1000) } else { o.settle_ms };
+    wait_for(Duration::from_millis(done_wait), || {
         p.drain(acks);
         sh.done.load(Ordering::Acquire) || sh.eof.load(Ordering::Acquire)
     });

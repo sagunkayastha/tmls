@@ -38,17 +38,38 @@ impl Stripper {
     }
 }
 
-/// Longest pattern we must find across a chunk boundary (`A000000` and `S0READY` are 7 bytes).
+/// Longest fixed pattern we must find across a chunk boundary (`A000000` and `S0READY` are 7 bytes).
 const TAIL: usize = 7;
 
-#[derive(Default)]
-pub struct AckScanner { tail: Vec<u8>, strip: Stripper, pub saw_done: bool, pub saw_ready: bool }
+/// The readiness text the receiver prints: `S0READY`, or `S0READY:<token>` with `--ready-token`.
+pub fn ready_text(token: Option<&str>) -> String {
+    match token { Some(t) => format!("S0READY:{t}"), None => "S0READY".into() }
+}
+
+/// Finds acks and the ready/done markers. With a ready token, only the exact `S0READY:<token>`
+/// text counts as ready; a plain `S0READY` (or another token) is ignored.
+pub struct AckScanner {
+    tail: Vec<u8>, strip: Stripper, ready_pat: Vec<u8>,
+    pub saw_done: bool,
+    /// Sticky: the ready text has been seen at least once.
+    pub saw_ready: bool,
+    /// The ready text ended inside the bytes of the most recent `feed` call (a match lying wholly
+    /// in the carried-over tail does not count again). Lets the caller time each sighting.
+    pub ready_in_last_feed: bool,
+}
+
+impl Default for AckScanner { fn default() -> Self { Self::with_ready_token(None) } }
 
 impl AckScanner {
     pub fn new() -> Self { Self::default() }
+    pub fn with_ready_token(token: Option<&str>) -> Self {
+        Self { tail: Vec::new(), strip: Stripper::new(), ready_pat: ready_text(token).into_bytes(),
+               saw_done: false, saw_ready: false, ready_in_last_feed: false }
+    }
     /// Feed raw PTY bytes; returns the ack seqs completed by this chunk, each reported once.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u32> {
         let mut plain = std::mem::take(&mut self.tail);
+        let carried = plain.len();
         self.strip.feed_into(bytes, &mut plain);
         let mut out = Vec::new();
         let mut i = 0;
@@ -61,9 +82,15 @@ impl AckScanner {
             } else { i += 1; }
         }
         if plain.windows(6).any(|w| w == b"S0DONE") { self.saw_done = true; }
-        if plain.windows(7).any(|w| w == b"S0READY") { self.saw_ready = true; }
-        // Keep only unconsumed bytes (never re-scan a matched ack), at most TAIL of them.
-        let start = last_match_end.max(plain.len().saturating_sub(TAIL));
+        let pl = self.ready_pat.len();
+        // Only matches that end in this call's new bytes (end > carried).
+        self.ready_in_last_feed = plain.windows(pl).enumerate()
+            .any(|(k, w)| w == self.ready_pat.as_slice() && k + pl > carried);
+        if self.ready_in_last_feed { self.saw_ready = true; }
+        // Keep only unconsumed bytes (never re-scan a matched ack), enough to catch any pattern
+        // split across reads; the ready pattern can be longer than TAIL with a token.
+        let keep = TAIL.max(pl - 1);
+        let start = last_match_end.max(plain.len().saturating_sub(keep));
         self.tail = plain[start..].to_vec();
         out
     }
@@ -121,5 +148,29 @@ mod tests {
         let mut s = AckScanner::new();
         s.feed(b"\x1b[3;1H| s0 S0RE"); assert!(!s.saw_ready);
         s.feed(b"\x1b[1mADY |"); assert!(s.saw_ready);
+    }
+    #[test]
+    fn ready_token_wrong_ignored_right_accepted() {
+        let mut s = AckScanner::with_ready_token(Some("c0ffee12"));
+        s.feed(b"S0READY\r\n"); assert!(!s.saw_ready, "plain S0READY must not count with a token");
+        s.feed(b"S0READY:deadbeef\r\n"); assert!(!s.saw_ready, "wrong token");
+        s.feed(b"S0READY:c0ffee1\r\n"); assert!(!s.saw_ready, "truncated token");
+        s.feed(b"x S0READY:c0ffee12\r\n"); assert!(s.saw_ready && s.ready_in_last_feed);
+        s.feed(b"A000001\r\n"); assert!(!s.ready_in_last_feed, "tail must not re-report the match");
+    }
+    #[test]
+    fn ready_token_split_across_chunks_with_escapes() {
+        let mut s = AckScanner::with_ready_token(Some("0123456789abcdef"));
+        for c in [&b"\x1b[3;1HS0RE"[..], b"ADY:0123", b"\x1b[1m45678", b"9abc", b"de"] {
+            s.feed(c); assert!(!s.saw_ready);
+        }
+        s.feed(b"f |"); assert!(s.saw_ready && s.ready_in_last_feed);
+        s.feed(b"\r\n"); assert!(!s.ready_in_last_feed);
+    }
+    #[test]
+    fn no_token_plain_ready_still_works() {
+        let mut s = AckScanner::new();
+        s.feed(b"S0READY\r\n"); assert!(s.saw_ready && s.ready_in_last_feed);
+        s.feed(b"zz"); assert!(!s.ready_in_last_feed);
     }
 }
