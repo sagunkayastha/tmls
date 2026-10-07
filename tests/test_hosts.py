@@ -219,3 +219,46 @@ def test_parse_records_claudes_own_pane():
 def test_blank_line_after_a_status_file_keeps_its_failed_line():
     out = '1000\nA:1:0:990\n---\n{"status":"idle","statusUpdatedAt":900000,"tmux":"A:@1.%1"}\n\nfailed\n'
     assert hosts.parse("nas", out)[0].failed is True
+
+
+def test_background_server_hosts():
+    # other tmux servers (`tmux -L web`) are hosts of their own, "MACHINE#SERVER"
+    assert hosts.split("archbox#web") == ("archbox", "web")
+    assert hosts.split("archbox") == ("archbox", None)
+    assert hosts.is_background("local#web") and not hosts.is_background("user@nas")
+    assert hosts.label("nas#web") == "nas · web"
+
+
+def test_parse_sockets_skips_default_and_odd_names():
+    out = "default\nweb\n\nmy server\nlab-2.x\n"
+    assert hosts.parse_sockets("nas", out) == ["nas#web", "nas#lab-2.x"]
+
+
+def test_background_attach_and_commands_name_the_server():
+    assert hosts.attach_argv("local#web", "pm") == ["tmux", "-u", "-L", "web", "attach", "-t", "=pm"]
+    assert hosts.attach_argv("nas#web", "pm") == ["ssh", "-t", "nas", "tmux -u -L web attach -t =pm"]
+    argv = hosts.run_argv("nas#web", "tmux ls")
+    assert argv[:-1] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "nas"]
+    assert argv[-1] == 'tmux() { command tmux -L web "$@"; }; tmux ls'
+    assert hosts.run_argv("local", "tmux ls") == ["sh", "-c", "tmux ls"]
+
+
+def test_background_function_reaches_the_named_server(tmp_path):
+    # the shell function really routes a script's `tmux` to the -L server (a stub tmux records its args)
+    stub = tmp_path / "tmux"
+    stub.write_text('#!/bin/sh\necho "$@"\n')
+    stub.chmod(0o755)
+    argv = hosts.run_argv("local#web", "tmux list-sessions")
+    out = subprocess.run(argv, capture_output=True, text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"}).stdout
+    assert out.strip() == "-L web list-sessions"
+
+
+def test_background_list_skips_claude_files():
+    script = hosts.list_argv("local#web")[-1]
+    assert "-L web" in script and ".claude/sessions" not in script
+
+
+def test_allowed_hosts():
+    assert hosts.allowed("nas", ["nas"]) and hosts.allowed("nas#web", ["nas"])
+    assert hosts.allowed("local#web", []) and not hosts.allowed("other#web", ["nas"])
+    assert not hosts.allowed("nas#we b", ["nas"]) and not hosts.allowed("nas#a;rm", ["nas"])

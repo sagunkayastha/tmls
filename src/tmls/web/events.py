@@ -10,6 +10,7 @@ from tmls.web import rows
 # Parallel ssh commands per host. With ControlMaster they are channels on one connection, and
 # sshd's MaxSessions (10 by default) refuses the rest with "administratively prohibited".
 SLOTS = 6
+BACKGROUND_EVERY = 15  # polls (2 s each) between looks for other tmux servers (`tmux -L NAME`)
 
 
 async def _capped(app, host, coro):
@@ -32,9 +33,16 @@ async def _list(host):
 
 async def poll_once(app):
     state, names = app["state"], app["hosts"]
+    if app["polls"] % BACKGROUND_EVERY == 0:
+        found_bg = await asyncio.gather(*(hosts.background(h) for h in names))
+        app["background"][:] = [b for bs in found_bg for b in bs]
+    app["polls"] += 1
+    names = [*names, *app["background"]]
     found = [(h, *r) for h, r in zip(names, await asyncio.gather(*(_list(h) for h in names)))]
     # Every host, sessions or not: an online host with none still needs its header and its +.
-    host_list = [{"host": h, "label": hosts.label(h), "online": online} for h, online, _ in found]
+    # Other tmux servers only with sessions (a stale socket file is not a server); the page hides them.
+    host_list = [{"host": h, "label": hosts.label(h), "online": online, "background": hosts.is_background(h)}
+                 for h, online, ss in found if not hosts.is_background(h) or (online and ss)]
     if host_list != app["host_list"]:
         app["host_list"][:] = host_list  # in place: aiohttp frowns on replacing state once running
         await broadcast(app, {"t": "hosts", "hosts": host_list})
@@ -91,6 +99,7 @@ async def handle_events(request):
     try:
         await ws.send_json({"t": "hosts", "hosts": app["host_list"]})
         await ws.send_json({"t": "rows", "full": True, "set": snapshot, "gone": []})
+        await ws.send_json({"t": "version", "v": app.get("version")})
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break
@@ -127,7 +136,7 @@ async def _stop(app):
 
 def setup(app):
     app["state"], app["sockets"], app["lines"], app["now"], app["slots"] = rows.State(), set(), {}, {}, {}
-    app["host_list"] = []
+    app["host_list"], app["background"], app["polls"] = [], [], 0
     app.router.add_get("/api/events", handle_events)
     app.router.add_post("/api/seen", handle_seen)
     app.on_startup.append(_start)

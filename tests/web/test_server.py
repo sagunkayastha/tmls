@@ -256,3 +256,12 @@ async def test_names_tmux_would_mangle_are_refused(aiohttp_client, tmp_path, mon
         assert response.status == 400, new
     assert (await client.post("/api/kill", json={"host": "box", "name": "a\0b"})).status == 400
     assert done == []
+
+
+def test_version_follows_the_page_files(tmp_path, monkeypatch):
+    (tmp_path / "app.js").write_text("one")
+    monkeypatch.setattr(server, "STATIC", tmp_path)
+    first = server.static_version()
+    assert server.static_version() == first
+    (tmp_path / "app.js").write_text("two")
+    assert server.static_version() != first

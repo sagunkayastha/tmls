@@ -19,10 +19,14 @@
   <button id="zoom-in" title="Bigger (Ctrl =)">A+</button>
   <span id="zoom-size">14px</span>
   <button id="bell" title="Alerts">🔔<span id="bell-count"></span></button>
-  <form method="post" action="/logout"><button id="logout" title="Log out">⎋</button></form>
+  <button id="reload" title="Reload the page">↻</button>
+  <button id="settings" title="Settings">⚙</button>
 </header>
 <div id="feed" hidden>live feed lost · reconnecting…</div>
 <div id="alerts" hidden></div>
+<div id="settings-menu" hidden>
+  <form method="post" action="/logout"><button id="logout">Log out</button></form>
+</div>
 <main>
   <aside id="rows"></aside>
   <section id="pane">

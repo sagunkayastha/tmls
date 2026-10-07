@@ -68,3 +68,13 @@ def test_rows_carry_a_display_label(monkeypatch):
 def test_rows_carry_claudes_pane():
     out = rows.build(rows.State(), [("box", True, [sess("a", pane="%7"), sess("b")])], {})
     assert [r["pane"] for r in out] == ["%7", None]
+
+
+def test_background_rows_are_flagged_and_never_alert():
+    state = rows.State()
+    s = hosts.Session("box#web", "pm", 1, False, 0, 100)
+    rows.build(state, [("box#web", True, [s])], {})
+    s2 = hosts.Session("box#web", "pm", 1, False, 0, 1000)  # finished: would be "done"
+    new = rows.build(state, [("box#web", True, [s2])], {})
+    assert new[0]["background"] and new[0]["label"] == "box · web"
+    assert rows.alerts({"box#web/pm": "running"}, new) == []

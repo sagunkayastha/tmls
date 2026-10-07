@@ -13,8 +13,7 @@ class ManageError(Exception):
 
 
 async def _run(host, command):
-    argv = command if host == hosts.LOCAL else [
-        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, shlex.join(command)]
+    argv = command if host == hosts.LOCAL else hosts.run_argv(host, shlex.join(command))
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)

@@ -16,9 +16,7 @@ def saved(path=PROMPTS):
 
 
 def _run_argv(host, script):
-    if host == hosts.LOCAL:
-        return ["sh", "-c", script]
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, script]
+    return hosts.run_argv(host, script)
 
 
 def recent_argv(host, name):

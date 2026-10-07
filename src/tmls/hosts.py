@@ -10,6 +10,11 @@ from pathlib import Path
 
 LOCAL = "local"
 KITTY = "kitty"  # this machine's Claude sessions outside tmux (see local.py)
+# A host's other tmux servers (`tmux -L NAME`, e.g. helper web servers) are hosts of their own,
+# "HOST#NAME": listed in a hidden "background" section, never mixed in with the default server's.
+SEP = "#"
+# One socket per tmux server; "default" is the plain `tmux` one.
+SOCKETS = 'ls -1 "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null; true'
 CONFIG = Path.home() / ".config" / "tmls" / "hosts"
 SKETCHPAD = CONFIG.parent / "sketchpad"  # optional: the sketchpad hub's URL on one line
 # tmux prints tabs in -F output as "_"; ":" is safe because tmux bans it in session names.
@@ -130,12 +135,57 @@ def rank(status, since):
     return status == "waiting", status in RUNNING, since
 
 
-def list_argv(host):
-    # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing
-    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLAUDE}; }}"
-    if host == LOCAL:
+def split(host):
+    """(machine, tmux server name or None): "archbox#web" -> ("archbox", "web")."""
+    machine, _, server = host.partition(SEP)
+    return machine, server or None
+
+
+def is_background(host):
+    return split(host)[1] is not None
+
+
+def allowed(host, configured):
+    """A configured host (or this machine), or one of its other tmux servers: what a browser may name."""
+    machine, server = split(host)
+    if server is not None and not re.fullmatch(r"[\w.-]+", server):
+        return False
+    return machine in (*configured, LOCAL)
+
+
+def run_argv(host, script):
+    """argv running a sh script on host's machine; `tmux` in it talks to host's tmux server."""
+    machine, server = split(host)
+    if server:
+        script = f'tmux() {{ command tmux -L {shlex.quote(server)} "$@"; }}; {script}'
+    if machine == LOCAL:
         return ["sh", "-c", script]
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, script]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machine, script]
+
+
+def list_argv(host):
+    # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing.
+    # Claude's session files name panes on the default server only, so a background server skips them.
+    claude = "echo ---" if is_background(host) else CLAUDE
+    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {claude}; }}"
+    return run_argv(host, script)
+
+
+def parse_sockets(host, out):
+    """Background hosts from a socket-directory listing: every server but the default one."""
+    names = (line.strip() for line in out.splitlines())
+    return [f"{host}{SEP}{n}" for n in names if n and n != "default" and re.fullmatch(r"[\w.-]+", n)]
+
+
+async def background(host):
+    """host's other tmux servers as "HOST#NAME" hosts; [] when it can't be reached."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *run_argv(host, SOCKETS), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+    except (OSError, asyncio.TimeoutError):
+        return []
+    return parse_sockets(host, out.decode(errors="replace")) if proc.returncode == 0 else []
 
 
 def status(s, seen, started):
@@ -159,8 +209,9 @@ def status(s, seen, started):
 def attach_argv(host, name):
     # -u: non-interactive ssh often has no UTF-8 locale, and tmux then draws "_" and "lqqk"
     # "=": the exact name; a bare name is a prefix match (a stale "work" row would attach "workshop")
-    tmux = ["tmux", "-u", "attach", "-t", "=" + name]
-    return tmux if host == LOCAL else ["ssh", "-t", host, shlex.join(tmux)]
+    machine, server = split(host)
+    tmux = ["tmux", "-u", *(["-L", server] if server else []), "attach", "-t", "=" + name]
+    return tmux if machine == LOCAL else ["ssh", "-t", machine, shlex.join(tmux)]
 
 
 def attach_command(host, name):
@@ -184,6 +235,9 @@ def hosts(remotes):
 
 
 def label(host):
+    machine, server = split(host)
+    if server:
+        return f"{label(machine)} · {server}"
     if host == KITTY:
         return f"{socket.gethostname()} · kitty"
     return socket.gethostname() if host == LOCAL else host

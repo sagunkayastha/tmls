@@ -46,7 +46,7 @@ def build(state, found, extras):
             out.append({"key": k, "host": host, "label": hosts.label(host), "name": s.name, "mark": mark,
                         "line": second_line(s, mark, extra.get("line")), "waiting": s.waiting,
                         "shown": extra.get("shown") if mark == "waiting" else None, "pane": s.pane,
-                        "online": True})
+                        "online": True, "background": hosts.is_background(host)})
     state.marks = {r["key"]: r["mark"] for r in out}
     state.rows = {r["key"]: r for r in out}
     return out
@@ -59,4 +59,4 @@ def diff(old, new):
 
 def alerts(old_marks, new):
     return [{"key": r["key"], "name": r["name"], "mark": r["mark"]} for r in new
-            if r["mark"] in ALERTS and old_marks.get(r["key"]) not in (None, r["mark"])]
+            if r["mark"] in ALERTS and old_marks.get(r["key"]) not in (None, r["mark"]) and not r.get("background")]

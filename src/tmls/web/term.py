@@ -21,7 +21,7 @@ async def terminal(request):
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     host, name = request.query.get("host"), request.query.get("name")
-    if host not in (*request.app["hosts"], hosts.LOCAL) or not name or "\0" in name:
+    if not isinstance(host, str) or not hosts.allowed(host, request.app["hosts"]) or not name or "\0" in name:
         await ws.close(code=4404)
     else:
         await bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],

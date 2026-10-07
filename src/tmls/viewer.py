@@ -39,9 +39,10 @@ async def load_file(host, session, path):
     cwd = ""
     if not path.startswith(("/", "~/")):
         query = ["tmux", "display", "-p", "-t", f"={session}:", "#{pane_current_path}"]
-        argv = query if host == hosts.LOCAL else ["ssh", "-o", "BatchMode=yes", host, shlex.join(query)]
+        argv = query if host == hosts.LOCAL else hosts.run_argv(host, shlex.join(query))
         cwd = (await _run(argv)).decode(errors="replace").strip()
-    if host == hosts.LOCAL:
+    machine = hosts.split(host)[0]  # a background tmux server's files are its machine's
+    if machine == hosts.LOCAL:
         file = Path(path).expanduser()
         if not file.is_absolute():
             file = Path(cwd) / file
@@ -57,7 +58,7 @@ async def load_file(host, session, path):
         # Quote screen text as one argument; keep only the fixed $HOME prefix expandable.
         operand = '"$HOME"/' + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(resolved)
         command = f"head -c {MAX_BYTES + 1} -- {operand}"
-        data = await _run(["ssh", "-o", "BatchMode=yes", host, command])
+        data = await _run(["ssh", "-o", "BatchMode=yes", machine, command])
     if len(data) > MAX_BYTES:
         raise ViewerError("file too large")
     if b"\0" in data:

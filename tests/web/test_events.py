@@ -11,6 +11,10 @@ def sess(name, **kw):
     return hosts.Session("box", name, 1, False, 0, 100, **kw)
 
 
+async def no_background(host):
+    return []
+
+
 async def make(aiohttp_client, monkeypatch, listing):
     async def list_host(host):
         result = listing["box"]
@@ -25,6 +29,7 @@ async def make(aiohttp_client, monkeypatch, listing):
         return listing.get("shown")
 
     monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(hosts, "background", no_background)
     monkeypatch.setattr(prompts, "_run", run)
     monkeypatch.setattr(approve, "current", current)
     app = web.Application()
@@ -106,6 +111,7 @@ async def test_unchanged_tick_sends_nothing(monkeypatch):
             self.sent.append(message)
 
     monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(hosts, "background", no_background)
     monkeypatch.setattr(prompts, "_run", run)
     app = web.Application()
     app["hosts"] = ["box"]
@@ -122,11 +128,11 @@ async def test_hosts_are_sent_even_without_sessions_so_each_gets_a_plus(aiohttp_
     client = await make(aiohttp_client, monkeypatch, {"box": (True, [])})
     ws = await client.ws_connect("/api/events")
     msg = await next_kind(ws, "hosts")
-    assert msg["hosts"] == [{"host": "box", "label": "box", "online": True}]
+    assert msg["hosts"] == [{"host": "box", "label": "box", "online": True, "background": False}]
     await ws.close()
     ws = await client.ws_connect("/api/events")  # a new tab gets them at once
     first = await asyncio.wait_for(ws.receive_json(), 3)
-    assert first == {"t": "hosts", "hosts": [{"host": "box", "label": "box", "online": True}]}
+    assert first == {"t": "hosts", "hosts": [{"host": "box", "label": "box", "online": True, "background": False}]}
     await ws.close()
 
 
@@ -153,7 +159,50 @@ async def test_ssh_commands_per_host_are_capped(monkeypatch, tmp_path):
         running["now"] -= 1
         return 0, "line\n"
     monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(hosts, "background", no_background)
     monkeypatch.setattr(prompts, "_run", run)
     app = server.make_app(tmp_path / "auth.json", ["box"])
     await events.poll_once(app)
     assert 0 < running["most"] <= events.SLOTS
+
+
+async def test_background_servers_are_listed_flagged_only_with_sessions(monkeypatch):
+    # other tmux servers on a host ("box#web") join the poll; one with no sessions (a stale socket) is left out
+    async def list_host(host):
+        return {"box": (True, [sess("a")]), "box#web": (True, [hosts.Session("box#web", "pm", 1, False, 0, 100)]),
+                "box#old": (True, [])}[host]
+
+    async def background(host):
+        return ["box#web", "box#old"]
+
+    async def run(argv, stdin=None):
+        return 0, "x\n"
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, message):
+            self.sent.append(message)
+
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    monkeypatch.setattr(hosts, "background", background)
+    monkeypatch.setattr(prompts, "_run", run)
+    app = web.Application()
+    app["hosts"] = ["box"]
+    events.setup(app)
+    socket = Socket()
+    app["sockets"].add(socket)
+    await events.poll_once(app)
+    sent = {m["t"]: m for m in socket.sent}
+    assert sent["hosts"]["hosts"] == [{"host": "box", "label": "box", "online": True, "background": False},
+                                      {"host": "box#web", "label": "box · web", "online": True, "background": True}]
+    assert {r["key"]: r["background"] for r in sent["rows"]["set"]} == {"box/a": False, "box#web/pm": True}
+
+
+async def test_each_page_gets_the_version_to_reload_on_a_redeploy(aiohttp_client, monkeypatch):
+    client = await make(aiohttp_client, monkeypatch, {"box": (True, [])})
+    client.server.app["version"] = "v1"
+    ws = await client.ws_connect("/api/events")
+    assert (await next_kind(ws, "version"))["v"] == "v1"
+    await ws.close()

@@ -20,6 +20,7 @@ from tmls.term import Terminal
 from tmls.viewer import FileViewer
 
 REFRESH_SECONDS = 5
+BACKGROUND_EVERY = 6  # polls between looks for other tmux servers (`tmux -L NAME`) on each host
 
 
 def slug(host, name):
@@ -86,7 +87,11 @@ class SessionList(VerticalScroll):
         Binding("k,up", "move(-1)", "Previous", show=False),
         Binding("enter", "attach", "Attach", show=False),
         Binding("escape", "leave", "Back to the terminal", show=False),
+        Binding("b", "toggle_background", "Background servers", show=False),
     ]
+
+    async def action_toggle_background(self):
+        await self.app.toggle_background()
 
     def action_move(self, step):
         rows = list(self.query(SessionRow))
@@ -128,6 +133,19 @@ class AlertLine(Static):
         await self.app.open_session(self.session)
 
 
+class BackgroundToggle(Static):
+    """The hidden section's header: sessions on other tmux servers (`tmux -L NAME`). A click or b toggles."""
+
+    def __init__(self, count, shown):
+        super().__init__(f"{'▾' if shown else '▸'} background · {count}", classes="host-label",
+                         id="background-toggle")
+        self.tooltip = "sessions on other tmux servers (tmux -L NAME); b shows or hides them"
+
+    def on_click(self):
+        # not inline: the redraw removes this header while its handler still runs
+        self.app.run_worker(self.app.toggle_background(), group="render")
+
+
 class AddSession(Static):
     """The + on a host line: a new tmux session there."""
 
@@ -136,7 +154,8 @@ class AddSession(Static):
         self.host = host
 
     def on_click(self):
-        names = [h for h, online, _ in self.app._results if online and h != hosts.KITTY]
+        names = [h for h, online, _ in self.app._results
+                 if online and h != hosts.KITTY and not hosts.is_background(h)]
         self.app.push_screen(create_form.NewSession(names, self.host), self.app.created)
 
 
@@ -269,6 +288,9 @@ class Tmls(App):
         self.unread = 0
         self.notifications = notifications.load()
         self.host_colors = host_colors.load()
+        self.background = []     # "HOST#NAME" hosts of other tmux servers, from the last look
+        self.show_background = False  # their section starts hidden
+        self._polls = 0
 
     def compose(self):
         with Horizontal():
@@ -307,6 +329,11 @@ class Tmls(App):
     async def _refresh(self):
         try:
             names = hosts.hosts(self.remotes)
+            if self._polls % BACKGROUND_EVERY == 0:
+                found_bg = await asyncio.gather(*(hosts.background(h) for h in names))
+                self.background = [b for bs in found_bg for b in bs]
+            self._polls += 1
+            names = names + self.background
             results = await asyncio.gather(*(hosts.list_host(h) for h in names))
             found = [(h, online, ss) for h, (online, ss) in zip(names, results)]
             kitty = await local.list_sessions()
@@ -368,12 +395,22 @@ class Tmls(App):
         if not any_hosts:
             widgets.append(Static(f"no hosts: tmux isn't installed here and {hosts.CONFIG} "
                                   "lists none", classes="host-label"))
+        # other tmux servers: hidden behind one header, and only those with sessions
+        background = [(h, online, sm) for h, online, sm in rows if hosts.is_background(h) and online and sm]
+        rows = [r for r in rows if not hosts.is_background(r[0])]
+        if background:
+            rows.append((None, True, []))
+            if self.show_background:
+                rows.extend(background)
         for h, online, sm in rows:
+            if h is None:
+                widgets.append(BackgroundToggle(sum(len(x[2]) for x in background), self.show_background))
+                continue
             label = hosts.label(h) if online else f"{hosts.label(h)} · offline"
             title = Static(label, classes="host-label", id=f"host-{slug(h, '')}")
             title.styles.border_left = ("solid", self._host_color(h))
             header = [title]
-            if online and h != hosts.KITTY:
+            if online and h != hosts.KITTY and not hosts.is_background(h):
                 header.append(AddSession(h))
             widgets.append(Horizontal(*header, classes="host-header"))
             widgets.extend(SessionRow(s, m, len(self.queue.get(slug(s.host, s.name), ()))) for s, m in sm)
@@ -478,7 +515,14 @@ class Tmls(App):
             self.run_worker(self.open_session(hosts.Session(host, name, 1, False, 0, 0)))
             self.refresh_sessions()
 
+    async def toggle_background(self):
+        self.show_background = not self.show_background
+        self._listing = None  # the same sessions, drawn differently
+        await self._render_rows(bool(self._results))
+
     def _alert(self, session, mark):
+        if hosts.is_background(session.host):
+            return  # helper servers, not work: no alerts
         key = slug(session.host, session.name)
         if self.notifications.silence_focused and (key == self.current or
                                                    (session.kitty and session.kitty.focused)):

@@ -10,6 +10,7 @@ const store = {
 const wsUrl = (path) => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`;
 
 const rows = new Map();        // key -> row from the server
+let showBackground = (() => { try { return !!localStorage.getItem("tmls-show-background"); } catch { return false; } })();
 let hostList = [];             // [{host, label, online}] from the server, sessions or not
 let offerApp = false;          // an Android browser and an app published: the list links to it
 const inApp = navigator.userAgent.includes("TmlsApp/");  // the Android app's WebView
@@ -176,6 +177,7 @@ window.tmlsBack = () => {
   if (!$("new").hidden) { closeNew(); return true; }
   if (!$("manage").hidden) { closeManage(); return true; }
   if (!$("alerts").hidden) { $("alerts").hidden = true; return true; }
+  if (!$("settings-menu").hidden) { $("settings-menu").hidden = true; return true; }
   if (phone.matches && current && !$("rows").classList.contains("open")) { openRows(true); return true; }
   return false;
 };
@@ -362,7 +364,31 @@ function drawRows() {
     if (!byHost.has(row.host)) byHost.set(row.host, []);
     byHost.get(row.host).push(row);
   }
-  for (const [host, list] of byHost) {
+  // Other tmux servers (`tmux -L NAME`, host "HOST#NAME") go last, behind one header that starts closed.
+  const isBackground = (host, list) => {
+    const info = hostList.find((h) => h.host === host);
+    return info ? !!info.background : list.some((r) => r.background);
+  };
+  const background = [...byHost].filter(([host, list]) => isBackground(host, list) && list.length);
+  const groups = [...byHost].filter(([host, list]) => !isBackground(host, list));
+  if (background.length) {
+    groups.push([null, []]);
+    if (showBackground) groups.push(...background);
+  }
+  for (const [host, list] of groups) {
+    if (host === null) {
+      const toggle = document.createElement("div");
+      toggle.className = "host background-toggle";
+      toggle.title = "sessions on other tmux servers (tmux -L NAME)";
+      toggle.textContent = `${showBackground ? "▾" : "▸"} background · ${background.reduce((n, [, l]) => n + l.length, 0)}`;
+      toggle.onclick = () => {
+        showBackground = !showBackground;
+        try { localStorage.setItem("tmls-show-background", showBackground ? "1" : ""); } catch {}
+        drawRows();
+      };
+      children.push(toggle);
+      continue;
+    }
     const info = hostList.find((h) => h.host === host);
     const online = info ? info.online : list.some((r) => r.online);
     const label = (info && info.label) || (list[0] && list[0].label) || host;  // "local" is the machine tmls runs on
@@ -370,7 +396,7 @@ function drawRows() {
     head.className = "host" + (online ? "" : " offline");
     head.dataset.host = host;
     head.textContent = label;
-    if (online) {
+    if (online && !isBackground(host, list)) {
       const add = document.createElement("button");
       add.className = "add";
       add.title = "New session";
@@ -706,10 +732,26 @@ $("bell").onclick = () => {
   drawBell();
   box.hidden = false;
 };
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") $("alerts").hidden = true; });
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { $("alerts").hidden = true; $("settings-menu").hidden = true; }
+});
 document.addEventListener("click", (e) => {
   if (!$("alerts").hidden && !e.target.closest("#alerts, #bell")) $("alerts").hidden = true;
+  if (!$("settings-menu").hidden && !e.target.closest("#settings-menu, #settings")) $("settings-menu").hidden = true;
 });
+
+// ---- header: reload, and the ⚙ menu (Log out; other settings later) ----
+$("reload").onclick = () => location.reload();
+$("settings").onclick = () => { $("settings-menu").hidden = !$("settings-menu").hidden; };
+
+// ---- a redeploy that changed the page: reload, but not over a half-typed dialog or the Sketch board ----
+let pageVersion = null;
+let reloadPending = false;
+function reloadWhenFree() {
+  if (!reloadPending || !$("new").hidden || !$("manage").hidden || !$("sketch").hidden) return;
+  location.reload();
+}
+setInterval(reloadWhenFree, 2000);
 
 // ---- live rows ----
 let events = null;
@@ -740,6 +782,9 @@ function connectEvents() {
       followRename(msg.old, msg.new, msg.name);
     } else if (msg.t === "killed") {
       if (rows.has(msg.key) || current === msg.key) sessionGone(msg.key);
+    } else if (msg.t === "version") {
+      if (pageVersion && msg.v && msg.v !== pageVersion) { reloadPending = true; reloadWhenFree(); }
+      pageVersion = pageVersion || msg.v;
     } else if (msg.t === "alerts") {
       const items = msg.items.filter((a) => a.key !== current);
       alerts.push(...items);

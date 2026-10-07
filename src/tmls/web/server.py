@@ -1,6 +1,7 @@
 """tmls in a browser: one big terminal, status rows, approve, sketch."""
 import argparse
 import asyncio
+import hashlib
 import ipaddress
 import re
 import time
@@ -199,7 +200,7 @@ def _session(data, hosts_list):
     """host and name of an existing session, from a JSON body. Only configured hosts, as for approve."""
     host, name = data["host"], data["name"]
     if (not isinstance(host, str) or not isinstance(name, str) or not name or "\0" in name
-            or host not in (*hosts_list, hosts.LOCAL)):
+            or not hosts.allowed(host, hosts_list)):
         raise ValueError
     return host, name
 
@@ -308,9 +309,19 @@ async def revalidate_static(request, response):
         response.headers["Cache-Control"] = "no-cache"
 
 
+def static_version():
+    """A hash of the page's files: it changes on a redeploy that changes the page, and an open page
+    that sees a different one reloads itself (an iPad home-screen app has no reload button)."""
+    digest = hashlib.sha256()
+    for path in sorted(STATIC.rglob("*")):
+        if path.is_file():
+            digest.update(path.name.encode() + path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
 def make_app(auth_file, hosts_list):
     app = web.Application(middlewares=[require_login])
-    app["auth_file"], app["hosts"] = auth_file, hosts_list
+    app["auth_file"], app["hosts"], app["version"] = auth_file, hosts_list, static_version()
     app["fails"], app["trusted_proxies"], app["apk_dir"] = {}, set(), APK_DIR
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/", page)

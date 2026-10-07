@@ -18,6 +18,14 @@ def no_local_claude(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_background_servers(monkeypatch):
+    # finding other tmux servers would ssh to the fake hosts; tests that want some patch it again
+    async def none(host):
+        return []
+    monkeypatch.setattr(hosts, "background", none)
+
+
+@pytest.fixture(autouse=True)
 def no_real_notifications(monkeypatch, tmp_path):
     monkeypatch.setattr(notifications, "CONFIG", tmp_path / "notifications.json")
     async def none(*args):
@@ -1302,3 +1310,31 @@ async def test_alerts_panel_reads_and_answers_the_prompt_in_claudes_pane(clock_h
         await pilot.click(app.query_one(tmls_app.Approval).query_one(".yes"))
         assert await wait_for(pilot, lambda: answered == ["%7"])
         assert seen == ["%7"]
+
+
+async def test_background_servers_hide_behind_a_toggle(fake_hosts, monkeypatch):
+    # sessions on another tmux server (`tmux -L web`) start hidden behind one header; b or a click shows them
+    async def background(host):
+        return ["box#web"] if host == "box" else []
+
+    async def list_host(host):
+        if host == "box#web":
+            return True, [hosts.Session(host, "pm-lan", 1, False, 0, 0, None, 0)]
+        if not fake_hosts["online"][host]:
+            return False, []
+        return True, [hosts.Session(host, "alpha", 1, False, 0, 0, None, 0)]
+
+    monkeypatch.setattr(hosts, "background", background)
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_for(pilot, lambda: app.query("#background-toggle"))
+        bg_row = f"#s-{tmls_app.slug('box#web', 'pm-lan')}"
+        assert "background · 1" in str(app.query_one("#background-toggle").render())
+        assert not app.query(bg_row) and app.query(f"#s-{tmls_app.slug('box', 'alpha')}")
+        assert not app.query(f"#add-{tmls_app.slug('box#web', '')}")
+        await pilot.click("#background-toggle")
+        assert await wait_for(pilot, lambda: app.query(bg_row))
+        assert not app.query(f"#add-{tmls_app.slug('box#web', '')}")  # no + on a helper server
+        await pilot.click("#background-toggle")
+        assert await wait_for(pilot, lambda: not app.query(bg_row))
