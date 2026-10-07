@@ -262,3 +262,12 @@ def test_allowed_hosts():
     assert hosts.allowed("nas", ["nas"]) and hosts.allowed("nas#web", ["nas"])
     assert hosts.allowed("local#web", []) and not hosts.allowed("other#web", ["nas"])
     assert not hosts.allowed("nas#we b", ["nas"]) and not hosts.allowed("nas#a;rm", ["nas"])
+
+
+def test_label_names_this_machine_from_config_else_hostname(monkeypatch, tmp_path):
+    monkeypatch.setattr(hosts.socket, "gethostname", lambda: "box-1234")
+    monkeypatch.setattr(hosts, "NAME", tmp_path / "name")
+    assert (hosts.label(hosts.LOCAL), hosts.label(hosts.KITTY)) == ("box-1234", "box-1234 · kitty")
+    (tmp_path / "name").write_text("laptop\n")
+    assert (hosts.label(hosts.LOCAL), hosts.label(hosts.KITTY)) == ("laptop", "laptop · kitty")
+    assert hosts.label("nas") == "nas"

@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import socket
 from pathlib import Path
 
 from tmls import hosts
@@ -37,4 +36,4 @@ def color_for(host, overrides):
 
 
 def key_for(host):
-    return socket.gethostname() if host in {hosts.LOCAL, hosts.KITTY} else host
+    return hosts.local_name() if host in {hosts.LOCAL, hosts.KITTY} else host

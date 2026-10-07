@@ -138,6 +138,9 @@ nas
 laptop   # off most of the time
 ```
 
+This machine's group is named by its hostname; to call it something else, put the name on one
+line in `~/.config/tmls/name` (e.g. `laptop` for a WSL box whose hostname is `sgkayast-win`).
+
 Hosts are whatever `ssh <host>` accepts, so put aliases and keys in `~/.ssh/config`.
 Listing uses `ssh -o BatchMode=yes`, so a host that needs a password shows as offline.
 

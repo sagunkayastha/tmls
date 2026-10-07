@@ -16,6 +16,7 @@ SEP = "#"
 # One socket per tmux server; "default" is the plain `tmux` one.
 SOCKETS = 'ls -1 "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null; true'
 CONFIG = Path.home() / ".config" / "tmls" / "hosts"
+NAME = CONFIG.parent / "name"  # optional: what to call this machine (one line), else its hostname
 SKETCHPAD = CONFIG.parent / "sketchpad"  # optional: the sketchpad hub's URL on one line
 # tmux prints tabs in -F output as "_"; ":" is safe because tmux bans it in session names.
 # window_activity is the last output; session_activity only moves on keypresses.
@@ -234,13 +235,20 @@ def hosts(remotes):
     return ([LOCAL] if shutil.which("tmux") else []) + [h for h in remotes if h != me]
 
 
+def local_name():
+    try:
+        return NAME.read_text().strip() or socket.gethostname()
+    except OSError:
+        return socket.gethostname()
+
+
 def label(host):
     machine, server = split(host)
     if server:
         return f"{label(machine)} · {server}"
     if host == KITTY:
-        return f"{socket.gethostname()} · kitty"
-    return socket.gethostname() if host == LOCAL else host
+        return f"{local_name()} · kitty"
+    return local_name() if host == LOCAL else host
 
 
 async def list_host(host):
