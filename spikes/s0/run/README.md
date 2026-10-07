@@ -196,6 +196,39 @@ ssh (+ tmls), not kitty's keyboard handling. Keyboard-to-app delivery needs `ydo
 focused kitty window feeding a bare `s0 recv`, or manual typing — a user-run step (needs the
 desktop session).
 
+### P6 as one script
+
+Inside kitty on pcl: `EVENTS=10000 spikes/s0/run/p6.sh` (or `~/Others/tmls-rs/spikes/s0/run/p6.sh`). It does
+everything above (run id, `P6-kitty-local/ssh/tmls`, nonce `--ready-token`, tmls row auto-detection,
+`NAV=` override, kills only `s0-recv` on archbox), scp's the pcl send logs to
+`/data/scratch/s0/runs/P6-<R>/` on archbox, runs the three `s0 report` commands there and prints the
+rows plus the run id. `P6_PATHS="local ssh"` runs a subset.
+
+## K1: keyboard injection (ydotool into a focused kitty)
+
+**What it measures:** real key events (kernel uinput, via `ydotool`) -> kitty's keyboard handling ->
+PTY -> a bare `s0 recv --plain`: loss, corruption, duplicates, reordering. **No latency**: ydotool
+gives no send timestamps, so the report is `--recv-only` (sent/acked/latency columns are `–`).
+
+Run on pcl, from a second terminal or ssh session (kitty is the window that must stay focused):
+
+```bash
+~/Others/tmls-rs/spikes/s0/run/k1-keys.sh        # EVENTS=2000 KEY_DELAY_MS=20 by default
+```
+
+It prints the receiver command to paste into kitty
+(`s0 recv --plain --log ~/s0-logs/runs/K1-<id>.recv.jsonl --quit-after N --ack false`; no acks, so the
+typed text is not echoed back as noise), waits for the log file, counts down 3 s, then pipes
+`s0 keys --plain --events N` into `ydotool type --key-delay D --file -`, waits for the done line and
+prints the `K1-kitty-ydotool` row. Needs `ydotoold`: `systemctl --user start ydotool` (user unit; there is no
+system unit on pcl) or `ydotoold --socket-path=/run/user/1000/.ydotool_socket --socket-perm=0600 &` +
+`export YDOTOOL_SOCKET=...` (needs `/dev/uinput` writable by you, true on pcl via ACL).
+
+**Caveats:** `--plain` means every event is the single Letter-kind letter (`a#000000`, ...): `ydotool type`
+can only type printable text, so Alt/Ctrl/arrows/F-keys/paste are NOT covered. ydotool types into
+whatever window has focus and assumes a US layout (`#` is Shift+3): do not touch the mouse or keyboard
+during the run, and keep the kitty receiver window focused.
+
 ## Known result from the dry runs (2026-10-07, EVENTS=200, alphabet before d69ca3f)
 
 All three tmls paths lose the stream at the same point: 59/200 arrive, 141 missing, 8 corrupt.
