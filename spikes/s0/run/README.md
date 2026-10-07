@@ -139,8 +139,13 @@ ack RTT p50 — that is skew, not physics).
 
 ## Morning run: native kitty paths (P6, user-run on the PC)
 
-These exercise a real GUI terminal's PTY (kitty on pcl) + ssh. Open kitty on the PC (a normal
-window, any size ≥ 120×40) and run:
+**What P6 is:** P1 (`P6-kitty-local`), P2 (`P6-kitty-ssh`) and P5 (`P6-kitty-tmls`) re-run **from
+pcl with kitty as the parent process**. `s0 send` still writes into its own PTY, so these runs do
+**not** exercise kitty's keyboard handling (key encoding, focus, IME) — they only move the sender
+under a GUI terminal. The real next step for keyboard→app delivery is key injection — `ydotool type`
+into a focused kitty window running a bare `s0 recv` — or typing by hand; neither is scripted here.
+
+Open kitty on the PC (a normal window, any size ≥ 120×40) and run:
 
 ```bash
 R=$(date -u +%Y%m%d-%H%M%S); D=~/s0-logs/runs/$R; mkdir -p $D
@@ -180,15 +185,16 @@ Then report on archbox (pull the pcl send logs first):
 R=<the run id>; O=/data/scratch/s0/runs/P6-$R; mkdir -p $O
 scp "pcl:s0-logs/runs/$R/*" $O/
 S0=~/Others/tmls-rs/target/release/s0
-$S0 report --header --path P6-kitty-local --load quiet --send $O/P6-kitty-local.send.jsonl --recv $O/P6-kitty-local.recv.jsonl
-$S0 report --path P6-kitty-ssh  --load quiet --send $O/P6-kitty-ssh.send.jsonl  --recv /data/scratch/s0/runs/P6-$R-kitty-ssh.recv.jsonl  --skew-note "pcl→archbox cross-host one-way"
-$S0 report --path P6-kitty-tmls --load quiet --send $O/P6-kitty-tmls.send.jsonl --recv /data/scratch/s0/runs/P6-$R-kitty-tmls.recv.jsonl --skew-note "pcl→archbox cross-host one-way"
+N=10000
+$S0 report --header --events $N --path P6-kitty-local --load quiet --send $O/P6-kitty-local.send.jsonl --recv $O/P6-kitty-local.recv.jsonl
+$S0 report --events $N --path P6-kitty-ssh  --load quiet --send $O/P6-kitty-ssh.send.jsonl  --recv /data/scratch/s0/runs/P6-$R-kitty-ssh.recv.jsonl  --skew-note "pcl→archbox cross-host one-way"
+$S0 report --events $N --path P6-kitty-tmls --load quiet --send $O/P6-kitty-tmls.send.jsonl --recv /data/scratch/s0/runs/P6-$R-kitty-tmls.recv.jsonl --skew-note "pcl→archbox cross-host one-way"
 ```
 
-Note: `s0 send` still owns its own PTY inside kitty, so these measure kitty-hosted process + ssh,
-not kitty's keyboard handling. True keyboard-to-app latency additionally needs `ydotool type`
-into the focused kitty window feeding a bare `s0 recv`; that is a user-run step (needs the
-desktop session) and is not scripted here.
+Note (again): `s0 send` owns its own PTY inside kitty, so these measure a kitty-hosted process +
+ssh (+ tmls), not kitty's keyboard handling. Keyboard-to-app delivery needs `ydotool type` into the
+focused kitty window feeding a bare `s0 recv`, or manual typing — a user-run step (needs the
+desktop session).
 
 ## Known result from the dry runs (2026-10-07, EVENTS=200, alphabet before d69ca3f)
 
