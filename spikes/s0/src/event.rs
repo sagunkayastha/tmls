@@ -9,8 +9,9 @@ pub const KINDS: [Kind; 8] = [Kind::Letter, Kind::Digit, Kind::AltLetter, Kind::
 
 /// Letters safe everywhere (no ctrl-c/d/z/s/q/b collisions once masked to 0x1f).
 const LETTERS: &[u8] = b"aefghijklmnoprtuvwxy";
-/// Ctrl+letter subset: avoid ^C ^D ^Z ^S ^Q ^B (tmux prefix) ^M ^J ^H ^I ^[ ^G? keep ^G out too (bell).
-const CTRL_LETTERS: &[u8] = b"aefklnopruvwxy";
+/// Ctrl+letter subset. Excluded: ^C ^D ^Z ^S ^Q (signals/flow control), ^B (tmux prefix),
+/// ^P (Textual command palette: opens and swallows every later key), ^M ^J ^H ^I ^[ (CR/LF/BS/Tab/Esc), ^G (bell).
+const CTRL_LETTERS: &[u8] = b"aefklnoruvwxy";
 
 pub fn kind_of(seq: u32) -> Kind { KINDS[(seq % 8) as usize] }
 
@@ -76,7 +77,7 @@ mod tests {
     fn payload_never_contains_forbidden_controls() {
         for seq in 0..10_000u32 {
             for b in expected_payload(seq) {
-                assert!(![0x03, 0x04, 0x1a, 0x13, 0x11, 0x02, b'\r', b'\n', b'#'].contains(&b), "seq {seq} byte {b:#x}");
+                assert!(![0x03, 0x04, 0x1a, 0x13, 0x11, 0x02, 0x10, b'\r', b'\n', b'#'].contains(&b), "seq {seq} byte {b:#x}");
             }
         }
     }
