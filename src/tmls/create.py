@@ -65,6 +65,16 @@ async def suggest_name(host, folder):
     return default_name(out.decode(errors="replace").strip()) if proc.returncode == 0 else default_name(folder)
 
 
+def named(command, name):
+    """A claude command also gets the session's name (--name), so Claude's own session name
+    matches tmux's. Other agents, or a preset that sets a name itself, stay as they are."""
+    command = list(command)
+    if os.path.basename(command[0]) == "claude" and not any(
+            arg in ("-n", "--name") or arg.startswith("--name=") for arg in command[1:]):
+        command += ["--name", name]
+    return command
+
+
 def script(name, folder, start):
     say = lambda msg: f"{{ echo {shlex.quote(msg)}; exit 3; }}"
     s = (f"cd -- {_folder(folder)} 2>/dev/null || {say(f'no such folder: {folder}')}; "
@@ -74,7 +84,7 @@ def script(name, folder, start):
     if start != "shell":
         # typed into the new session's own shell: a bare `tmux new … claude` runs without the
         # login PATH, where claude lives
-        command = "claude" if start == "claude" else shlex.join(start)
+        command = shlex.join(named(["claude"] if start == "claude" else start, name))
         s += f"; tmux send-keys -t {shlex.quote('=' + name + ':')} {shlex.quote(command)} Enter"
     return s
 

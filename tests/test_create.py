@@ -19,7 +19,18 @@ def test_script_expands_home_and_quotes_everything_else():
 
 def test_claude_starts_inside_the_login_shell_of_the_new_session():
     # a bare `tmux new ... claude` gets a non-login shell without ~/.local/bin on PATH
-    assert "send-keys -t =n: claude Enter" in create.script("n", "~", "claude")
+    assert "send-keys -t =n: 'claude --name n' Enter" in create.script("n", "~", "claude")
+
+
+def test_claude_gets_the_tmux_name_as_its_session_name():
+    assert create.named(["claude", "--dangerously-skip-permissions"], "my notes") == \
+        ["claude", "--dangerously-skip-permissions", "--name", "my notes"]
+    assert create.named(["/usr/bin/claude"], "x") == ["/usr/bin/claude", "--name", "x"]
+    for own in (["claude", "-n", "mine"], ["claude", "--name", "mine"], ["claude", "--name=mine"]):
+        assert create.named(own, "x") == own  # a preset's own name wins
+    assert create.named(["codex", "--yolo"], "x") == ["codex", "--yolo"]  # not claude: untouched
+    assert "'claude --model opus --name '\"'\"'my notes'\"'\"'' Enter" in \
+        create.script("my notes", "~", ("claude", "--model", "opus"))
 
 
 def test_named_agent_presets_are_argv_and_shell_quoted(tmp_path, monkeypatch):
@@ -29,7 +40,7 @@ def test_named_agent_presets_are_argv_and_shell_quoted(tmp_path, monkeypatch):
                                   "bad": "claude --dangerously-skip-permissions"}))
     assert create.load_presets() == {"Opus plan": ("claude", "--model", "opus", "--permission-mode", "plan")}
     command = create.script("n", "~", ("claude", "--model", "opus", "; touch /tmp/INJECTED"))
-    assert "send-keys -t =n: 'claude --model opus '\"'\"'; touch /tmp/INJECTED'\"'\"'' Enter" in command
+    assert "send-keys -t =n: 'claude --model opus '\"'\"'; touch /tmp/INJECTED'\"'\"' --name n' Enter" in command
     assert create.load_presets() == {"Opus plan": ("claude", "--model", "opus", "--permission-mode", "plan")}
 
 
