@@ -228,7 +228,8 @@ async def rename_session(request):
     if old_key in seen:  # copied, not moved: a poll in flight may still list the old name
         seen[new_key] = seen[old_key]
     await events.broadcast(request.app, {"t": "renamed", "old": old_key, "new": new_key, "name": new})
-    return web.json_response({"ok": True})
+    note = await tmux_ops.rename_claude(host, name, new, new)  # its Claude takes the name too
+    return web.json_response({"ok": True, **({"note": note} if note else {})})
 
 
 async def kill_session(request):

@@ -141,8 +141,12 @@ async def test_suggest_name_asks_the_host(aiohttp_client, tmp_path, monkeypatch)
     assert (await client.post("/api/suggest-name", json={"host": "nope", "folder": "~"})).status == 400
 
 
-async def manage_client(aiohttp_client, tmp_path, monkeypatch, result=None, running=()):
+async def manage_client(aiohttp_client, tmp_path, monkeypatch, result=None, running=(), note=None):
     done = []
+
+    async def fake_rename_claude(host, old, name, title):
+        done.append(("rename_claude", host, old, name, title))
+        return note
 
     async def fake_rename(host, old, new):
         done.append(("rename", host, old, new))
@@ -155,6 +159,7 @@ async def manage_client(aiohttp_client, tmp_path, monkeypatch, result=None, runn
     async def fake_running(host, name):
         return list(running)
     monkeypatch.setattr(server.tmux_ops, "rename", fake_rename)
+    monkeypatch.setattr(server.tmux_ops, "rename_claude", fake_rename_claude)
     monkeypatch.setattr(server.tmux_ops, "kill", fake_kill)
     monkeypatch.setattr(server.tmux_ops, "running_commands", fake_running)
     write_creds(tmp_path / "auth.json")
@@ -173,9 +178,15 @@ async def test_rename_renames_on_a_configured_host_and_keeps_seen(aiohttp_client
     client.server.app["state"].seen["box/old"] = 123
     response = await client.post("/api/rename", json={"host": "box", "name": "old", "new": " fresh "})
     assert response.status == 200 and await response.json() == {"ok": True}
-    assert done == [("rename", "box", "old", "fresh")]
+    assert done == [("rename", "box", "old", "fresh"), ("rename_claude", "box", "old", "fresh", "fresh")]
     # copied, not moved: a poll already in flight still finds the old key seen (no false alert)
     assert client.server.app["state"].seen == {"box/old": 123, "box/fresh": 123}
+
+
+async def test_rename_passes_on_why_claude_kept_its_name(aiohttp_client, tmp_path, monkeypatch):
+    client, _ = await manage_client(aiohttp_client, tmp_path, monkeypatch, note="Claude is working")
+    response = await client.post("/api/rename", json={"host": "box", "name": "old", "new": "fresh"})
+    assert await response.json() == {"ok": True, "note": "Claude is working"}
 
 
 async def test_rename_and_kill_refuse_bad_input_before_running_anything(aiohttp_client, tmp_path, monkeypatch):

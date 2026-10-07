@@ -678,6 +678,7 @@ $("manage-form").onsubmit = async (e) => {
   if (!ok) return;
   followRename(row.key, `${row.host}/${name}`, name);  // the server's broadcast repeats it, harmlessly
   closeManage();
+  if (ok.note) toast(ok.note);  // its Claude kept the old name (busy, or waiting on you)
 };
 
 $("manage-kill").onclick = async () => {

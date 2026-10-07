@@ -6,7 +6,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
 from tmls.tmux_ops import (  # noqa: F401  re-exported: the dialog and its tests use them from here
-    SHELLS, ManageError, _run, rename, running_commands, kill, _change, new_window, rename_window, split, pane_info, kill_pane)
+    SHELLS, ManageError, _run, rename, rename_claude, claude_in, running_commands, kill, _change, new_window, rename_window, split, pane_info, kill_pane)
 
 
 class SessionActions(ModalScreen):
@@ -63,7 +63,10 @@ class SessionActions(ModalScreen):
             if error:
                 self.query_one("#action-error", Static).update(error)
                 return
+            note = await rename_claude(self.session.host, self.session.name, new, new)
             await self.app.renamed_session(self.session, new)
+            if note:
+                self.app.notify(note, severity="warning", markup=False)
             self.dismiss(None)
         elif event.button.id == "kill-session":
             if not self.confirming:

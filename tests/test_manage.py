@@ -114,3 +114,63 @@ async def test_actions_dialog_shows_bracketed_names_and_errors_verbatim(monkeypa
         await pilot.click("#kill-pane")
         await pilot.pause(.1)
         assert "Running: top[/]" in str(app.screen.query_one("#pane-warning").render())
+
+
+def test_claude_in_matches_pane_and_old_or_new_session_name():
+    files = "\n".join([
+        '{"tmux": "other:@1.%3", "name": "another tmux server, same pane id"}',
+        'not json',
+        '{"tmux": "oldname:@0.%3", "name": "mine", "status": "idle"}',
+    ])
+    assert manage.claude_in(f"%3\n%4\n---\n{files}", {"oldname", "newname"}) == {
+        "tmux": "oldname:@0.%3", "name": "mine", "status": "idle", "pane": "%3"}
+    assert manage.claude_in(f"%5\n---\n{files}", {"oldname", "newname"}) is None
+    assert manage.claude_in(f"%3\n---\n{files}", {"third"}) is None
+
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch, private_tmux):
+    """A fake ~/.claude/sessions with one live 'Claude' (this test's own pid) in session alpha."""
+    import json
+    import os
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude" / "sessions").mkdir(parents=True)
+    subprocess.run(["tmux", "new-session", "-d", "-s", "alpha", "-x", "120", "-y", "20"], check=True)
+    pane = subprocess.check_output(["tmux", "list-panes", "-t", "=alpha", "-F", "#{pane_id}"], text=True).strip()
+
+    def write(status, name="old title"):
+        (tmp_path / ".claude" / "sessions" / f"{os.getpid()}.json").write_text(json.dumps(
+            {"tmux": f"alpha:@0.{pane}", "name": name, "status": status}))
+    return write
+
+
+def screen():
+    return subprocess.check_output(["tmux", "capture-pane", "-p", "-t", "=alpha:"], text=True)
+
+
+async def test_rename_claude_types_rename_when_idle(claude_home):
+    claude_home("idle")
+    assert await manage.rename_claude(hosts.LOCAL, "alpha", "alpha", "new title") is None
+    for _ in range(40):
+        if "/rename new title" in screen():
+            break
+        await asyncio.sleep(.05)
+    assert "/rename new title" in screen()
+
+
+@pytest.mark.parametrize("status,why", [("busy", "working"), ("waiting", "waiting on you")])
+async def test_rename_claude_leaves_a_busy_or_waiting_claude_alone(claude_home, status, why):
+    claude_home(status)
+    note = await manage.rename_claude(hosts.LOCAL, "alpha", "alpha", "new title")
+    assert why in note and "/rename new title" in note
+    await asyncio.sleep(.3)
+    assert "/rename" not in screen()
+
+
+async def test_rename_claude_skips_sessions_without_claude_or_with_the_name(claude_home):
+    claude_home("idle", name="new title")
+    assert await manage.rename_claude(hosts.LOCAL, "alpha", "alpha", "new title") is None
+    subprocess.run(["tmux", "new-session", "-d", "-s", "plain"], check=True)
+    assert await manage.rename_claude(hosts.LOCAL, "plain", "plain", "x") is None
+    await asyncio.sleep(.3)
+    assert "/rename" not in screen()
