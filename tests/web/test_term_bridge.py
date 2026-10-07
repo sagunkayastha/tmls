@@ -37,7 +37,7 @@ async def client(aiohttp_client, monkeypatch, tmp_path):
     app["poll_interval"] = 100
     app["term_queued"] = []
     attach = {"fn": None}
-    app["attach_argv"] = lambda host, name: attach["fn"](host, name)
+    app["attach_argv"] = lambda host, name, viewer=None: attach["fn"](host, name)
     browser = await aiohttp_client(app)
     await browser.post("/login", data={"username": "me", "password": "pw"})
     return browser, app, attach

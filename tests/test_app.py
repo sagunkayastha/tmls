@@ -45,7 +45,7 @@ def fake_hosts(monkeypatch):
     monkeypatch.setattr(hosts, "hosts", lambda remotes: ["box", "down"])
     monkeypatch.setattr(hosts, "label", lambda h: h)
     monkeypatch.setattr(hosts, "list_host", list_host)
-    monkeypatch.setattr(hosts, "attach_argv", lambda h, n: ["sh", "-c", f"echo attached-to-{n}; sleep 5"])
+    monkeypatch.setattr(hosts, "attach_argv", lambda h, n, viewer=None: ["sh", "-c", f"echo attached-to-{n}; sleep 5"])
     monkeypatch.setattr(hosts, "attach_command", lambda h, n: f"ssh -t {h} tmux attach -t {n}")
     return state
 
@@ -567,7 +567,7 @@ def clock_hosts(monkeypatch):
     monkeypatch.setattr(hosts, "hosts", lambda remotes: ["box"])
     monkeypatch.setattr(hosts, "label", lambda h: h)
     monkeypatch.setattr(hosts, "list_host", list_host)
-    monkeypatch.setattr(hosts, "attach_argv", lambda h, n: ["sh", "-c", "sleep 5"])
+    monkeypatch.setattr(hosts, "attach_argv", lambda h, n, viewer=None: ["sh", "-c", "sleep 5"])
     return state
 
 
@@ -1338,3 +1338,25 @@ async def test_background_servers_hide_behind_a_toggle(fake_hosts, monkeypatch):
         assert not app.query(f"#add-{tmls_app.slug('box#web', '')}")  # no + on a helper server
         await pilot.click("#background-toggle")
         assert await wait_for(pilot, lambda: not app.query(bg_row))
+
+
+async def test_viewers_counted_on_the_row_and_named_under_the_tabs(monkeypatch, fake_hosts):
+    async def list_host(host):
+        if host != "box":
+            return False, []
+        return True, [hosts.Session(host, "alpha", 1, True, 0, 0, viewers=[("local", "80x24"), ("web", "151x43")]),
+                      hosts.Session(host, "beta", 1, False, 0, 0)]
+    monkeypatch.setattr(hosts, "list_host", list_host)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(140, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'alpha')}"))
+        row = app.query_one(f"#s-{tmls_app.slug('box', 'alpha')}")
+        assert "◉2" in str(row.render())
+        assert "◉" not in str(app.query_one(f"#s-{tmls_app.slug('box', 'beta')}").render())
+        line = app.query_one("#viewers")
+        assert not line.display
+        await open_session(app, pilot, "alpha")
+        assert line.display
+        assert str(line.render()) == "◉ local 80x24 (you) · web 151x43"
+        await open_session(app, pilot, "beta")
+        assert not line.display

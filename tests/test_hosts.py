@@ -271,3 +271,20 @@ def test_label_names_this_machine_from_config_else_hostname(monkeypatch, tmp_pat
     (tmp_path / "name").write_text("laptop\n")
     assert (hosts.label(hosts.LOCAL), hosts.label(hosts.KITTY)) == ("laptop", "laptop · kitty")
     assert hosts.label("nas") == "nas"
+
+
+def test_parse_viewers_per_session():
+    # client lines: "client WxH VIEWER SESSION"; the name goes last because it may hold spaces
+    out = ("1000\nwork:1:1:900\nmy notes:1:1:400\nidle:1:0:300\n"
+           "client 256x65 laptop work\nclient 80x24 fd04::1 work\nclient 151x43 web my notes\n"
+           "client 10x10 ghost gone-meanwhile\n")
+    got = {s.name: s.viewers for s in hosts.parse("nas", out)}
+    assert got == {"work": [("laptop", "256x65"), ("fd04::1", "80x24")],
+                   "my notes": [("web", "151x43")], "idle": []}
+
+
+def test_attach_tags_the_viewer():
+    assert hosts.attach_argv(hosts.LOCAL, "work", "laptop") == [
+        "env", "TMLS_VIEWER=laptop", "tmux", "-u", "attach", "-t", "=work"]
+    assert hosts.attach_argv("nas", "work", "web") == [
+        "ssh", "-t", "nas", "env TMLS_VIEWER=web tmux -u attach -t =work"]

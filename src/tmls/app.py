@@ -56,6 +56,7 @@ def fill_style(pct):
 class SessionRow(Static):
     def __init__(self, session, mark, queued=0):
         count = f"{queued}✉ " if queued else ""
+        count += f"◉{len(session.viewers)} " if session.viewers else ""  # attached tmux clients
         left = Text(session.name)
         left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2) - len(count),
                       overflow="ellipsis", pad=True)
@@ -240,6 +241,7 @@ class Tmls(App):
     SessionRow.current { color: #ff8c00; background: $boost; }
     SessionList:focus SessionRow.cursor { border-left: outer $accent; padding-left: 1; }
     #bar { height: 3; }
+    #viewers { padding: 0 1; color: $text-muted; display: none; }
     #workspace { height: 1fr; }
     #terms { width: 1fr; height: 1fr; }
     FileViewer { width: 50%; height: 1fr; border-left: solid $primary-darken-2; }
@@ -307,6 +309,7 @@ class Tmls(App):
                     if self.sketchpad:
                         yield Button("Sketch", id="sketch", variant="warning")
                     yield Button("Quit", id="quit", variant="error")
+                yield Static(id="viewers")
                 yield VerticalScroll(id="alerts")  # floats over the terminal, so it never resizes it
                 yield VerticalScroll(id="ask")
                 with Horizontal(id="workspace"):
@@ -363,7 +366,7 @@ class Tmls(App):
     async def _draw_rows(self, any_hosts):
         rows = [(h, online, [(s, self._mark(s)) for s in ss]) for h, online, ss in self._results]
         listing = [(h, online, [(s.name, m, s.waiting, s.title, hosts.context_pct(s),
-                                len(self.queue.get(slug(s.host, s.name), ()))) for s, m in sm])
+                                len(self.queue.get(slug(s.host, s.name), ())), tuple(s.viewers)) for s, m in sm])
                    for h, online, sm in rows]
         marks = {slug(s.host, s.name): m for _, _, sm in rows for s, m in sm}
         previous = self.marks
@@ -386,6 +389,7 @@ class Tmls(App):
                                     severity="warning", markup=False)
         for tab in self.query(CloseTab):
             tab.show_mark(self.marks.get(tab.id.removeprefix("tab-"), "idle"))
+        self._show_viewers()
         if listing == self._listing:
             return  # rebuilding would flicker and lose the scroll position
         self._listing = listing
@@ -433,7 +437,7 @@ class Tmls(App):
             # add_content keeps it hidden until its tab is active, so the terminals
             # never share the space (a squeezed pyte screen drops its top rows)
             await self.query_one(ContentSwitcher).add_content(
-                Terminal(hosts.attach_argv(session.host, session.name), host=session.host,
+                Terminal(hosts.attach_argv(session.host, session.name, hosts.label(hosts.LOCAL)), host=session.host,
                          id=f"term-{key}"))
             tab = CloseTab(session.name, self.marks.get(key, "idle"), self._host_color(session.host),
                            id=f"tab-{key}")
@@ -480,8 +484,18 @@ class Tmls(App):
             self.cursor = None
         self.refresh_sessions()
 
+    def _show_viewers(self):
+        """Who else has the shown session attached, under the tabs."""
+        viewers = next((s.viewers for _, _, ss in self._results for s in ss
+                        if slug(s.host, s.name) == self.current), [])
+        me = hosts.label(hosts.LOCAL)
+        line = self.query_one("#viewers")
+        line.update(Text("◉ " + " · ".join(f"{v} {size}" + (" (you)" if v == me else "") for v, size in viewers)))
+        line.display = bool(viewers)
+
     def on_tabs_cleared(self):
         self.current = None
+        self._show_viewers()
         self.query_one(ContentSwitcher).current = "empty"
         self._mark_rows()
 
@@ -493,6 +507,7 @@ class Tmls(App):
         switcher.current = f"term-{self.current}"
         switcher.visible_content.focus()
         self._mark_rows()
+        self._show_viewers()
         self.run_worker(self._render_rows(), group="render")  # clears its ◆
 
     def action_switch_tab(self, step):
@@ -711,7 +726,7 @@ class Tmls(App):
             self.notify("Pick a session on the left first.")
             return
         if event.button.id == "open":
-            launch_window(hosts.attach_argv(session.host, session.name))
+            launch_window(hosts.attach_argv(session.host, session.name, hosts.label(hosts.LOCAL)))
             self.notify(f"Opened {session.name} in a new window.", markup=False)
         elif event.button.id == "copy":
             cmd = hosts.attach_command(session.host, session.name)

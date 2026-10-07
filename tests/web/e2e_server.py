@@ -91,6 +91,6 @@ app["poll_interval"] = 0.3
 (folder / "apk").mkdir(exist_ok=True)
 (folder / "apk" / "tmls.apk").write_bytes(b"PK")  # a published app: Android browsers get the link
 app["apk_dir"] = folder / "apk"
-app["attach_argv"] = lambda host, name: ["sh", "-c", 'echo "attached-$0"; exec cat', name]
+app["attach_argv"] = lambda host, name, viewer=None: ["sh", "-c", 'echo "attached-$0"; exec cat', name]
 app["sketchpad"] = [f"http://127.0.0.1:{port}/healthz"]
 web.run_app(app, host="127.0.0.1", port=port, print=None)

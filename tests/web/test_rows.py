@@ -78,3 +78,8 @@ def test_background_rows_are_flagged_and_never_alert():
     new = rows.build(state, [("box#web", True, [s2])], {})
     assert new[0]["background"] and new[0]["label"] == "box · web"
     assert rows.alerts({"box#web/pm": "running"}, new) == []
+
+
+def test_rows_carry_viewers():
+    out = rows.build(rows.State(), [("box", True, [sess("a", viewers=[("laptop", "80x24")])])], {})
+    assert out[0]["viewers"] == [["laptop", "80x24"]]

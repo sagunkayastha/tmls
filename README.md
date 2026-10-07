@@ -141,6 +141,11 @@ laptop   # off most of the time
 This machine's group is named by its hostname; to call it something else, put the name on one
 line in `~/.config/tmls/name` (e.g. `laptop` for a WSL box whose hostname is `sgkayast-win`).
 
+Who has a session attached shows as `◉2` on its row (👁2 in the browser), and the shown session's
+viewers are listed under the tabs (in the browser's title): tmls tags its own tmux clients with
+that name (`web` or `phone` from the browser); other clients show their ssh source address, or
+`local`. Reading a client's tag needs `/proc`, so Linux hosts only.
+
 Hosts are whatever `ssh <host>` accepts, so put aliases and keys in `~/.ssh/config`.
 Listing uses `ssh -o BatchMode=yes`, so a host that needs a password shows as offline.
 

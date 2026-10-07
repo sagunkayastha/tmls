@@ -5,7 +5,7 @@ import re
 import shlex
 import shutil
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 LOCAL = "local"
@@ -21,6 +21,13 @@ SKETCHPAD = CONFIG.parent / "sketchpad"  # optional: the sketchpad hub's URL on 
 # tmux prints tabs in -F output as "_"; ":" is safe because tmux bans it in session names.
 # window_activity is the last output; session_activity only moves on keypresses.
 FORMAT = "#{session_name}:#{session_windows}:#{session_attached}:#{window_activity}"
+# Who is attached: one "client WxH VIEWER SESSION" line per tmux client. VIEWER is the TMLS_VIEWER
+# its tmls set when attaching, else the ssh source address, else "local" (/proc: Linux hosts only).
+CLIENTS = ("tmux -u list-clients -F '#{client_pid} #{client_width}x#{client_height} #{session_name}' "
+           "| while read -r p z s; do e=$(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null); "
+           "v=$(printf '%s\\n' \"$e\" | sed -n 's/^TMLS_VIEWER=\\([^ ]*\\).*/\\1/p'); "
+           "[ -n \"$v\" ] || v=$(printf '%s\\n' \"$e\" | sed -n 's/^SSH_CLIENT=\\([^ ]*\\).*/\\1/p'); "
+           "echo \"client $z ${v:-local} $s\"; done")
 QUIET = 30  # seconds without output before a non-Claude session counts as finished
 # Claude Code keeps ~/.claude/sessions/<pid>.json (status, statusUpdatedAt, tmux pane) per running
 # session; its status line redraws every minute, so output alone can't tell busy from idle.
@@ -57,6 +64,7 @@ class Session:
     model: str | None = None    # model of Claude's newest reply
     context: int = 0            # tokens in context at Claude's newest reply
     pane: str | None = None     # Claude's own tmux pane ("%7"); after a split it needn't be the active one
+    viewers: list = field(default_factory=list)  # [(viewer, "WxH")] per attached tmux client
 
 
 def parse(host, out):
@@ -71,7 +79,10 @@ def parse(host, out):
         raise ValueError("no clock line in the listing")
     now, lines = lines[start], lines[start + 1:]
     sessions = {}
+    clients = [line.split(" ", 3)[1:] for line in lines if line.startswith("client ") and line.count(" ") >= 3]
     for line in lines:
+        if line.startswith("client "):
+            continue
         try:
             name, windows, attached, activity = line.rsplit(":", 3)
             int(windows), int(activity)
@@ -79,6 +90,9 @@ def parse(host, out):
             continue
         if name not in sessions or int(activity) > sessions[name].activity:
             sessions[name] = Session(host, name, int(windows), attached != "0", int(activity), int(now))
+    for size, viewer, name in clients:
+        if name in sessions:
+            sessions[name].viewers.append((viewer, size))
     files = []
     skipping = False  # the last file didn't parse (caught mid-write): its lines aren't the previous one's
     for line in claude.splitlines():
@@ -168,7 +182,7 @@ def list_argv(host):
     # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing.
     # Claude's session files name panes on the default server only, so a background server skips them.
     claude = "echo ---" if is_background(host) else CLAUDE
-    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {claude}; }}"
+    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLIENTS}; {claude}; }}"
     return run_argv(host, script)
 
 
@@ -207,11 +221,14 @@ def status(s, seen, started):
     return "done" if finished > max(seen, started) else "idle"
 
 
-def attach_argv(host, name):
+def attach_argv(host, name, viewer=None):
     # -u: non-interactive ssh often has no UTF-8 locale, and tmux then draws "_" and "lqqk"
     # "=": the exact name; a bare name is a prefix match (a stale "work" row would attach "workshop")
+    # viewer: who this client is, read back from its environment by CLIENTS
     machine, server = split(host)
     tmux = ["tmux", "-u", *(["-L", server] if server else []), "attach", "-t", "=" + name]
+    if viewer:
+        tmux = ["env", f"TMLS_VIEWER={viewer}", *tmux]
     return tmux if machine == LOCAL else ["ssh", "-t", machine, shlex.join(tmux)]
 
 

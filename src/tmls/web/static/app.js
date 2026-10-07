@@ -347,12 +347,17 @@ window.addEventListener("keydown", (e) => {
 }, true);
 
 // ---- rows ----
+// who this browser's tmux client is: term.py names it the same way
+const ME = /Android|iPhone|Mobile/.test(navigator.userAgent) ? "phone" : "web";
+
 function drawTitle() {
   const row = rows.get(current);
-  $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}` : "pick a session";
+  const seen = row && row.viewers && row.viewers.length
+    ? "  ·  👁 " + row.viewers.map(([v, size]) => `${v} ${size}` + (v === ME ? " (you)" : "")).join(" · ") : "";
+  $("title").textContent = row ? `${row.label || row.host} · ${row.name}  ${MARK[row.mark]} ${row.mark}${seen}` : "pick a session";
 }
 
-function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.pane, row.key === current, !current]); }
+function rowSig(row) { return JSON.stringify([row.mark, row.line, row.shown, row.online, row.pane, row.viewers, row.key === current, !current]); }
 
 function drawRows() {
   const box = $("rows");
@@ -451,6 +456,13 @@ function rowEl(row) {
   name.className = "name";
   name.textContent = row.name;
   top.append(mark, name);
+  if (row.viewers && row.viewers.length) {  // attached tmux clients; their names are in the title
+    const seen = document.createElement("span");
+    seen.className = "seen";
+    seen.textContent = `👁${row.viewers.length}`;
+    seen.title = row.viewers.map(([v, size]) => `${v} ${size}`).join("\n");
+    top.append(seen);
+  }
   if (row.online) {  // rename / kill: a button, not a long-press, so it works the same on a phone
     const more = document.createElement("button");
     more.className = "more";

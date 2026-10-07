@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import signal
 import struct
 import termios
@@ -12,6 +13,7 @@ from aiohttp import WSMsgType, web
 
 from tmls import hosts
 
+PHONE = r"Android|iPhone|Mobile"  # app.js's ME uses the same test, to mark "(you)"
 HIGH_WATER = 1 << 20  # queued output that pauses the pty until the browser catches up
 
 
@@ -24,7 +26,8 @@ async def terminal(request):
     if not isinstance(host, str) or not hosts.allowed(host, request.app["hosts"]) or not name or "\0" in name:
         await ws.close(code=4404)
     else:
-        await bridge(ws, request.app["attach_argv"](host, name), ptys=request.app["ptys"],
+        viewer = "phone" if re.search(PHONE, request.headers.get("User-Agent", "")) else "web"
+        await bridge(ws, request.app["attach_argv"](host, name, viewer), ptys=request.app["ptys"],
                      peaks=request.app.get("term_queued"))  # tests watch buffering
     return ws
 
