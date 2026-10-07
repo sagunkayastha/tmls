@@ -1,0 +1,27 @@
+FROM rust:1.96-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git build-essential pkg-config python3 curl xz-utils ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Zig 0.15.2; sha256 taken from https://ziglang.org/download/index.json
+# (0.15.2 -> x86_64-linux -> shasum) and hardcoded here.
+ARG ZIG_VERSION=0.15.2
+ARG ZIG_SHA256=02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+RUN curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz \
+    && echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c - \
+    && mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+    && ln -s /opt/zig/zig /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz
+
+# Non-root user matching the host user (uid/gid 1000). The base image has no
+# uid 1000 user, but remove a clashing one defensively.
+RUN (id -u 1000 >/dev/null 2>&1 && userdel -r "$(id -nu 1000)" || true) \
+    && groupadd -g 1000 builder 2>/dev/null || true \
+    && useradd -u 1000 -g 1000 -m -s /bin/bash builder \
+    && mkdir -p /cargo /work && chown 1000:1000 /cargo /work
+
+ENV CARGO_HOME=/cargo \
+    CARGO_TARGET_DIR=/work/target-docker
+USER 1000:1000
+WORKDIR /work
