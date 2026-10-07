@@ -1,132 +1,214 @@
-# tmls-rs — plan (draft 2, 2026-10-07)
+# tmls-rs — plan (draft 3, 2026-10-07)
 
-Working name. A native, GPU-drawn terminal + session system in Rust that replaces tmls + tmux + ssh-per-key.
-Status: **research done (docs/research/R1–R6). Next: user reviews this plan → Phase 0 spikes → implementation plan.**
-Nothing built yet.
+Working name. A native, GPU-drawn terminal + session system in Rust to replace tmls + tmux.
+Status: **draft 3 after Codex (gpt-6-astra) review. Next: Phase 0 spikes, starting with S0. Nothing built yet.**
+History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `docs/reviews/2026-10-07-codex-astra.md`).
 
-## 1. Why
+## 1. Why — and what we know vs assume
 
-tmls is laggy at times and misses keypresses (PC and laptop). Every key and every screen update passes through 2–3
-terminal emulators, two of them in Python, and two ssh hops:
+**Observed:** tmls feels laggy at times and misses keypresses (PC and laptop).
+**Measured (2026-10-07):** tmls's Terminal widget, fed keys directly, passed every key (396/396 quiet, 288/288 under a
+100 Hz full-screen flood). That test **skipped** the outer terminal, ssh, and Textual's own input parser, so
+end-to-end loss is **not yet located**.
+**Suspects in tmls (from code, unproven):** the terminal widget redraws on a 30 Hz timer (up to ~33 ms added);
+`_read()` parses up to 64 KiB through pyte on the same event loop that handles keys; `key_to_bytes()` returns
+nothing for unmapped keys; PTY writes don't handle short writes. tmls keeps **one persistent ssh per tab** (not per key).
 
+Current path when used from the laptop:
 ```
-laptop terminal ─ssh→ tmls (Python/Textual) ─ pyte (Python VT) ─ ssh -t archbox ─ tmux client ─ tmux server ─ claude
+laptop terminal ─ssh→ tmls (Textual parser → pyte) ─ ssh -t archbox ─ tmux client ─ tmux server ─ claude
 ```
 
-Measured 2026-10-07: tmls's Terminal widget alone passes every key (396/396 quiet, 288/288 under a 100 Hz full-screen
-flood), so the stack, not one widget, is the problem. tmls-rs removes layers: **one connection, one emulator per
-screen, no ssh/tmux/Python per key.**
+**Hypothesis:** fewer nested terminal translations + native input + off-loop parsing removes most lag. **S0 tests this
+first**, and may also give tmls a quick fix while tmls-rs is built.
+
+**What tmls-rs will not fix by itself:** OS/compositor stalls, keyboard/IME bugs, app-side input handling, host CPU
+starvation, network delay. Transport retransmission delays bytes; it doesn't drop single keys.
 
 ## 2. Requirements (user decisions)
 
 | Topic | Decision |
 |---|---|
 | Priorities | **Best performance and visuals first.** Native desktop first, web second. |
-| Clients | Linux PC (CachyOS, KDE Wayland, RTX 5070 Ti) + Windows laptop: **native desktop app, own GPU window**. Later: browser/iPad, then Android. |
+| Clients | Linux PC (CachyOS, KDE Wayland, RTX 5070 Ti) + Windows laptop: **native executable with its own GPU window** (not platform widgets). Later: browser/iPad, then Android. |
 | Session hosts | archbox, PC (laanta-chy). Windows laptop later (keep possible). |
-| Migration | **Side by side with tmux**: new sessions in tmls-rs; existing tmux sessions listed and attachable; tmls stays until parity. |
-| Scope | **Full parity with tmls** (§7) + the user's 31 "want" picks (R6). Built in phases. |
-| Auth | Tailscale (personal tailnet) + per-device keys; no passwords on the wire (user note in R6). |
+| Migration | **Side by side with tmux**: tmux sessions listed + attachable; tmls stays until parity. |
+| Scope | **Full parity with tmls** (§8) + the user's "want" picks (R6). Tracked as a release program, phase by phase. |
+| Auth | Tailscale (personal tailnet) + per-device key; owner-only local sockets. |
+| Scale | **Personal tool, one user.** Deliberately out of scope for now: device enrollment UI, code-signed installer, crash-report service, screen-reader support, exactly-once input across every crash mode. |
 
-## 3. Decisions from research
+## 3. Decisions (research R1–R6, revised by review)
 
-| Question | Decision | Why / source |
+| Question | Decision | Status |
 |---|---|---|
-| Build or reuse? | **Build** hostd and the desktop client; **reuse** libraries. No existing tool does multi-host + own PTY daemon + native client + hook status (R4 c). WezTerm: no release since 2024-02; Zellij/WezTerm mux not embeddable; Ghostty: no Windows GUI; Zed/Warp: GPL/AGPL (R1, R2). | R1 §9, R2 a, R4 c |
-| Emulator core | **`libghostty-vt`** (Rust crate 0.2.2, 2026-09-28, MIT/Apache) in hostd and desktop, behind our own `Emu` trait. Has snapshot encode/restore, dirty-region render state, key/mouse/paste encoders, kitty keyboard + graphics, Windows + WASM. **Fallback: `alacritty_terminal` 0.26.** Needs Zig 0.16 at build time; pre-1.0 API → pin crate + ghostty commit. | R1 §1–6 |
-| Desktop GUI | **`winit` 0.30 + `wgpu` 30 + own renderer and small UI layer** (sidebar, tabs, forms, toasts). Text: `cosmic-text` 0.19 + `swash`, own glyph atlas, instanced cell quads from damaged rows; box/block glyphs as geometry; `glyphon` only for UI chrome. **Runner-up: `gpui`** (crates.io copy stale since 2025-10; needs a pinned Zed git dep). Decided by spike S2. | R3 §1–6, R1 §7–8 |
-| Session persistence | **One small holder process per session** (dtach/shpool style: PTY + byte ring with sequence numbers), in its own systemd cgroup; hostd re-adopts holders on restart, so hostd upgrades/crashes never kill sessions. | R2 b |
-| Wire | **Raw bytes + sequence numbers** (not screen diffs: those lose scrollback/graphics). On attach: snapshot from hostd's emulator, then live bytes; on reconnect: replay from last seq (Eternal Terminal style). Output coalescing so input never queues behind a flood. | R2 c |
-| Transport | **QUIC (`quinn` 0.11)** desktop↔hostd over Tailscale; **WebSocket** for web; one framed `proto`. No ssh. | R2 c |
-| Typing prediction | **Not in v1** (LAN/Tailscale RTT well under where mosh prediction helps). Revisit for phone over cellular. | R2 c |
-| tmux bridge | v1: attach through a PTY (`tmux attach` in a holder). Later: **control mode** (`tmux -C`, `%output`, `capture-pane -peC`, `refresh-client -C`). | R2 d |
-| Claude status | **Hooks first** (`PermissionRequest`, `Stop`, `StopFailure`, `Notification`… as `http` hooks posting to hostd), reconciled with `~/.claude/sessions/<pid>.json` and `claude agents --json`; **context %** via a small status-line shim; screen parsing only as last resort. | R4 a |
-| Web client (phase 5) | **xterm.js 6 + WebGL addon**; ghostty-web as runner-up (same API). Own input layer; Android keeps tmls's native invisible input (`TerminalKeys`). No Rust-to-WASM emulator for now. | R5 |
-| Licences | Our repo MIT/Apache. Ideas only (no code) from GPL/AGPL projects: Zed terminal, COSMIC Term, Warp, Claude Squad, opcode, cmux. | R1, R3, R4 |
+| Build or reuse? | Build session worker, hostd, desktop client; reuse libraries. **But first measure simpler options** (S0, S4): direct ssh+tmux in a native terminal, native client over a plain persistent connection. | Provisional until S0/S4 |
+| Object model | **Session = one PTY** (one program). Tabs/splits/layouts live in the **client** (per device). Stable `session_id` + `incarnation`; name is a mutable label. tmux sessions appear as bridged sessions. | Decided |
+| Who owns terminal state | **Session worker** (one process per session) owns PTY, the **authoritative emulator**, scrollback, replay log, input dedup. hostd = discovery, auth, routing, status, files; restartable without touching sessions. | Decided (replaces "holder + emulator in hostd") |
+| Emulator core | **libghostty-vt** (crate 0.2.2, MIT/Apache; Zig 0.16 build), behind an `emu` crate. **Provisional**: snapshot format has no cross-version guarantee; pinned build + S1 required. `alacritty_terminal` is a **separate design branch** (no snapshot/encoders/graphics), not a drop-in. | Gate S1 |
+| Desktop GUI | `winit` 0.30 + `wgpu` 30 + own renderer/UI layer vs `gpui` vs custom grid inside an existing toolkit — **all kept open until S2**, judged on latency **and** the cost of forms, IME, selection, menus. Text: `cosmic-text` + `swash`, own atlas. | Gate S2 |
+| Transport | Compare **QUIC (`quinn`)** vs **persistent TLS/TCP** in S4 on direct and DERP-relayed Tailscale paths. WebSocket for web. **0-RTT off** for input and mutations. | Gate S4 |
+| Typing prediction | Not in v1; revisit after measuring real RTTs (S4), esp. phone/cellular. | Deferred |
+| tmux bridge | v1: `tmux attach` inside a session worker (shows tmux's rendered stream, no per-pane history — documented limit). Later: control mode (`tmux -C`, `refresh-client -A '%pane:continue'`, decode `capture-pane -peC` octal escapes). | Decided |
+| Claude status | Hooks (`http` → hostd) + `~/.claude/sessions/<pid>.json` + `claude agents --json`; context % via status-line shim; explicit **unknown/stale** state; unseen-completion tracked by hostd per client. | Gate S5 |
+| Approvals | Own design (§5.5), not "status + type y". | Gate S5 |
+| Web (phase 5) | xterm.js 6 + WebGL; ghostty-web runner-up. Needs a **portable attach format** (§5.2) because xterm.js can't load a Ghostty snapshot. Android keeps tmls's native input view. | Decided (format in §5.2) |
+| Licences | Our code MIT/Apache; ideas only from GPL/AGPL projects (Zed terminal, COSMIC Term, Warp, Claude Squad, opcode, cmux). | Decided |
 
 ## 4. Architecture
 
 ```
-┌─ desktop (Rust: winit + wgpu) ───────┐            ┌─ archbox ───────────────────────────────────┐
-│ sidebar: hosts → sessions + marks    │            │ hostd (systemd --user)                      │
-│ tabs · terminal grid (libghostty-vt) │◄── QUIC ──►│  ├─ holder: claude  (PTY + ring) ◄─ hooks   │
-│ viewer · forms · toasts · palette    │  Tailscale │  ├─ holder: shell   (PTY + ring)            │
-└──────────────────────────────────────┘            │  ├─ emulator per session (snapshots)        │
-┌─ web (phase 5: TS + xterm.js) ───────┐            │  ├─ status: hooks + sessions/*.json         │
-│ browser · iPad · Android WebView     │◄── WSS ───►│  └─ tmux bridge (existing sessions)         │
-└──────────────────────────────────────┘            └─────────────────────────────────────────────┘
-                                                      PC: hostd   ·   laptop: hostd (later, ConPTY)
+┌─ desktop (Rust, GPU) ───────────────┐            ┌─ archbox ─────────────────────────────────────┐
+│ sidebar · tabs/splits (per device)  │            │ hostd (systemd --user): auth · routing ·      │
+│ grid renderer · forms · viewer      │◄─ QUIC or ─►│   status/hooks · files · discovery · tmux     │
+│ local emulator per tab              │  TLS/TCP   │                 │ owner-only unix sockets      │
+└─────────────────────────────────────┘ (S4 picks) │  ┌──────────────┴───────────────┐             │
+┌─ web (phase 5: TS + xterm.js) ──────┐            │  session worker (1 per PTY, own cgroup)       │
+│ browser · iPad · Android WebView    │◄── WSS ───►│  PTY · authoritative emulator · scrollback ·   │
+└─────────────────────────────────────┘            │  replay log · input dedup · reply authority    │
+                                                    └───────────────────────────────────────────────┘
 ```
-
-Rust workspace:
 
 | Crate | Job |
 |---|---|
-| `proto` | Framed, versioned messages: input, output(seq), resize, snapshot, session list/status, create/rename/kill, file read, ag send/read. |
-| `emu` | `Emu` trait + libghostty-vt implementation (+ alacritty_terminal fallback behind a feature). Only crate that touches the emulator. |
-| `holder` | Tiny per-session process: owns PTY, ring buffer, seq numbers; survives hostd restarts. |
-| `hostd` | Supervises holders, one emulator per session, QUIC + WebSocket server, auth, status (hooks endpoint, Claude files), tmux bridge, files, `ag` inbox. |
-| `client-core` | Connections + reconnect/replay, multi-host session list, per-tab emulator. No UI; unit-testable. |
-| `desktop` | Window, renderer, UI layer, all user features. |
-| `cli` | `ag`, `ct`, `tmls-rs attach NAME` (fallback inside any terminal), `tmls-rs doctor`. |
+| `proto` | Versioned frames: input(seq), output(offset), resize(epoch), snapshot boundary, session list/status, requests with ids. |
+| `emu` | Emulator wrapper (libghostty-vt), snapshot + portable VT reconstruction. Only crate touching the emulator. |
+| `worker` | Per-session process: PTY, emulator on its own thread, scrollback, replay log, input dedup, reply authority, IPC to hostd. |
+| `hostd` | Supervises/adopts workers, network server, auth, status (hooks), files, tmux bridge, `ag` inbox. |
+| `client-core` | Connections, reconnect, session list, per-tab emulator, controller lease. No UI. |
+| `desktop` | Window, renderer, UI layer, features. |
+| `cli` | `ag`, `ct`, `tmls-rs attach` (via portable format), `tmls-rs doctor`. |
 
-## 5. Phase 0 — spikes before committing (≈1–2 weeks total)
+## 5. Contracts (must hold before phase 1 code is frozen)
 
-| Spike | Question | Pass |
+### 5.1 Session invariants
+- One canonical **size** and **capability profile** per session (`TERM`, terminfo, Unicode width policy, keyboard
+  protocol, graphics). Clients never change those per-viewer.
+- **One reply authority:** only the worker's emulator answers terminal queries (DSR, cursor position, keyboard/graphics
+  queries). Client emulators never write to the PTY.
+- Output carries a **byte offset**; resizes carry an **epoch** ordered in the same stream.
+- **Controller lease:** one client controls size (last to type/resize takes it, with takeover + expiry); others
+  letterbox/pan. Input from any attached client is allowed, tagged by writer.
+
+### 5.2 Attach / reconnect
+- Attach = snapshot taken **at offset S** (worker encodes without holding the emulator lock during network send), then
+  output from S. Same-version desktop: native libghostty snapshot. Web / CLI / other versions: **portable VT
+  reconstruction** (escape sequences rebuilding screen, modes, cursor, scrollback) with documented limits (graphics, some parser state).
+- Reconnect: client sends last **committed** offset; worker replays from there if still retained, else sends a fresh
+  snapshot with an explicit **stream reset**.
+- **Side effects** (bell, clipboard OSC 52, notifications) are delivered only live, never on replay.
+
+### 5.3 Input
+- Each client has a writer id; input frames have **sequence numbers**; the worker dedups and acks after the PTY write
+  (handling short writes). Ack = written to PTY, not "processed by the app".
+- On disconnect the client **shows** unsent input as pending and **never resends silently** after reconnect; the user
+  confirms or drops it.
+- Requests (create/rename/kill/send/approve) carry request ids; retries are idempotent by id.
+
+### 5.4 Recovery and overload
+| Event | Survives |
+|---|---|
+| Client crash / network drop | Everything; reattach via §5.2. |
+| hostd crash/restart/upgrade | Sessions, screen, scrollback (worker holds them); hostd re-adopts via registry + fencing (session_id, incarnation, owner check). |
+| Worker crash | The program dies with its PTY (documented). |
+| Logout / reboot | Nothing, unless `loginctl enable-linger` (logout); reboot ends sessions (document; maybe "restart in folder" later). |
+
+Limits (configurable): scrollback lines, replay log bytes per session, per-client send queue. **Slow client** → its
+queue fills → it gets a stream reset + snapshot; it never blocks the worker, the controller, or other sessions.
+Rendered frames may be dropped; terminal bytes to the authoritative emulator never are. Parsing runs on a dedicated
+thread per worker.
+
+### 5.5 Approvals
+Request identity from the hook event; expiry; first decision wins (others see "already answered"); late/expired
+answers rejected; hostd down → Claude's own prompt still works in the terminal. Network-permission prompts arrive via
+`Notification`, not `PermissionRequest` — handled as "needs you" without one-click approve.
+
+### 5.6 Compatibility and security
+- Versioned boundaries: worker IPC, network proto, snapshot format. hostd supports older workers (they keep running
+  after upgrades); incompatible snapshot → portable reconstruction.
+- Auth: per-device key pinned on hostd + Tailscale identity check; owner-only unix sockets with peer-cred check;
+  hooks authenticated with a per-host token; web: token login + Origin check.
+- Terminal-output trust: OSC 52 clipboard writes need a setting (default: allow from own sessions); links/paths never
+  auto-open; image decode size limits.
+
+## 6. Phase 0 — spikes (feasibility, then re-estimate)
+
+| Spike | Question | Pass gate |
 |---|---|---|
-| S1 Emulator | libghostty-vt vs alacritty_terminal: replay recorded Claude sessions, compare grids; snapshot round-trip; build on Linux + Windows MSVC (Zig 0.16). | libghostty-vt builds on both and matches; else alacritty_terminal. |
-| S2 Renderer | Same 200×60 grid + sidebar in raw wgpu vs gpui; measure key-to-present latency on KDE Wayland/5070 Ti and the Windows laptop; check fractional scaling, emoji, ligatures, IME (fcitx5/ibus, Windows TSF). | Raw wgpu unless gpui is within ~1 frame and builds cleanly on Windows. |
-| S3 Holder | Holder process survives `systemctl --user restart hostd`; hostd re-adopts it; no output lost (seq check). | Zero lost bytes across 20 restarts. |
-| S4 Transport | quinn over Tailscale PC↔archbox and laptop↔archbox: key RTT, reconnect after Wi-Fi drop, replay correctness. | Reconnect < 1 s, replay exact. |
-| S5 Claude status | Real permission prompt → which hook fires and when; `sessions/*.json` `status`/`waitingFor` values; status-line shim gives context %. | Each tmls mark derivable without screen parsing. |
+| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. |
+| S1 Emulator | libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. | Identical results; differences explained. |
+| S2 Interaction slice | Grid + sidebar + one editable form + selection + clipboard + IME (fcitx5, Windows TSF), in raw wgpu vs gpui; 60 Hz + high refresh, fractional scaling, monitor move. | p50/p95/p99 key-to-present (and camera-checked photon sample), CPU, idle power, text quality; pick on latency **and** coverage. |
+| S3 Worker survival | Kill hostd abruptly 100× incl. during create/adopt, long downtime under flood. | Programs survive; promised state restorable; no duplicate replies/input; memory within limits. |
+| S4 Transport | QUIC vs persistent TLS/TCP; direct vs DERP; loss, low bandwidth, Wi-Fi drop, sleep, address change. | Reconnect p95 < 1 s from restored connectivity; replay + input dedup correct under flood. |
+| S5 Claude status/approvals | Every mark incl. unseen-completion and stale; permission/tool/network/question dialogs; hook loss; hostd outage; two devices answering. | No wrong-session or expired approvals; fallback states documented. |
+| S6 Mixed clients | Two clients different sizes; reconnect during resize; old+new binaries; minimal CLI attach. | One canonical state, one reply per query, clear errors on incompatibility. |
+| S7 ConPTY (small) | Worker on Windows keeps ConPTY alive across hostd restart. | Proven or design adjusted before worker IPC is frozen. |
 
-## 6. Phases (each ends with the user using it for real)
+Time: S0 ≈ 1 day; the rest are feasibility prototypes. **Schedule is re-estimated after the gates.**
+
+## 7. Phases (each ends with the user using it for real)
 
 | Phase | Delivers | Done when |
 |---|---|---|
-| 0 Spikes + spec | §5 spikes, final spec, implementation plan | User approves |
-| 1 Core | proto, emu, holder, hostd (Linux), client-core, desktop: session list (archbox + PC), tabs, typing, resize, reconnect, snapshot attach; tmux sessions listed + attachable | Zero dropped keys in burst test; lower key-to-screen latency than tmls and plain ssh+tmux |
-| 2 Daily driver | Status marks + context %, attention queue, new/rename/kill/windows/splits, scrollback + search, copy/paste (bracketed, smart Ctrl+C), mouse, links, quick select, notifications (easy off/on, sound toggle, suppress when focused), font zoom, session colours/icons, prompt history | User works a full day in it instead of tmls |
-| 3 Agents | `ag ls/read/send` (+ Claude's own inbox, Codex threads), safe send / queue message, approve/deny from the list, `ct`, agent presets, saved prompts, auto-name | Existing agent workflows run unchanged |
-| 4 Extras | File viewer (+ images), image paste/drop, url-screenshot, Sketch; worktree-per-session (maybe) | Matches tmls |
-| 5 Web | Browser/iPad client on hostd (xterm.js), PWA | iPad replaces tmls web |
-| 6 Android | WebView app with native input (port TerminalKeys), push | Phone replaces tmls app |
-| 7 Laptop host | hostd + holder on Windows (ConPTY) | Laptop sessions listed/attached |
+| 0 | Spikes S0–S7, final spec, implementation plan | User approves |
+| 1a Headless core | proto, emu, worker, hostd (one host), headless test client, auth, recovery, logs/metrics | S3/S6-style tests pass in CI |
+| 1b Desktop slice | Desktop app: both hosts, session list, tabs, typing, resize, reconnect, basic copy/paste, scrollback, keyboard + IME, tmux sessions attachable | Benchmark contract (§9) met; user uses it daily alongside tmls |
+| 2 Daily driver | Status marks + context %, attention queue, new/rename/kill, splits (client-side), scrollback search, mouse, links, quick select, notifications (easy off/on, sound, suppress focused), font zoom, session colours, prompt history | User works a full day without tmls |
+| 3 Agents | `ag`, safe send/queue, approvals (§5.5), `ct`, presets, saved prompts, auto-name | Agent workflows unchanged |
+| 4 Extras | File viewer (+ images), image paste/drop (upload protocol with size limits), url-screenshot, Sketch | Matches tmls |
+| 5 Web | Browser/iPad (xterm.js, portable attach), PWA | iPad replaces tmls web |
+| 6 Android | WebView + native input | Phone replaces tmls app |
+| 7 Laptop host | Worker + hostd on Windows (ConPTY) | Laptop sessions listed/attached |
 
-## 7. Parity checklist (tmls 2026-10-07) + "want" picks
+Cross-cutting from phase 1a: deterministic terminal corpus tests, protocol state-machine tests, random chunk
+boundaries, frame/snapshot fuzzing, soak test; structured logs with correlation ids (no terminal contents by
+default); config file (hosts, fonts, keys, presets) with schema version; reproducible builds (pinned Rust + Zig).
 
-tmls features: sessions per host + offline marking; background tmux servers folded; status marks ● ? ◆ ✕ ○ with hover
-reason, Claude name + context %; tabs + Alt+Shift+arrows + list keys; mouse (wheel scrollback, drag copy, shift-drag,
-ctrl-drag, Ctrl+C copy-or-interrupt, trailing-space trim); paste (system, bracketed, image → host file path); links
-(URL with localhost remap, `file:line`, bare paths → viewer); quick select (Alt+Shift+S); new-session form (host,
-folder, git-derived name, shell/claude/presets); rename (renames Claude too); kill with confirm; windows/splits;
-`ag`, `ct`; notifications; approvals; prompts; file viewer (+ image pane); web (login, background toggle,
-reload/version, Sketch, Send-to); Android (native input, copy/paste, keyboard control, links, camera in Sketch).
+## 8. Parity checklist (tmls 2026-10-07) + picks
+
+tmls features: sessions per host + offline marking; background tmux servers folded; kitty (non-tmux) Claude sessions
+discovery/focus; status marks ● ? ◆ ✕ ○ with hover reason, Claude name + context %; tabs + Alt+Shift+arrows + list
+keys; Open in new terminal / Copy attach command; mouse (wheel scrollback, drag copy, shift-drag, ctrl-drag, Ctrl+C
+copy-or-interrupt, trailing-space trim); paste (system, bracketed, image → host file path); links (URL with localhost
+remap, `file:line`, bare paths → viewer); quick select; new-session form (host, folder, git-derived name,
+shell/claude/presets); rename (renames Claude too); kill with confirm; windows/splits; `ag`, `ct`; notifications;
+approvals; prompts; file viewer (+ image pane); web (login, background toggle, reload/version, Sketch, Send-to);
+Android (native input, copy/paste, keyboard control, links, camera in Sketch); config migration from tmls.
 
 User's "want" picks (R6): agent-orchestration-api, agent-presets, auto-name, clickable-links, context-meter,
 conversation-title, copy-options, create-session, desktop-notify, font-zoom, image-paste-drop, keyboard-sidebar,
 kill-session, needs-input-detection, notification-inbox, notify-sound, notify-suppress-focused, prompt-history,
 queue-message, quick-select, remote-approve, rename-session, saved-prompts, scroll-preserve, session-colors-icons,
 smart-ctrl-c-paste, status-states-richer, tab-status-badge, tmux-wrap-local, url-screenshot, window-pane-actions.
-"Maybe" picks are listed in R6 and decided per phase.
+Items in this plan that R6 marked "skip" (e.g. host-daemon) are **implementation necessities**, not features.
 
-## 8. Success measures
+## 9. Benchmark contract (replaces "success measures")
 
-- **Zero dropped keys**: automated burst test (thousands of keys, quiet and under full-screen flood), LAN + Tailscale.
-- **Key-to-screen latency** measured (typometer-style) and lower than tmls and plain `ssh + tmux attach`.
-- Redraw at monitor refresh with a busy Claude session; no frame drops on scroll.
-- Session survives client crash, network drop, laptop sleep, **and hostd restart**; reattach shows exact screen instantly.
+Fixed setup per run: hardware (PC: RTX 5070 Ti, KDE Wayland, monitor refresh; laptop), build profile, workload
+(quiet; Claude streaming; defined bytes/s flood), session/client count, history size, network path (LAN direct,
+Tailscale direct, DERP). Report: input correctness (missing/duplicate), key-to-present p50/p95/p99, CPU, RSS, idle
+power, reconnect/recovery time. Baselines measured the same way: tmls, and native terminal + ssh + tmux.
+Target: **zero unexplained missing/duplicate keys** and a material latency improvement over tmls; beating plain
+ssh+tmux is an optimisation goal, not a precondition.
 
-## 9. Risks
+## 10. Risks
 
-- libghostty-vt is pre-1.0, community Rust wrapper, Zig toolchain → pinned + behind `emu` trait; alacritty fallback.
-- Wayland + NVIDIA frame pacing (Zed hit this) → S2 measures on the real PC.
-- IME/preedit drawn by us (fcitx5/ibus, Windows TSF) → S2 checks early.
-- Claude Code internals (`sessions/*.json`) undocumented → version-gated parser; hooks are primary.
-- Scope: full parity is large → strict phases; tmls stays until parity.
+- libghostty-vt pre-1.0, community wrapper, Zig toolchain, no snapshot compatibility guarantee → pinned, S1, portable reconstruction path.
+- Building a full desktop terminal UI (text, IME, selection, forms) is the largest cost → S2 measures coverage, not just a grid.
+- Wayland + NVIDIA frame pacing → S2 on the real PC.
+- Claude Code internals undocumented → hooks primary, version-gated parsers, unknown/stale state.
+- Scope → strict phases; tmls stays until parity.
 
-## 10. Who does what (proposal)
+## 11. Research corrections (from review)
 
-Per the user's standing rule (Claude plans/specs/verifies; DeepSeek implements): Claude writes specs, spikes that
-need the real machines (S2, S4, S5), reviews and merges; implementation tasks with clear specs go to DeepSeek
-(opencode) or Codex. To confirm with the user.
+R1 "swap emulator in a day" — overstated (Alacritty lacks snapshot/encoders). R2 "screen diffs inherently lose
+scrollback" — wrong in general. R2 "QUIC stops floods stalling typing; TCP fallback free" — overstated. R2/§3
+Tailscale RTT assumed low — must be measured (direct vs DERP). R2 tmux `%continue` — it's
+`refresh-client -A '%pane:continue'`; `capture-pane -C` output needs octal decoding. R3 "toolkits cost latency / Tauri
+fails latency" — unmeasured. R1 renderer "600–1000 lines" — prototype estimate only. R5 "emulator mismatch only
+cosmetic" — wrong (widths/modes change state). R5 hterm "archived" — mirror only. R4 sshx "cannot self-host" —
+unsupported, not impossible. zmx — prior art, has documented upgrade/restore limits. Research docs keep their text;
+this section and the plan supersede them.
+
+## 12. Who does what
+
+To be set by the user (pending).
