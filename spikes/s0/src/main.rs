@@ -20,6 +20,14 @@ enum Cmd {
         #[arg(long, default_value_t = 4096, hide = true)] ack_queue: usize,
         /// Print `S0READY:<tok>` instead of plain `S0READY` (pair with `send --ready-token`)
         #[arg(long)] ready_token: Option<String>,
+        /// Every event's expected payload is the single Letter-kind letter (pair with `keys --plain`)
+        #[arg(long)] plain: bool,
+    },
+    /// Print the exact byte stream a sender would write (payload+marker per event, no newlines)
+    Keys {
+        #[arg(long)] events: u32,
+        /// Letters+markers only (printable; feed to `ydotool type --file -`)
+        #[arg(long)] plain: bool,
     },
     /// Near end: spawn a path command in a PTY, drive nav, send numbered events, record acks
     Send {
@@ -43,7 +51,7 @@ enum Cmd {
     },
     /// Join send/recv logs into counts and latency percentiles
     Report {
-        #[arg(long)] send: PathBuf,
+        #[arg(long)] send: Option<PathBuf>,
         #[arg(long)] recv: PathBuf,
         #[arg(long)] path: String,
         #[arg(long)] load: String,
@@ -51,6 +59,8 @@ enum Cmd {
         /// Print the Markdown header row first
         #[arg(long)] header: bool,
         #[arg(long)] skew_note: Option<String>,
+        /// Receiver-only report: `--send` is not read; sent/acked/latencies show `–`
+        #[arg(long)] recv_only: bool,
         /// Events sent (default: the send done line's `events`, else the number of send records)
         #[arg(long)] events: Option<u32>,
     },
@@ -60,13 +70,20 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Recv { log, flood, ack, quit_after, ack_queue, ready_token } =>
-            s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue, ready_token }),
+        Cmd::Recv { log, flood, ack, quit_after, ack_queue, ready_token, plain } =>
+            s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue, ready_token, plain }),
+        Cmd::Keys { events, plain } => {
+            use std::io::Write;
+            let mut o = std::io::stdout().lock();
+            o.write_all(&s0::event::key_stream(events, plain))?; o.flush()?; Ok(())
+        }
         Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, marker_gap_ms, ready_token, cmd } =>
             s0::send::main(s0::send::Opts { log, events, rate, cols, rows, nav, dump_screen, settle_ms,
                                             ready_timeout_ms, marker_gap_ms, ready_token, cmd }),
-        Cmd::Report { send, recv, path, load, json, header, skew_note, events } =>
-            s0::report::main(s0::report::Opts { send, recv, path, load, json, header, skew_note, events }),
+        Cmd::Report { send, recv, path, load, json, header, skew_note, recv_only, events } => {
+            anyhow::ensure!(recv_only || send.is_some(), "--send is required unless --recv-only");
+            s0::report::main(s0::report::Opts { send, recv, path, load, json, header, skew_note, events, recv_only })
+        }
         Cmd::Flood { bytes_per_sec } => { s0::flood::main(bytes_per_sec); Ok(()) }
     }
 }

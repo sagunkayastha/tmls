@@ -18,7 +18,9 @@ pub struct Opts { pub log: std::path::PathBuf,
                  pub ack_queue: usize,
                  /// Print `S0READY:<token>` instead of `S0READY`, so the sender can tell this
                  /// receiver from any other screen that happens to show the plain marker.
-                 pub ready_token: Option<String> }
+                 pub ready_token: Option<String>,
+                 /// Expect the plain Letter payload for every seq (keyboard injection).
+                 pub plain: bool }
 
 /// A ready token must be short plain text (it is matched in escape-stripped screen output).
 pub fn check_token(t: &str) -> anyhow::Result<()> {
@@ -76,7 +78,7 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     // (Markers have six digits, so no seq is >= 1_000_000.)
     let mut seen = vec![false; o.quit_after.unwrap_or(0).min(1_000_000) as usize];
     let mut distinct = 0u64;
-    let mut tok = Tokenizer::new();
+    let mut tok = if o.plain { Tokenizer::new_plain() } else { Tokenizer::new() };
     let mut buf = [0u8; 65536];
     let mut idx = 0u64; let mut dropped_acks = 0u64;
     let mut input = stdin.lock();

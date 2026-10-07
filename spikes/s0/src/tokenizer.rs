@@ -1,15 +1,18 @@
 //! Splits the raw byte stream at `#dddddd` markers. Keeps a partial tail (an unfinished marker
 //! or escape) between reads.
-use crate::event::expected_payload;
+use crate::event::{expected_payload, plain_payload};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arrival { pub seq: u32, pub intact: bool, pub got: Vec<u8> }
 
 #[derive(Default)]
-pub struct Tokenizer { buf: Vec<u8> }
+pub struct Tokenizer { buf: Vec<u8>, plain: bool }
 
 impl Tokenizer {
     pub fn new() -> Self { Self::default() }
+    /// Plain mode: every event's expected payload is the single Letter-kind letter, whatever
+    /// seq % 8 is (for keyboard injection via `ydotool type`, which can only type printable text).
+    pub fn new_plain() -> Self { Self { plain: true, ..Self::default() } }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Arrival> {
         self.buf.extend_from_slice(bytes);
@@ -27,7 +30,7 @@ impl Tokenizer {
             let seq: u32 = std::str::from_utf8(digits).unwrap().parse().unwrap();
             let got = self.buf[..h].to_vec();
             self.buf.drain(..h + 7);
-            let intact = got == expected_payload(seq);
+            let intact = got == if self.plain { plain_payload(seq) } else { expected_payload(seq) };
             out.push(Arrival { seq, intact, got });
         }
         out
@@ -39,6 +42,18 @@ mod tests {
     use super::*;
     use crate::event::{encode, expected_payload};
     fn whole(seq: u32) -> Vec<u8> { encode(seq).concat() }
+    #[test]
+    fn plain_accepts_letter_for_every_kind_slot() {
+        let mut t = Tokenizer::new_plain();
+        for seq in 0..9u32 {
+            let mut w = plain_payload(seq); w.extend(format!("#{seq:06}").as_bytes());
+            let a = t.feed(&w);
+            assert_eq!((a[0].seq, a[0].intact), (seq, true), "seq {seq}");
+        }
+        // a wrong letter is still corrupt, and non-plain mode rejects the plain letter on slot 2
+        assert!(!Tokenizer::new_plain().feed(b"z#000000")[0].intact);
+        assert!(!Tokenizer::new().feed(b"a#000002")[0].intact);
+    }
     #[test]
     fn single_event_intact() {
         let mut t = Tokenizer::new();

@@ -17,7 +17,7 @@ pub fn kind_of(seq: u32) -> Kind { KINDS[(seq % 8) as usize] }
 
 pub fn marker(seq: u32) -> Vec<u8> { format!("#{seq:06}").into_bytes() }
 
-fn letter(seq: u32) -> u8 { LETTERS[(seq / 8 % LETTERS.len() as u32) as usize] }
+pub fn letter(seq: u32) -> u8 { LETTERS[(seq / 8 % LETTERS.len() as u32) as usize] }
 
 pub fn expected_payload(seq: u32) -> Vec<u8> {
     let n = seq / 8;
@@ -45,6 +45,21 @@ pub fn expected_payload(seq: u32) -> Vec<u8> {
             v
         }
     }
+}
+
+/// Payload in plain mode: always the Letter-kind single letter, whatever seq % 8 is.
+pub fn plain_payload(seq: u32) -> Vec<u8> { vec![letter(seq)] }
+
+/// The byte stream a sender would write for events 0..events (payload + marker per event,
+/// concatenated). With `plain`, every payload is the single letter (printable-only, so it can
+/// be typed by `ydotool type`).
+pub fn key_stream(events: u32, plain: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    for seq in 0..events {
+        if plain { out.extend(plain_payload(seq)); out.extend(marker(seq)); }
+        else { out.extend(encode(seq).concat()); }
+    }
+    out
 }
 
 /// The write sequence for seq. Repeat = five single-byte writes (key repeat), then marker.
@@ -89,6 +104,15 @@ mod tests {
             want.extend(marker(seq));
             assert_eq!(joined, want);
         }
+    }
+    #[test]
+    fn key_stream_plain_is_letters_and_markers() {
+        let want: Vec<u8> = (0..3u32).flat_map(|s| { let mut v = vec![letter(s)]; v.extend(marker(s)); v }).collect();
+        assert_eq!(key_stream(3, true), want);
+        assert_eq!(key_stream(3, true), b"a#000000a#000001a#000002");
+        assert!(key_stream(3, true).iter().all(|b| (0x20..0x7f).contains(b)));
+        let full: Vec<u8> = (0..3u32).flat_map(|s| encode(s).concat()).collect();
+        assert_eq!(key_stream(3, false), full);
     }
     #[test]
     fn repeat_burst_is_five_writes_plus_marker() {

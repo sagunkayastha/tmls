@@ -24,6 +24,8 @@ pub struct Report {
     pub unparsed_lines: u32,
     /// `yes` or `NO:<reasons>`; see [`Report::complete_status`]. Filled by `main`.
     pub complete: String,
+    /// Receiver-only report: send-side columns are unknown, shown as `–`.
+    pub recv_only: bool,
 }
 
 impl Report {
@@ -35,7 +37,7 @@ impl Report {
     /// `saw_done` column.
     pub fn complete_status(&self) -> String {
         let mut why = Vec::new();
-        if self.sent < self.events { why.push("sent<events".to_string()); }
+        if !self.recv_only && self.sent < self.events { why.push("sent<events".to_string()); }
         if self.recv_exit.as_deref() != Some("quit_after") {
             why.push(format!("recv_exit={}", self.recv_exit.as_deref().unwrap_or("–")));
         }
@@ -152,6 +154,10 @@ pub const HEADER: &str = "| path | load | events | arrived | missing | dup | cor
 fn opt<T: std::fmt::Display>(v: &Option<T>) -> String { v.as_ref().map_or("–".into(), |x| x.to_string()) }
 
 pub fn markdown_row(r: &Report) -> String {
+    if r.recv_only {
+        return format!("| {} | {} | {} | {} | {} | {} | {} | {} | – | – | {} | – | {} | – | – | {} |", r.path, r.load, r.events,
+            r.arrived, r.missing, r.dup, r.corrupt, r.reorder, opt(&r.recv_exit), opt(&r.dropped_acks), r.complete_status());
+    }
     format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", r.path, r.load, r.events,
         r.arrived, r.missing, r.dup, r.corrupt, r.reorder, r.acked,
         r.sent, opt(&r.recv_exit), opt(&r.saw_done), opt(&r.dropped_acks),
@@ -161,17 +167,25 @@ pub fn markdown_row(r: &Report) -> String {
 }
 
 pub struct Opts {
-    pub send: PathBuf, pub recv: PathBuf, pub path: String, pub load: String,
+    pub send: Option<PathBuf>, pub recv: PathBuf, pub path: String, pub load: String,
     pub json: Option<PathBuf>, pub header: bool, pub skew_note: Option<String>, pub events: Option<u32>,
+    /// Skip send-side fields (sent/acked/latencies = `–`); `events` is then required.
+    pub recv_only: bool,
 }
 
 pub fn main(o: Opts) -> anyhow::Result<()> {
-    let (send, meta) = load_send(&o.send)?;
+    let (send, meta) = match (&o.send, o.recv_only) {
+        (Some(p), false) => load_send(p)?,
+        (_, true) => (Vec::new(), SendMeta::default()),
+        (None, false) => anyhow::bail!("--send is required unless --recv-only"),
+    };
+    if o.recv_only { anyhow::ensure!(o.events.is_some(), "--recv-only needs --events"); }
     let (recv, dropped, exit, recv_unparsed) = load_recv(&o.recv)?;
     // Default: what the sender was asked to send (its done line), so a run cut short is not
     // silently judged against only the events it managed to send.
     let events = o.events.or(meta.events).unwrap_or(send.len() as u32);
     let mut rep = build(&send, &recv, events, &o.path, &o.load);
+    rep.recv_only = o.recv_only;
     rep.dropped_acks = dropped; rep.recv_exit = exit; rep.saw_done = meta.saw_done; rep.skew_note = o.skew_note;
     rep.unparsed_lines = meta.unparsed + recv_unparsed;
     rep.complete = rep.complete_status();
@@ -234,8 +248,8 @@ mod tests {
         let (_, meta) = load_send(&sp).unwrap();
         assert_eq!(meta.unparsed, 2);
         assert_eq!(load_recv(&rp).unwrap().3, 1);
-        main(Opts { send: sp, recv: rp, path: "p".into(), load: "q".into(), json: Some(jp.clone()),
-                    header: false, skew_note: None, events: None }).unwrap();
+        main(Opts { send: Some(sp), recv: rp, path: "p".into(), load: "q".into(), json: Some(jp.clone()),
+                    header: false, skew_note: None, events: None, recv_only: false }).unwrap();
         let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
         assert_eq!(j["events"], 3, "events default = send done line's events, not send.len()");
         assert_eq!(j["sent"], 1);
@@ -272,6 +286,17 @@ mod tests {
         let cols = |l: &str| l.matches('|').count();
         assert_eq!(cols(HEADER.lines().next().unwrap()), cols(&markdown_row(&rep)));
         assert_eq!(cols(HEADER.lines().nth(1).unwrap()), cols(&markdown_row(&rep)));
+    }
+    #[test]
+    fn recv_only_row_has_dashes_and_same_columns() {
+        let recv: Vec<_> = (0..4).map(|i| r(i, 1, true, i as u64)).collect();
+        let mut rep = build(&[], &recv, 5, "k1", "quiet");
+        rep.recv_only = true; rep.recv_exit = Some("quit_after".into());
+        assert_eq!((rep.arrived, rep.missing), (4, 1));
+        let row = markdown_row(&rep);
+        assert!(row.contains("| 5 | 4 | 1 | 0 | 0 | 0 | – | – | quit_after | – |"), "{row}");
+        assert!(row.trim_end().ends_with("| – | – | yes |"), "{row}");
+        assert_eq!(row.matches('|').count(), HEADER.lines().next().unwrap().matches('|').count());
     }
     #[test]
     fn out_of_range_seqs_not_counted_as_arrived() {
