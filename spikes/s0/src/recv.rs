@@ -7,9 +7,13 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
 
-pub struct Opts { pub log: std::path::PathBuf, pub flood: Option<u64>, pub ack: bool, pub quit_after: Option<u64> }
+pub struct Opts { pub log: std::path::PathBuf, pub flood: Option<u64>, pub ack: bool, pub quit_after: Option<u64>,
+                 /// Capacity of the stdout channel (acks + flood lines). Default 4096.
+                 pub ack_queue: usize }
 
 pub fn main(o: Opts) -> anyhow::Result<()> {
+    // Open the log first: a bad --log path must fail before the tty goes raw or we signal ready.
+    let mut log = Jsonl::create(&o.log)?;
     let stdin = std::io::stdin();
     // Not a TTY (pipe/file) → no termios; proceed without raw mode.
     let saved = termios::tcgetattr(stdin.as_fd()).ok();
@@ -23,12 +27,13 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
         termios::tcsetattr(stdin.as_fd(), SetArg::TCSANOW, &raw)?;
     }
     // Writer thread owns stdout. Its first bytes ask the outer terminal for bracketed paste
-    // (so a paste comes through as 200~/201~); they also tell a harness that raw mode is on.
-    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4096);
+    // (so a paste comes through as 200~/201~), then print the plain-text readiness marker
+    // `S0READY` (survives pyte/tmls rendering, unlike the escape). Spawned only after raw mode.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(o.ack_queue.max(1));
     let stop = Arc::new(AtomicBool::new(false));
     let writer = std::thread::spawn(move || {
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(b"\x1b[?2004h");
+        let _ = out.write_all(b"\x1b[?2004hS0READY\r\n");
         let _ = out.flush();
         for chunk in rx { if out.write_all(&chunk).is_err() { break; } let _ = out.flush(); }
     });
@@ -46,25 +51,33 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
             crate::flood::run(Chan(tx), bps, &stop);
         });
     }
-    let mut log = Jsonl::create(&o.log)?;
     let mut tok = Tokenizer::new();
     let mut buf = [0u8; 65536];
     let mut idx = 0u64; let mut dropped_acks = 0u64;
     let mut input = stdin.lock();
+    let mut exit = "eof";
     'outer: loop {
-        let n = match input.read(&mut buf) { Ok(0) | Err(_) => break, Ok(n) => n };
+        let n = match input.read(&mut buf) {
+            Ok(0) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => { exit = "error"; break }
+            Ok(n) => n,
+        };
+        let before = idx;
         let wall = log::now_ns();
         for a in tok.feed(&buf[..n]) {
             log.write(&RecvRecord { seq: a.seq, intact: a.intact, got_hex: log::hex(&a.got), wall_ns: wall, idx })?;
             idx += 1;
             if o.ack && tx.try_send(format!("A{:06}\r\n", a.seq).into_bytes()).is_err() { dropped_acks += 1; }
-            if o.quit_after.is_some_and(|q| idx >= q) { break 'outer; }
+            if o.quit_after.is_some_and(|q| idx >= q) { exit = "quit_after"; break 'outer; }
         }
-        if idx % 256 == 0 { log.flush()?; }
+        // Flush every chunk that produced arrivals, so a killed/HUP'd receiver loses nothing
+        // that was already parsed (missing log lines would read as key loss).
+        if idx > before { log.flush()?; }
     }
     drop(input);
     stop.store(true, Ordering::Relaxed);
-    log.write(&serde_json::json!({"done": true, "arrivals": idx, "dropped_acks": dropped_acks}))?;
+    log.write(&serde_json::json!({"done": true, "arrivals": idx, "dropped_acks": dropped_acks, "exit": exit}))?;
     log.flush()?;
     let _ = tx.send(b"\x1b[?2004l\r\nS0DONE\r\n".to_vec());
     drop(tx);

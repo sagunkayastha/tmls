@@ -16,6 +16,8 @@ enum Cmd {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)] ack: bool,
         /// Exit after this many arrivals
         #[arg(long)] quit_after: Option<u64>,
+        /// Stdout channel capacity in chunks (test hook)
+        #[arg(long, default_value_t = 4096, hide = true)] ack_queue: usize,
     },
     /// Output flood at a bounded rate
     Flood { #[arg(long)] bytes_per_sec: u64 },
@@ -23,7 +25,8 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Recv { log, flood, ack, quit_after } => s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after }),
+        Cmd::Recv { log, flood, ack, quit_after, ack_queue } =>
+            s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue }),
         Cmd::Flood { bytes_per_sec } => { s0::flood::main(bytes_per_sec); Ok(()) }
     }
 }

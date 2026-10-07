@@ -1,8 +1,8 @@
 //! Integration tests: run `s0 recv` on a real PTY, type numbered events at it, check log + acks.
 //!
 //! Deviations from the brief's sketch (behaviour under test is unchanged):
-//! - The sender waits for the receiver's first output (`ESC[?2004h`, written only after raw mode
-//!   is set) before typing. Otherwise bytes written while the PTY is still in cooked mode go
+//! - The sender waits for the receiver's plain-text readiness marker `S0READY` (written only after
+//!   raw mode is set) before typing. Otherwise bytes written while the PTY is still in cooked mode go
 //!   through the line discipline (^U kill-line, ^W werase, ^V lnext, echo...) and get mangled.
 //! - No unbounded `wait()`/`join()`: a 60 s deadline kills the child and fails the test.
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const READY: &[u8] = b"\x1b[?2004h";
+const READY: &[u8] = b"S0READY";
 const DEADLINE: Duration = Duration::from_secs(60);
 
 fn s0_bin() -> std::path::PathBuf { std::path::PathBuf::from(env!("CARGO_BIN_EXE_s0")) }
@@ -103,13 +103,20 @@ fn recv_logs_every_event_and_acks() {
     let done = lines.last().unwrap();
     assert_eq!(done["done"], true);
     assert_eq!(done["arrivals"], 100);
+    assert_eq!(done["exit"], "quit_after");
+    // Readiness: ESC[?2004h then S0READY, before any ack.
+    let ready = text.find("S0READY").unwrap();
+    assert!(text[..ready].contains("\x1b[?2004h"));
+    assert!(ready < text.find("A000000").unwrap());
 }
 
-#[test]
-fn recv_keeps_parsing_when_stdout_slow() {
-    // Receiver with flood on; we do not read its output for a while, then check all events logged.
-    let log = scratch("slow");
-    let mut r = start(&["recv", "--log", log.to_str().unwrap(), "--quit-after", "500", "--flood", "200000"]);
+/// Type 500 events at a flooding receiver without reading its output, then drain.
+/// Returns (seq line count, done record).
+fn slow_stdout_run(name: &str, extra: &[&str]) -> (usize, serde_json::Value) {
+    let log = scratch(name);
+    let mut args = vec!["recv", "--log", log.to_str().unwrap(), "--quit-after", "500"];
+    args.extend_from_slice(extra);
+    let mut r = start(&args);
     for seq in 0..500u32 {
         for w in s0::event::encode(seq) { r.writer.write_all(&w).unwrap(); }
         std::thread::sleep(Duration::from_millis(2));
@@ -119,7 +126,26 @@ fn recv_keeps_parsing_when_stdout_slow() {
     assert!(contains(&out, b"S0DONE"));
     let text = std::fs::read_to_string(&log).unwrap();
     let n = text.lines().filter(|l| l.contains("\"seq\"")).count();
-    assert_eq!(n, 500);
     let done: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-    eprintln!("slow-stdout run: {done}");
+    eprintln!("{name}: {done}");
+    (n, done)
+}
+
+#[test]
+fn recv_keeps_parsing_when_stdout_slow() {
+    // Receiver with flood on; we do not read its output for a while, then check all events logged.
+    let (n, done) = slow_stdout_run("slow", &["--flood", "200000"]);
+    assert_eq!(n, 500);
+    assert_eq!(done["arrivals"], 500);
+    assert_eq!(done["exit"], "quit_after");
+}
+
+#[test]
+fn recv_drops_acks_not_arrivals_when_queue_full() {
+    // Tiny stdout queue + flood + no reading: the queue is full almost at once, so acks must be
+    // dropped (counted) while every arrival is still logged.
+    let (n, done) = slow_stdout_run("drop", &["--flood", "200000", "--ack-queue", "4"]);
+    assert_eq!(n, 500);
+    assert_eq!(done["arrivals"], 500);
+    assert!(done["dropped_acks"].as_u64().unwrap() > 0, "no acks dropped: {done}");
 }

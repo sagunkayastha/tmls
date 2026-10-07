@@ -1,8 +1,8 @@
-//! Bounded-rate output flood: 100-byte coloured lines, paced every 10 ms.
+//! Bounded-rate output flood: 99-byte coloured lines, paced every 10 ms.
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-/// One flood line: SGR colour (5 bytes) + 88-byte body starting `F` + reset (4) + CRLF = 99..100 bytes.
+/// One flood line, always 99 bytes: SGR colour (5) + 88-byte body starting `F` + reset (4) + CRLF (2).
 pub fn line(i: u64) -> Vec<u8> {
     let body = format!("F{i:08} {}", "x".repeat(70));
     format!("\x1b[3{}m{body:<88}\x1b[0m\r\n", (i % 7) + 1).into_bytes()
