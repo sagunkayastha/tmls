@@ -1,12 +1,24 @@
 //! Finds `A<6 digits>` acks and `S0READY` / `S0DONE` markers in PTY output after stripping escapes.
 //! State machines so sequences split across reads are handled.
 
-/// Escape stripper: drops CSI (`ESC [ … final`), OSC (`ESC ] … BEL|ST`) and bare `ESC x`.
-/// Keeps state across `feed` calls.
+/// Escape stripper: drops CSI (`ESC [ … final`), string sequences OSC/DCS/APC/PM/SOS
+/// (`ESC ] P _ ^ X … BEL|ST`), nF escapes (`ESC 0x20-0x2f* final`, e.g. `ESC ( B` from sgr0) and
+/// bare `ESC x`. Keeps state across `feed` calls.
 #[derive(Default)]
 pub struct Stripper { esc: Esc }
 #[derive(Default, Clone, Copy, PartialEq)]
-enum Esc { #[default] None, Esc, Csi, Osc, OscEsc }
+enum Esc { #[default] None, Esc, Csi, Nf, Str, StrEsc }
+
+/// State after `ESC b`.
+fn after_esc(b: u8) -> Esc {
+    match b {
+        b'[' => Esc::Csi,
+        b']' | b'P' | b'_' | b'^' | b'X' => Esc::Str,
+        0x20..=0x2f => Esc::Nf,
+        0x1b => Esc::Esc,
+        _ => Esc::None,
+    }
+}
 
 impl Stripper {
     pub fn new() -> Self { Self::default() }
@@ -15,10 +27,12 @@ impl Stripper {
         for &b in bytes {
             self.esc = match self.esc {
                 Esc::None => if b == 0x1b { Esc::Esc } else { out.push(b); Esc::None },
-                Esc::Esc => match b { b'[' => Esc::Csi, b']' => Esc::Osc, _ => Esc::None },
+                Esc::Esc => after_esc(b),
                 Esc::Csi => if (0x40..=0x7e).contains(&b) { Esc::None } else { Esc::Csi },
-                Esc::Osc => match b { 0x07 => Esc::None, 0x1b => Esc::OscEsc, _ => Esc::Osc },
-                Esc::OscEsc => Esc::None, // ESC \ (ST)
+                Esc::Nf => if (0x20..=0x2f).contains(&b) { Esc::Nf } else { Esc::None },
+                Esc::Str => match b { 0x07 => Esc::None, 0x1b => Esc::StrEsc, _ => Esc::Str },
+                // ESC \ is ST; any other ESC x ends the string and starts a new escape.
+                Esc::StrEsc => if b == b'\\' { Esc::None } else { after_esc(b) },
             };
         }
     }
@@ -68,6 +82,20 @@ mod tests {
     fn ack_inside_osc_is_ignored_text_outside_counts() {
         let mut s = AckScanner::new();
         assert_eq!(s.feed(b"\x1b]0;A000001\x07A000002\r\n"), vec![2]);
+    }
+    #[test]
+    fn nf_escape_sgr0_does_not_leak() {
+        let mut s = AckScanner::new();
+        assert_eq!(s.feed(b"\x1b(B\x1b[mA000007\r\n"), vec![7]);
+        // split inside the nF escape
+        assert!(s.feed(b"\x1b(").is_empty());
+        assert_eq!(s.feed(b"BA000008\r\n"), vec![8]);
+    }
+    #[test]
+    fn dcs_apc_pm_sos_contents_ignored() {
+        let mut s = AckScanner::new();
+        assert_eq!(s.feed(b"\x1bPtmux;A000001\x1b\\A000002\r\n"), vec![2]);
+        assert_eq!(s.feed(b"\x1b_A000003\x07\x1b^A000004\x1b\\\x1bXA000005\x1b\\A000006"), vec![6]);
     }
     #[test]
     fn done_marker() {

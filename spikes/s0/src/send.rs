@@ -119,11 +119,31 @@ fn run_nav(steps: &[Step], w: &mut dyn Write, sh: &Shared) -> anyhow::Result<()>
     Ok(())
 }
 
+/// What the run produced so far; logged even when the run fails part-way.
+#[derive(Default)]
+struct Progress { recs: Vec<SendRecord>, ack_ns: Vec<Option<u128>>, acked: usize }
+
+impl Progress {
+    fn drain(&mut self, acks: &mpsc::Receiver<(u32, u128)>) {
+        while let Ok((seq, t)) = acks.try_recv() {
+            if let Some(slot) = self.ack_ns.get_mut(seq as usize) {
+                if slot.is_none() { *slot = Some(t); self.acked += 1; }
+            }
+        }
+    }
+    /// events / (last write_end - first write_start), in Hz; None with fewer than 2 events.
+    fn effective_rate(&self) -> Option<f64> {
+        let (f, l) = (self.recs.first()?, self.recs.last()?);
+        let secs = l.write_end_ns.checked_sub(f.write_start_ns)? as f64 / 1e9;
+        (self.recs.len() >= 2 && secs > 0.0).then(|| self.recs.len() as f64 / secs)
+    }
+}
+
 pub fn main(o: Opts) -> anyhow::Result<()> {
     anyhow::ensure!(o.rate > 0.0, "--rate must be > 0");
+    anyhow::ensure!(o.events <= 1_000_000, "--events must be <= 1000000 (6-digit marker)");
     anyhow::ensure!(!o.cmd.is_empty(), "no command given after --");
-    let steps = o.nav.as_deref().map(nav::parse).unwrap_or_default();
-    for s in &steps { if let Step::Key(k) = s { let _ = nav::key_bytes(k); } } // fail before spawning
+    let steps = match o.nav.as_deref() { Some(s) => nav::parse(s)?, None => Vec::new() };
     let mut log_out = Jsonl::create(&o.log)?;
 
     let pair = native_pty_system()
@@ -131,6 +151,8 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
         .context("openpty")?;
     let mut cmd = CommandBuilder::new(&o.cmd[0]);
     cmd.args(&o.cmd[1..]);
+    // portable-pty defaults the child cwd to $HOME (and resolves the program against it).
+    cmd.cwd(std::env::current_dir()?);
     cmd.env("TERM", "xterm-256color");
     let mut child = pair.slave.spawn_command(cmd).with_context(|| format!("spawn {:?}", o.cmd))?;
     drop(pair.slave);
@@ -141,22 +163,28 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     let (ack_tx, ack_rx) = mpsc::channel();
     let fin_rx = spawn_reader(reader, sh.clone(), ack_tx);
 
-    let result = drive(&o, &steps, &mut *writer, &sh, &ack_rx);
+    let mut p = Progress { ack_ns: vec![None; o.events as usize], ..Default::default() };
+    let result = drive(&o, &steps, &mut *writer, &sh, &ack_rx, &mut p);
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
     let _ = fin_rx.recv_timeout(Duration::from_secs(2));
-    let (recs, acked) = result?;
-    for r in &recs { log_out.write(r)?; }
-    log_out.write(&serde_json::json!({"done": true, "acked": acked, "saw_done": sh.done.load(Ordering::Acquire),
-                                      "events": o.events, "rate": o.rate, "cmd": o.cmd}))?;
+    p.drain(&ack_rx);
+    for r in &mut p.recs { r.ack_ns = p.ack_ns[r.seq as usize]; }
+    for r in &p.recs { log_out.write(r)?; }
+    let mut done = serde_json::json!({"done": true, "acked": p.acked, "saw_done": sh.done.load(Ordering::Acquire),
+                                      "events": o.events, "sent": p.recs.len(), "rate": o.rate,
+                                      "effective_rate": p.effective_rate(), "cmd": o.cmd});
+    if let Err(e) = &result { done["error"] = format!("{e:#}").into(); }
+    log_out.write(&done)?;
     log_out.flush()?;
-    Ok(())
+    result
 }
 
-/// Nav, readiness wait, paced event loop and settle. Returns the records and the acked count.
-fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::Receiver<(u32, u128)>)
-         -> anyhow::Result<(Vec<SendRecord>, usize)> {
+/// Nav, readiness wait, paced event loop and settle. Records go into `p` as they are made, so a
+/// failure part-way (e.g. EIO when ssh drops) still leaves them for the log.
+fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::Receiver<(u32, u128)>,
+         p: &mut Progress) -> anyhow::Result<()> {
     run_nav(steps, w, sh)?;
     if o.dump_screen { sh.dump("after nav"); }
     if !wait_for(Duration::from_millis(o.ready_timeout_ms), || sh.ready.load(Ordering::Acquire)) {
@@ -165,16 +193,6 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
     }
 
     let n = o.events as usize;
-    let mut recs: Vec<SendRecord> = Vec::with_capacity(n);
-    let mut ack_ns: Vec<Option<u128>> = vec![None; n];
-    let mut acked = 0usize;
-    let drain = |ack_ns: &mut Vec<Option<u128>>, acked: &mut usize| {
-        while let Ok((seq, t)) = acks.try_recv() {
-            if let Some(slot) = ack_ns.get_mut(seq as usize) {
-                if slot.is_none() { *slot = Some(t); *acked += 1; }
-            }
-        }
-    };
     let period = Duration::from_secs_f64(1.0 / o.rate);
     let mut base = Instant::now();
     for seq in 0..o.events {
@@ -182,6 +200,8 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
         let target = base + period.mul_f64(seq as f64);
         let now = Instant::now();
         if target > now { std::thread::sleep(target - now); } else { base = now - period.mul_f64(seq as f64); }
+        // The path closed its side (exited / connection dropped): writes would vanish or block.
+        if sh.eof.load(Ordering::Acquire) { bail!("PTY closed by path command before seq {seq}"); }
         let kind = event::kind_of(seq);
         let chunks = event::encode(seq);
         let write_start_ns = log::now_ns();
@@ -190,19 +210,17 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
             write_full(w, c).with_context(|| format!("write seq {seq}"))?;
         }
         let write_end_ns = log::now_ns();
-        recs.push(SendRecord { seq, kind, write_start_ns, write_end_ns, ack_ns: None });
-        drain(&mut ack_ns, &mut acked);
+        p.recs.push(SendRecord { seq, kind, write_start_ns, write_end_ns, ack_ns: None });
+        p.drain(acks);
     }
     // Settle: keep draining until the receiver says done, everything is acked, or timeout.
     wait_for(Duration::from_millis(o.settle_ms), || {
-        drain(&mut ack_ns, &mut acked);
-        sh.done.load(Ordering::Acquire) || acked >= n
+        p.drain(acks);
+        sh.done.load(Ordering::Acquire) || p.acked >= n
     });
-    // The reader may have sent acks just before setting `done`; give it a moment, then drain.
-    wait_for(Duration::from_millis(100), || sh.eof.load(Ordering::Acquire) || acked >= n);
-    drain(&mut ack_ns, &mut acked);
-    for r in &mut recs { r.ack_ns = ack_ns[r.seq as usize]; }
-    Ok((recs, acked))
+    // The reader may have sent acks just before setting `done`; give it a moment.
+    wait_for(Duration::from_millis(100), || sh.eof.load(Ordering::Acquire) || p.acked >= n);
+    Ok(())
 }
 
 #[cfg(test)]
