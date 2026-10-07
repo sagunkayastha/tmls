@@ -2,6 +2,8 @@
 # S0 path matrix runner. Usage: paths.sh <quiet|flood>
 #   env: EVENTS (10000)  RATE (50)  PATHS ("P1-local P2-ssh-loop ..." subset; default all)
 #        NAV (override the tmls nav spec)  RUN_ID (default: UTC timestamp)  PCL (pcl)
+#        MARKER_GAP_MS (0: ms between each payload and its marker, every send)
+#        SSH_FLAGS (-t: ssh flags for the P2 paths; -T = no remote PTY control run)
 # Logs: /data/scratch/s0/runs/<RUN_ID>/  (pcl side: ~/s0-logs/<RUN_ID>/, fetched back with scp)
 # Only ever kills the tmux session `s0-recv` (default server or private `-L s0`); never kill-server.
 set -euo pipefail
@@ -15,6 +17,8 @@ esac
 
 EVENTS=${EVENTS:-10000}
 RATE=${RATE:-50}
+MARKER_GAP_MS=${MARKER_GAP_MS:-0}
+SSH_FLAGS=${SSH_FLAGS:--t}
 ALL_PATHS="P1-local P2-ssh-loop P2-ssh-pcl P3-tmux-local P3-ssh-tmux-pcl P4-tmls-local P5-tmls-ssh-loop P5-tmls-ssh-pcl"
 PATHS=${PATHS:-$ALL_PATHS}
 PCL=${PCL:-pcl}
@@ -56,7 +60,7 @@ pcl_init() {
 
 write_summary() {
   {
-    echo "# S0 run $RUN_ID — load $LOAD, EVENTS=$EVENTS RATE=$RATE"
+    echo "# S0 run $RUN_ID — load $LOAD, EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS"
     echo
     echo "host $(uname -n), started $(date -u -d @"$START" +%FT%TZ)"
     echo
@@ -71,7 +75,7 @@ send_local() {
   local extra=()
   while [[ $1 != -- ]]; do extra+=("$1"); shift; done; shift
   nontmux "$S0" send --log "$OUT/$name.send.jsonl" --events "$EVENTS" --rate "$RATE" \
-    --cols 120 --rows 40 "${extra[@]}" -- "$@" 2> "$OUT/$name.send.stderr"
+    --marker-gap-ms "$MARKER_GAP_MS" --cols 120 --rows 40 "${extra[@]}" -- "$@" 2> "$OUT/$name.send.stderr"
 }
 
 recv_argv() { # recv_argv <s0 binary> <log>
@@ -87,7 +91,7 @@ detect_nav() {
   if [[ -s "$OUT/tmls-nav.txt" ]]; then TMLS_NAV=$(<"$OUT/tmls-nav.txt"); return 0; fi
   local dump=$OUT/tmls-nav-dump.stderr k
   echo "   detecting tmls row for s0-recv (dump run, times out by design)..."
-  nontmux "$S0" send --log "$OUT/tmls-nav-dump.send.jsonl" --events 1 --rate "$RATE" \
+  nontmux "$S0" send --log "$OUT/tmls-nav-dump.send.jsonl" --events 1 --rate "$RATE" --marker-gap-ms "$MARKER_GAP_MS" \
     --cols 120 --rows 40 --dump-screen --ready-timeout-ms 3000 --nav 'wait:6000' \
     -- bash -lc "$TMLS_CMD" 2> "$dump" || true
   k=$(awk '
@@ -126,6 +130,20 @@ p3_pcl_post() {
   ssh -o BatchMode=yes "$PCL" "tmux -L s0 kill-session -t '=s0-recv' 2>/dev/null || true" || true
 }
 
+# ssh argv for the P2 paths: `ssh $SSH_FLAGS host cmd`. Without a remote PTY (-T) ssh leaves the
+# local tty cooked (ICANON would hold keys until a newline, ^U/^W would edit them), so the harness
+# PTY is put in raw mode first; with -t ssh does that itself.
+read -r -a SSH_ARGV <<< "$SSH_FLAGS"
+SSH_NO_PTY=0
+for w in "${SSH_ARGV[@]}"; do [[ $w == -[!-]* && $w != -o* && $w == *T* ]] && SSH_NO_PTY=1; done
+p2_ssh() { # p2_ssh <host> <remote cmd string>
+  if (( SSH_NO_PTY )); then
+    printf '%s\n' sh -c 'stty raw -echo && exec "$@"' sh ssh "${SSH_ARGV[@]}" "$1" "$2"
+  else
+    printf '%s\n' ssh "${SSH_ARGV[@]}" "$1" "$2"
+  fi
+}
+
 # ---- paths: each sets SEND_LOG / RECV_LOG (local paths) and SKEW (empty or note) ----
 
 path_P1-local() {
@@ -134,15 +152,17 @@ path_P1-local() {
 }
 
 path_P2-ssh-loop() {
-  local argv; mapfile -t argv < <(recv_argv "$S0" "$RECV_LOG")
-  send_local "$NAME" -- ssh -t "$ARCHBOX" "$(q "${argv[@]}")"
+  local argv child; mapfile -t argv < <(recv_argv "$S0" "$RECV_LOG")
+  mapfile -t child < <(p2_ssh "$ARCHBOX" "$(q "${argv[@]}")")
+  send_local "$NAME" -- "${child[@]}"
 }
 
 path_P2-ssh-pcl() {
   pcl_init; SKEW=$SKEW_NOTE
-  local rlog=$PCL_DIR/$NAME.recv.jsonl argv rc=0
+  local rlog=$PCL_DIR/$NAME.recv.jsonl argv child rc=0
   mapfile -t argv < <(recv_argv "$PCL_S0" "$rlog")
-  send_local "$NAME" -- ssh -t "$PCL" "$(q "${argv[@]}")" || rc=$?
+  mapfile -t child < <(p2_ssh "$PCL" "$(q "${argv[@]}")")
+  send_local "$NAME" -- "${child[@]}" || rc=$?
   scp -q "$PCL:$rlog" "$RECV_LOG"
   return $rc
 }
@@ -186,7 +206,7 @@ path_P5-tmls-ssh-pcl() {
   detect_nav
   local slog=$PCL_DIR/$NAME.send.jsonl rc=0
   # Sender runs on pcl: pcl's s0 send → ssh -t archbox → tmls → tmux attach → recv (archbox).
-  ssh -o BatchMode=yes "$PCL" "$(q "$PCL_S0" send --log "$slog" --events "$EVENTS" --rate "$RATE" \
+  ssh -o BatchMode=yes "$PCL" "$(q "$PCL_S0" send --log "$slog" --events "$EVENTS" --rate "$RATE" --marker-gap-ms "$MARKER_GAP_MS" \
       --cols 120 --rows 40 --nav "$TMLS_NAV" -- ssh -t "$ARCHBOX" "$(q bash -lc "$TMLS_CMD")")" \
       2> "$OUT/$NAME.send.stderr" || rc=$?
   scp -q "$PCL:$slog" "$SEND_LOG"
@@ -197,7 +217,7 @@ path_P5-tmls-ssh-pcl() {
 
 START=$(date +%s)
 : > "$ROWS"; : > "$FAILED"
-echo "S0 run $RUN_ID  load=$LOAD  EVENTS=$EVENTS RATE=$RATE  → $OUT"
+echo "S0 run $RUN_ID  load=$LOAD  EVENTS=$EVENTS RATE=$RATE MARKER_GAP_MS=$MARKER_GAP_MS SSH_FLAGS(P2)=$SSH_FLAGS  → $OUT"
 for p in $PATHS; do
   NAME=$p-$LOAD
   SEND_LOG=$OUT/$NAME.send.jsonl

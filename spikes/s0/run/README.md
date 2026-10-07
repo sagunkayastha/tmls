@@ -14,7 +14,32 @@ EVENTS=200 PATHS="P1-local P2-ssh-loop" spikes/s0/run/paths.sh quiet   # quick s
 ```
 
 Env: `EVENTS` (10000), `RATE` Hz (50), `PATHS` (space-separated subset, default all),
-`NAV` (override the tmls nav spec), `RUN_ID` (default UTC `YYYYmmdd-HHMMSS`), `PCL` (`pcl`).
+`NAV` (override the tmls nav spec), `RUN_ID` (default UTC `YYYYmmdd-HHMMSS`), `PCL` (`pcl`),
+`MARKER_GAP_MS` (0; passed as `--marker-gap-ms` to every `s0 send`), `SSH_FLAGS` (`-t`; the ssh
+flags of the two P2 paths only). See [Controls](#controls).
+
+Under `flood` the receiver starts flooding only **after the first event arrives**: until then the
+screen stays quiet, so `S0READY` is still visible when tmls/tmux attaches to the session.
+`--quit-after N` (N = `EVENTS`) stops the receiver once every seq in `0..N` has arrived at least
+once; duplicates and out-of-range markers are logged but do not count.
+
+## Reading a row
+
+Columns: `events | arrived | missing | dup | corrupt | reorder | acked | sent | recv_exit |
+saw_done | dropped_acks | one-way p50/p95/p99/max | ack p50/p95/p99/max | complete`.
+
+- **`complete`** — `yes` only when `sent == events`, the receiver exited `quit_after` (not
+  `eof`/`error`) and the sender saw `S0DONE`; otherwise `NO:<reasons>` (`sent<events`,
+  `recv_exit=<x>`, `no_done`). Treat only `complete = yes` rows as gate results.
+- Loss/corruption come from the **receiver log** (`arrived`/`missing`/`corrupt` count distinct seqs
+  in `0..events`; out-of-range seqs go to `out_of_range` in the `.report.json`).
+- `acked` and the ack percentiles are *observed return-output timing* (ack text scanned from the
+  path's output stream), not a delivery oracle; under flood, acks share the receiver's stdout queue
+  and some are dropped (`dropped_acks`), so the ack sample is smaller than `events`.
+- The send done line carries `done_seen_ms` (last write → `S0DONE` seen) and `marker_gap_ms`.
+  After the last event the sender waits for `S0DONE` up to `--settle-ms` (5 s) before killing the
+  path, so the receiver's log is complete; on tmls paths `S0DONE` may never be on screen, which
+  costs up to that wait and shows as `no_done`.
 
 A path that fails does not stop the matrix: it gets a line under "Failed / notes" in
 `summary.md` and the run continues. If `s0 send` exits non-zero but both logs exist, the row is
@@ -63,6 +88,28 @@ The awk heuristic assumes the session list is **unscrolled** (every row from the
 down to `s0-recv` is on screen in the 120×40 PTY). With enough sessions/sub-lines to scroll the
 list, the count is wrong — set `NAV=` by hand.
 Safety: `s0 send` sends no events until it sees `S0READY`, so a wrong row only costs a timeout.
+
+## Controls
+
+Re-run a subset with one variable changed; each run gets its own `RUN_ID` dir and its settings in
+the `summary.md` title line.
+
+| control | command | what it isolates |
+|---|---|---|
+| rate sweep | `RATE=10 …`, `RATE=100 …`, `RATE=200 … spikes/s0/run/paths.sh quiet` | loss that depends on inter-key interval (Textual/tmux batching, ESC timeouts) |
+| no remote PTY | `SSH_FLAGS=-T PATHS="P2-ssh-loop P2-ssh-pcl" spikes/s0/run/paths.sh quiet` | ssh's remote PTY/line discipline vs plain byte transport |
+| marker gap | `MARKER_GAP_MS=30 PATHS="P4-tmls-local P5-tmls-ssh-loop" spikes/s0/run/paths.sh quiet` | Textual ESC-sequence accumulation: with no gap, `ESC a` and `#000002` can land in one read and be parsed as one unknown sequence |
+
+Notes:
+- `SSH_FLAGS=-T`: ssh requests no remote PTY and therefore leaves the local tty cooked (ICANON would
+  hold every key until a newline and `^U`/`^W` would edit them). The P2 child becomes
+  `sh -c 'stty raw -echo && exec "$@"' sh ssh -T …`, so the harness PTY is raw like it is under
+  `-t`. The remote `s0 recv` then reads a pipe (no termios) — the bytes it logs are exactly what
+  ssh carried. Checked locally with `cat | s0 recv` standing in for ssh: 200/200 with the raw
+  wrapper, 0/200 without it.
+- `MARKER_GAP_MS` lengthens every event by the gap: at `RATE=50` (20 ms period) a 30 ms gap means
+  the sender falls behind and rebases, so `effective_rate` in the send done line drops to ~30 Hz.
+  Lower `RATE` (e.g. `RATE=20`) to keep the schedule.
 
 ## Clock skew caveat
 
