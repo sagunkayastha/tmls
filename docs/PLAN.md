@@ -7,9 +7,14 @@ History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `d
 ## 1. Why — and what we know vs assume
 
 **Observed:** tmls feels laggy at times and misses keypresses (PC and laptop).
-**Measured (2026-10-07):** tmls's Terminal widget, fed keys directly, passed every key (396/396 quiet, 288/288 under a
-100 Hz full-screen flood). That test **skipped** the outer terminal, ssh, and Textual's own input parser, so
-end-to-end loss is **not yet located**.
+**Measured (S0, 2026-10-07/08; scripted PTY input, receiver-observed — details `docs/spikes/S0-results.md`):**
+0 missing / 0 duplicate of 10,000 events on every 10k row (local, ssh, tmux, tmls; quiet 50/15 Hz and 500 kB/s
+flood; alphabet without Ctrl+P). tmls is the only source of loss/corruption found: Ctrl+P opens Textual's command
+palette and swallows every later key (141/200 missing, dry run); at 15/50 Hz 1249–1250/1250 Alt+letters arrive as
+`^`+letter (Alt+f as Ctrl+Right at any rate) and are held (one-way p50 45.6 ms at 50 Hz, 140.1 ms at 15 Hz) with
+the next key queued behind them. tmls return-output timing (ack p50 37.2 ms) is far above tmux's (0.8 ms); under
+flood only tmls degrades. Every ssh hop adds a uniform 0–~21 ms from OpenSSH `ObscureKeystrokeTiming` (off → one-way
+p50 0.4 ms, loopback). Not measured: real keyboard / GUI terminal / laptop, key-to-photon.
 **Suspects in tmls (from code, unproven):** the terminal widget redraws on a 30 Hz timer (up to ~33 ms added);
 `_read()` parses up to 64 KiB through pyte on the same event loop that handles keys; `key_to_bytes()` returns
 nothing for unmapped keys; PTY writes don't handle short writes. tmls keeps **one persistent ssh per tab** (not per key).
@@ -19,8 +24,11 @@ Current path when used from the laptop:
 laptop terminal ─ssh→ tmls (Textual parser → pyte) ─ ssh -t archbox ─ tmux client ─ tmux server ─ claude
 ```
 
-**Hypothesis:** fewer nested terminal translations + native input + off-loop parsing removes most lag. **S0 tests this
-first**, and may also give tmls a quick fix while tmls-rs is built.
+**Hypothesis (revised after S0):** for scripted input, key loss/garbling is tmls's (Textual key parsing and
+bindings), not ssh/tmux/PTY; lag comes from tmls (tens of ms for Alt/Ctrl keys, worse under output load) plus a
+0–~21 ms ssh keystroke-obfuscation hop. A client with its own input encoding removes the tmls defects; whether native
+input + off-loop parsing removes *most* lag is unresolved until key-to-present (S2) and real-keyboard paths are
+measured. Quick tmls fixes: `ENABLE_COMMAND_PALETTE = False`; Alt-key handling (results doc, "tmls defects").
 
 **What tmls-rs will not fix by itself:** OS/compositor stalls, keyboard/IME bugs, app-side input handling, host CPU
 starvation, network delay. Transport retransmission delays bytes; it doesn't drop single keys.
@@ -134,7 +142,7 @@ answers rejected; hostd down → Claude's own prompt still works in the terminal
 
 | Spike | Question | Pass gate |
 |---|---|---|
-| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. |
+| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: measured 2026-10-07/08 — see docs/spikes/S0-results.md; GUI/keyboard paths pending (user).** |
 | S1 Emulator | libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. | Identical results; differences explained. |
 | S2 Interaction slice | Grid + sidebar + one editable form + selection + clipboard + IME (fcitx5, Windows TSF), in raw wgpu vs gpui; 60 Hz + high refresh, fractional scaling, monitor move. | p50/p95/p99 key-to-present (and camera-checked photon sample), CPU, idle power, text quality; pick on latency **and** coverage. |
 | S3 Worker survival | Kill hostd abruptly 100× incl. during create/adopt, long downtime under flood. | Programs survive; promised state restorable; no duplicate replies/input; memory within limits. |
