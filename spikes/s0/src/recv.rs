@@ -7,7 +7,13 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
 
-pub struct Opts { pub log: std::path::PathBuf, pub flood: Option<u64>, pub ack: bool, pub quit_after: Option<u64>,
+pub struct Opts { pub log: std::path::PathBuf,
+                 /// Flood stdout at this many bytes/s, starting at the first arrival (not before, so the
+                 /// screen stays quiet and `S0READY` stays visible until a TUI has attached).
+                 pub flood: Option<u64>, pub ack: bool,
+                 /// N = events: exit once every seq in `0..N` has arrived at least once (duplicates and
+                 /// out-of-range seqs are logged but do not count).
+                 pub quit_after: Option<u64>,
                  /// Capacity of the stdout channel (acks + flood lines). Default 4096.
                  pub ack_queue: usize }
 
@@ -37,7 +43,8 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
         let _ = out.flush();
         for chunk in rx { if out.write_all(&chunk).is_err() { break; } let _ = out.flush(); }
     });
-    if let Some(bps) = o.flood {
+    // Started lazily by the parse loop on the first arrival.
+    let start_flood = |bps: u64| {
         let tx = tx.clone(); let stop = stop.clone();
         std::thread::spawn(move || {
             /// Flood lines go through the same channel; blocking send is fine on this thread.
@@ -50,7 +57,12 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
             }
             crate::flood::run(Chan(tx), bps, &stop);
         });
-    }
+    };
+    let mut flood_pending = o.flood;
+    // Distinct seqs seen in 0..quit_after.
+    // (Markers have six digits, so no seq is >= 1_000_000.)
+    let mut seen = vec![false; o.quit_after.unwrap_or(0).min(1_000_000) as usize];
+    let mut distinct = 0u64;
     let mut tok = Tokenizer::new();
     let mut buf = [0u8; 65536];
     let mut idx = 0u64; let mut dropped_acks = 0u64;
@@ -69,7 +81,11 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
             log.write(&RecvRecord { seq: a.seq, intact: a.intact, got_hex: log::hex(&a.got), wall_ns: wall, idx })?;
             idx += 1;
             if o.ack && tx.try_send(format!("A{:06}\r\n", a.seq).into_bytes()).is_err() { dropped_acks += 1; }
-            if o.quit_after.is_some_and(|q| idx >= q) { exit = "quit_after"; break 'outer; }
+            if let Some(bps) = flood_pending.take() { start_flood(bps); }
+            if let Some(slot) = seen.get_mut(a.seq as usize) {
+                if !*slot { *slot = true; distinct += 1; }
+            }
+            if o.quit_after.is_some_and(|q| distinct >= q) { exit = "quit_after"; break 'outer; }
         }
         // Flush every chunk that produced arrivals, so a killed/HUP'd receiver loses nothing
         // that was already parsed (missing log lines would read as key loss).
@@ -77,7 +93,7 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     }
     drop(input);
     stop.store(true, Ordering::Relaxed);
-    log.write(&serde_json::json!({"done": true, "arrivals": idx, "dropped_acks": dropped_acks, "exit": exit}))?;
+    log.write(&serde_json::json!({"done": true, "arrivals": idx, "distinct_in_range": distinct, "dropped_acks": dropped_acks, "exit": exit}))?;
     log.flush()?;
     let _ = tx.send(b"\x1b[?2004l\r\nS0DONE\r\n".to_vec());
     drop(tx);

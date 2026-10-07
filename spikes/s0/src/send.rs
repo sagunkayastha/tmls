@@ -1,6 +1,7 @@
 //! Near end of a path: spawn the path command in a PTY, run nav, type numbered events, record acks.
 //!
-//! Order: spawn → nav (if any) → wait for `S0READY` → event loop → settle → log → kill child.
+//! Order: spawn → nav (if any) → wait for `S0READY` → event loop → settle (acks) → wait for
+//! `S0DONE` → log → kill child.
 //! A reader thread drains the PTY master into an [`AckScanner`] (acks timestamped at read time) and
 //! keeps an escape-stripped copy of the output for `expect:` nav steps and `--dump-screen`.
 use crate::{ack::{AckScanner, Stripper}, event, log::{self, Jsonl, SendRecord}, nav::{self, Step}};
@@ -14,7 +15,23 @@ use std::time::{Duration, Instant};
 pub struct Opts {
     pub log: PathBuf, pub events: u32, pub rate: f64, pub cols: u16, pub rows: u16,
     pub nav: Option<String>, pub dump_screen: bool, pub settle_ms: u64, pub ready_timeout_ms: u64,
+    /// Pause between an event's payload and its marker (0 = none). Control for parsers that
+    /// accumulate an escape sequence across bytes that arrive in one read (e.g. `ESC a#000002`).
+    pub marker_gap_ms: u64,
     pub cmd: Vec<String>,
+}
+
+/// The writes for `seq`, each with the sleep (ms) before it: payload write(s) then the marker.
+/// Repeat keeps 2 ms between its five bytes. The marker waits `marker_gap_ms` if > 0, else the
+/// kind's normal spacing (2 ms after a Repeat byte, 0 otherwise).
+pub fn write_plan(seq: u32, marker_gap_ms: u64) -> Vec<(Vec<u8>, u64)> {
+    let chunks = event::encode(seq);
+    let last = chunks.len() - 1;
+    let spacing = if event::kind_of(seq) == event::Kind::Repeat { 2 } else { 0 };
+    chunks.into_iter().enumerate().map(|(j, c)| {
+        let ms = if j == 0 { 0 } else if j == last && marker_gap_ms > 0 { marker_gap_ms } else { spacing };
+        (c, ms)
+    }).collect()
 }
 
 /// Escape-stripped output kept for `expect:` and `--dump-screen` (bounded).
@@ -37,7 +54,9 @@ pub fn write_full(w: &mut dyn Write, buf: &[u8]) -> std::io::Result<()> {
 }
 
 /// State shared between the reader thread and the main loop.
-struct Shared { screen: Mutex<String>, ready: AtomicBool, done: AtomicBool, eof: AtomicBool }
+struct Shared { screen: Mutex<String>, ready: AtomicBool, done: AtomicBool, eof: AtomicBool,
+                /// Wall clock (ns) of the read in which `S0DONE` was first seen.
+                done_ns: Mutex<Option<u128>> }
 
 impl Shared {
     fn contains(&self, s: &str) -> bool { self.screen.lock().unwrap().contains(s) }
@@ -79,7 +98,10 @@ fn spawn_reader(mut r: Box<dyn Read + Send>, sh: Arc<Shared>, acks: mpsc::Sender
                 }
             }
             if scan.saw_ready { sh.ready.store(true, Ordering::Release); }
-            if scan.saw_done { sh.done.store(true, Ordering::Release); }
+            if scan.saw_done && !sh.done.load(Ordering::Acquire) {
+                *sh.done_ns.lock().unwrap() = Some(t);
+                sh.done.store(true, Ordering::Release);
+            }
         }
         sh.eof.store(true, Ordering::Release);
         let _ = fin_tx.send(());
@@ -159,7 +181,8 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     let mut writer = pair.master.take_writer()?;
     let reader = pair.master.try_clone_reader()?;
     let sh = Arc::new(Shared { screen: Mutex::new(String::new()), ready: AtomicBool::new(false),
-                               done: AtomicBool::new(false), eof: AtomicBool::new(false) });
+                               done: AtomicBool::new(false), eof: AtomicBool::new(false),
+                               done_ns: Mutex::new(None) });
     let (ack_tx, ack_rx) = mpsc::channel();
     let fin_rx = spawn_reader(reader, sh.clone(), ack_tx);
 
@@ -172,9 +195,16 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     p.drain(&ack_rx);
     for r in &mut p.recs { r.ack_ns = p.ack_ns[r.seq as usize]; }
     for r in &p.recs { log_out.write(r)?; }
+    // Time from the last event's write_end to the read that carried S0DONE.
+    let done_seen_ms = match (*sh.done_ns.lock().unwrap(), p.recs.last()) {
+        (Some(d), Some(l)) => Some((d as f64 - l.write_end_ns as f64) / 1e6),
+        _ => None,
+    };
     let mut done = serde_json::json!({"done": true, "acked": p.acked, "saw_done": sh.done.load(Ordering::Acquire),
+                                      "done_seen_ms": done_seen_ms,
                                       "events": o.events, "sent": p.recs.len(), "rate": o.rate,
-                                      "effective_rate": p.effective_rate(), "cmd": o.cmd});
+                                      "effective_rate": p.effective_rate(), "marker_gap_ms": o.marker_gap_ms,
+                                      "cmd": o.cmd});
     if let Err(e) = &result { done["error"] = format!("{e:#}").into(); }
     log_out.write(&done)?;
     log_out.flush()?;
@@ -203,11 +233,10 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
         // The path closed its side (exited / connection dropped): writes would vanish or block.
         if sh.eof.load(Ordering::Acquire) { bail!("PTY closed by path command before seq {seq}"); }
         let kind = event::kind_of(seq);
-        let chunks = event::encode(seq);
         let write_start_ns = log::now_ns();
-        for (j, c) in chunks.iter().enumerate() {
-            if j > 0 && kind == event::Kind::Repeat { std::thread::sleep(Duration::from_millis(2)); }
-            write_full(w, c).with_context(|| format!("write seq {seq}"))?;
+        for (c, ms) in write_plan(seq, o.marker_gap_ms) {
+            if ms > 0 { std::thread::sleep(Duration::from_millis(ms)); }
+            write_full(w, &c).with_context(|| format!("write seq {seq}"))?;
         }
         let write_end_ns = log::now_ns();
         p.recs.push(SendRecord { seq, kind, write_start_ns, write_end_ns, ack_ns: None });
@@ -218,8 +247,12 @@ fn drive(o: &Opts, steps: &[Step], w: &mut dyn Write, sh: &Shared, acks: &mpsc::
         p.drain(acks);
         sh.done.load(Ordering::Acquire) || p.acked >= n
     });
-    // The reader may have sent acks just before setting `done`; give it a moment.
-    wait_for(Duration::from_millis(100), || sh.eof.load(Ordering::Acquire) || p.acked >= n);
+    // All acked (or settle ran out) but no S0DONE yet: the receiver may still be logging the last
+    // arrivals. Wait for S0DONE (or the path closing) up to another settle window before the kill.
+    wait_for(Duration::from_millis(o.settle_ms), || {
+        p.drain(acks);
+        sh.done.load(Ordering::Acquire) || sh.eof.load(Ordering::Acquire)
+    });
     Ok(())
 }
 
@@ -236,6 +269,28 @@ mod tests {
             self.got.push(b[0]); Ok(1)
         }
         fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    #[test]
+    fn write_plan_no_gap_matches_encode() {
+        for seq in 0..16u32 {
+            let plan = write_plan(seq, 0);
+            let chunks: Vec<Vec<u8>> = plan.iter().map(|(c, _)| c.clone()).collect();
+            assert_eq!(chunks, event::encode(seq), "seq {seq}");
+            assert_eq!(plan[0].1, 0, "first write never waits");
+            let want_rest = if event::kind_of(seq) == event::Kind::Repeat { 2 } else { 0 };
+            assert!(plan[1..].iter().all(|(_, ms)| *ms == want_rest), "seq {seq}: {plan:?}");
+        }
+    }
+    #[test]
+    fn write_plan_marker_gap() {
+        // AltLetter: payload ESC a, then the marker 30 ms later.
+        let plan = write_plan(2, 30);
+        assert_eq!(plan, vec![(event::expected_payload(2), 0), (event::marker(2), 30)]);
+        // Repeat keeps 2 ms between its five bytes; only the marker gets the gap.
+        let plan = write_plan(6, 30);
+        assert_eq!(plan.len(), 6);
+        assert_eq!(plan.iter().map(|(_, ms)| *ms).collect::<Vec<_>>(), vec![0, 2, 2, 2, 2, 30]);
+        assert_eq!(plan.last().unwrap().0, event::marker(6));
     }
     #[test]
     fn short_write_loop() {

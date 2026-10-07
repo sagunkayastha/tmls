@@ -22,6 +22,35 @@ fn local_path_zero_loss() {
     assert_eq!(done["saw_done"], true);
     assert_eq!(done["events"], 300);
     assert!(done["effective_rate"].as_f64().unwrap() > 50.0, "{done}");
+    assert_eq!(done["marker_gap_ms"], 0);
+    let seen_ms = done["done_seen_ms"].as_f64().expect("done_seen_ms set when S0DONE was seen");
+    assert!((0.0..2000.0).contains(&seen_ms), "{done}");
+}
+
+/// `--marker-gap-ms`: the marker follows the payload after a pause; nothing is lost and the gap
+/// is recorded in the done line.
+#[test]
+fn marker_gap_run() {
+    let dir = std::path::PathBuf::from("/data/scratch/s0/test"); std::fs::create_dir_all(&dir).unwrap();
+    let pid = std::process::id();
+    let send_log = dir.join(format!("send-gap-{pid}.jsonl"));
+    let recv_log = dir.join(format!("recv-gap-{pid}.jsonl"));
+    let bin = env!("CARGO_BIN_EXE_s0");
+    let st = std::process::Command::new(bin)
+        .args(["send", "--log", send_log.to_str().unwrap(), "--events", "16", "--rate", "50", "--settle-ms", "2000",
+               "--marker-gap-ms", "10", "--", bin, "recv", "--log", recv_log.to_str().unwrap(), "--quit-after", "16"])
+        .status().unwrap();
+    assert!(st.success());
+    let send = read_jsonl(&send_log);
+    let done = send.last().unwrap();
+    assert_eq!((done["acked"].as_u64(), done["saw_done"].as_bool(), done["marker_gap_ms"].as_u64()), (Some(16), Some(true), Some(10)), "{done}");
+    // Every event's write took at least the gap.
+    for r in send.iter().filter(|v| v.get("seq").is_some()) {
+        let d = r["write_end_ns"].as_u64().unwrap() - r["write_start_ns"].as_u64().unwrap();
+        assert!(d >= 10_000_000, "{r}");
+    }
+    let recv = read_jsonl(&recv_log);
+    assert_eq!(recv.iter().filter(|v| v["intact"] == true).count(), 16);
 }
 
 fn read_jsonl(p: &std::path::Path) -> Vec<serde_json::Value> {

@@ -14,7 +14,7 @@ enum Cmd {
         #[arg(long)] flood: Option<u64>,
         /// Echo an ack `A<seq:06>` per arrival (`--ack false` disables)
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)] ack: bool,
-        /// Exit after this many arrivals
+        /// Exit once all of seqs 0..N have arrived (N = events; dups/out-of-range don't count)
         #[arg(long)] quit_after: Option<u64>,
         /// Stdout channel capacity in chunks (test hook)
         #[arg(long, default_value_t = 4096, hide = true)] ack_queue: usize,
@@ -33,6 +33,8 @@ enum Cmd {
         #[arg(long, default_value_t = 5000)] settle_ms: u64,
         /// Max wait for the receiver's `S0READY` marker (after nav)
         #[arg(long, default_value_t = 30_000)] ready_timeout_ms: u64,
+        /// Sleep this long between each event's payload and its marker (0 = off)
+        #[arg(long, default_value_t = 0)] marker_gap_ms: u64,
         #[arg(last = true, required = true)] cmd: Vec<String>,
     },
     /// Join send/recv logs into counts and latency percentiles
@@ -56,8 +58,9 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
         Cmd::Recv { log, flood, ack, quit_after, ack_queue } =>
             s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue }),
-        Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, cmd } =>
-            s0::send::main(s0::send::Opts { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, cmd }),
+        Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, marker_gap_ms, cmd } =>
+            s0::send::main(s0::send::Opts { log, events, rate, cols, rows, nav, dump_screen, settle_ms,
+                                            ready_timeout_ms, marker_gap_ms, cmd }),
         Cmd::Report { send, recv, path, load, json, header, skew_note, events } =>
             s0::report::main(s0::report::Opts { send, recv, path, load, json, header, skew_note, events }),
         Cmd::Flood { bytes_per_sec } => { s0::flood::main(bytes_per_sec); Ok(()) }

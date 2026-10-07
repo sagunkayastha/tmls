@@ -11,13 +11,31 @@ pub struct CorruptExample { pub seq: u32, pub kind: Kind, pub expected_hex: Stri
 #[derive(Serialize, Debug, Clone, Default)]
 pub struct Report {
     pub path: String, pub load: String,
-    pub events: u32, pub arrived: u32, pub missing: u32, pub dup: u32, pub corrupt: u32, pub reorder: u32, pub acked: u32,
+    /// `sent` = send records; `arrived` = distinct seqs in `0..events`; `out_of_range` = receiver
+    /// records whose seq is `>= events` (not counted as arrived, dup, corrupt or reorder).
+    pub events: u32, pub sent: u32, pub arrived: u32, pub out_of_range: u32, pub missing: u32, pub dup: u32, pub corrupt: u32, pub reorder: u32, pub acked: u32,
     pub p50_ms: Option<f64>, pub p95_ms: Option<f64>, pub p99_ms: Option<f64>, pub max_ms: Option<f64>,
     pub ack_p50_ms: Option<f64>, pub ack_p95_ms: Option<f64>, pub ack_p99_ms: Option<f64>, pub ack_max_ms: Option<f64>,
     pub corrupt_by_kind: BTreeMap<Kind, u32>, pub missing_by_kind: BTreeMap<Kind, u32>,
     pub corrupt_examples: Vec<CorruptExample>,
     pub dropped_acks: Option<u64>, pub recv_exit: Option<String>, pub saw_done: Option<bool>,
     pub skew_note: Option<String>,
+    /// `yes` or `NO:<reasons>`; see [`Report::complete_status`]. Filled by `main`.
+    pub complete: String,
+}
+
+impl Report {
+    /// A row is a gate result only when the run finished: every event was sent, the receiver
+    /// stopped on `--quit-after` (not EOF/error) and the sender saw `S0DONE`.
+    pub fn complete_status(&self) -> String {
+        let mut why = Vec::new();
+        if self.sent < self.events { why.push("sent<events".to_string()); }
+        if self.recv_exit.as_deref() != Some("quit_after") {
+            why.push(format!("recv_exit={}", self.recv_exit.as_deref().unwrap_or("–")));
+        }
+        if self.saw_done != Some(true) { why.push("no_done".into()); }
+        if why.is_empty() { "yes".into() } else { format!("NO:{}", why.join(",")) }
+    }
 }
 
 /// Nearest-rank percentile of an ascending-sorted slice.
@@ -34,7 +52,7 @@ fn quad(mut v: Vec<f64>) -> [Option<f64>; 4] {
 fn ms(later: u128, earlier: u128) -> f64 { (later as f64 - earlier as f64) / 1e6 }
 
 pub fn build(send: &[SendRecord], recv: &[RecvRecord], events: u32, path: &str, load: &str) -> Report {
-    let mut rep = Report { path: path.into(), load: load.into(), events, ..Default::default() };
+    let mut rep = Report { path: path.into(), load: load.into(), events, sent: send.len() as u32, ..Default::default() };
     let sent: HashMap<u32, &SendRecord> = send.iter().map(|s| (s.seq, s)).collect();
     let kind_for = |seq: u32| sent.get(&seq).map(|s| s.kind).unwrap_or_else(|| event::kind_of(seq));
     let mut order: Vec<&RecvRecord> = recv.iter().collect();
@@ -43,6 +61,7 @@ pub fn build(send: &[SendRecord], recv: &[RecvRecord], events: u32, path: &str, 
     let mut prev: Option<u32> = None;
     let (mut one_way, mut acks) = (Vec::new(), Vec::new());
     for r in order {
+        if r.seq >= events { rep.out_of_range += 1; continue; }
         if !seen.insert(r.seq) { rep.dup += 1; continue; }
         // reorder = first arrival whose seq is lower than the previous first arrival's seq
         if prev.is_some_and(|p| r.seq < p) { rep.reorder += 1; }
@@ -51,7 +70,8 @@ pub fn build(send: &[SendRecord], recv: &[RecvRecord], events: u32, path: &str, 
             rep.corrupt += 1;
             *rep.corrupt_by_kind.entry(kind_for(r.seq)).or_default() += 1;
             if rep.corrupt_examples.len() < 10 {
-                let mut exp = event::expected_payload(r.seq); exp.extend(event::marker(r.seq));
+                // Payload only: the receiver's got_hex never includes the marker.
+                let exp = event::expected_payload(r.seq);
                 rep.corrupt_examples.push(CorruptExample { seq: r.seq, kind: kind_for(r.seq), expected_hex: hex(&exp), got_hex: r.got_hex.clone() });
             }
         }
@@ -104,13 +124,17 @@ fn fmt_quad(q: [Option<f64>; 4]) -> String {
     }
 }
 
-pub const HEADER: &str = "| path | load | events | arrived | missing | dup | corrupt | reorder | acked | one-way p50/p95/p99/max ms | ack p50/p95/p99/max ms |\n|---|---|---|---|---|---|---|---|---|---|---|";
+pub const HEADER: &str = "| path | load | events | arrived | missing | dup | corrupt | reorder | acked | sent | recv_exit | saw_done | dropped_acks | one-way p50/p95/p99/max ms | ack p50/p95/p99/max ms | complete |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|";
+
+fn opt<T: std::fmt::Display>(v: &Option<T>) -> String { v.as_ref().map_or("–".into(), |x| x.to_string()) }
 
 pub fn markdown_row(r: &Report) -> String {
-    format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", r.path, r.load, r.events, r.arrived,
-        r.missing, r.dup, r.corrupt, r.reorder, r.acked,
+    format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", r.path, r.load, r.events,
+        r.arrived, r.missing, r.dup, r.corrupt, r.reorder, r.acked,
+        r.sent, opt(&r.recv_exit), opt(&r.saw_done), opt(&r.dropped_acks),
         fmt_quad([r.p50_ms, r.p95_ms, r.p99_ms, r.max_ms]),
-        fmt_quad([r.ack_p50_ms, r.ack_p95_ms, r.ack_p99_ms, r.ack_max_ms]))
+        fmt_quad([r.ack_p50_ms, r.ack_p95_ms, r.ack_p99_ms, r.ack_max_ms]),
+        r.complete_status())
 }
 
 pub struct Opts {
@@ -124,6 +148,7 @@ pub fn main(o: Opts) -> anyhow::Result<()> {
     let events = o.events.unwrap_or(send.len() as u32);
     let mut rep = build(&send, &recv, events, &o.path, &o.load);
     rep.dropped_acks = dropped; rep.recv_exit = exit; rep.saw_done = saw_done; rep.skew_note = o.skew_note;
+    rep.complete = rep.complete_status();
     if let Some(j) = &o.json {
         if let Some(p) = j.parent() { std::fs::create_dir_all(p)?; }
         std::fs::write(j, serde_json::to_string_pretty(&rep)?)?;
@@ -165,6 +190,52 @@ mod tests {
         let (sv, saw) = load_send(&sp).unwrap();
         let (rv, dropped, exit) = load_recv(&rp).unwrap();
         assert_eq!((sv.len(), saw, rv.len(), dropped, exit.as_deref()), (1, Some(true), 1, Some(3), Some("quit_after")));
+    }
+    #[test]
+    fn report_marks_incomplete_runs() {
+        let send: Vec<_> = (0..5).map(|i| s(i, 1_000_000 * i as u128)).collect();
+        let recv: Vec<_> = (0..5).map(|i| r(i, 2_000_000 * i as u128, true, i as u64)).collect();
+        // Complete: all sent, recv quit_after, S0DONE seen.
+        let mut rep = build(&send, &recv, 5, "p", "quiet");
+        rep.recv_exit = Some("quit_after".into()); rep.saw_done = Some(true); rep.dropped_acks = Some(0);
+        assert_eq!(rep.sent, 5);
+        assert_eq!(rep.complete_status(), "yes");
+        let row = markdown_row(&rep);
+        assert!(row.contains("| 5 | 5 | quit_after | true | 0 |"), "{row}");
+        assert!(row.trim_end().ends_with("| yes |"), "{row}");
+        // Incomplete: 3 of 5 sent, recv hit EOF, no S0DONE.
+        let mut rep = build(&send[..3], &recv[..3], 5, "p", "quiet");
+        rep.recv_exit = Some("eof".into()); rep.saw_done = Some(false); rep.dropped_acks = None;
+        assert_eq!(rep.complete_status(), "NO:sent<events,recv_exit=eof,no_done");
+        let row = markdown_row(&rep);
+        assert!(row.contains("| 3 | 3 | eof | false | – |"), "{row}");
+        assert!(row.trim_end().ends_with("| NO:sent<events,recv_exit=eof,no_done |"), "{row}");
+        // Missing done lines entirely.
+        let rep = build(&send, &recv, 5, "p", "quiet");
+        assert_eq!(rep.complete_status(), "NO:recv_exit=–,no_done");
+        // Header has the same number of columns as a row.
+        let cols = |l: &str| l.matches('|').count();
+        assert_eq!(cols(HEADER.lines().next().unwrap()), cols(&markdown_row(&rep)));
+        assert_eq!(cols(HEADER.lines().nth(1).unwrap()), cols(&markdown_row(&rep)));
+    }
+    #[test]
+    fn out_of_range_seqs_not_counted_as_arrived() {
+        let send: Vec<_> = (0..3).map(|i| s(i, 0)).collect();
+        let recv = vec![r(0, 1, true, 0), r(999_999, 2, false, 1), r(1, 3, true, 2), r(7, 4, true, 3)];
+        let rep = build(&send, &recv, 3, "p", "quiet");
+        assert_eq!((rep.arrived, rep.missing, rep.out_of_range, rep.corrupt, rep.reorder), (2, 1, 2, 0, 0));
+    }
+    #[test]
+    fn corrupt_example_expected_excludes_marker() {
+        let send = vec![s(2, 0)];
+        // seq 2 is AltLetter: ESC + letter. Got: the letter without ESC.
+        let exp = crate::event::expected_payload(2);
+        let mut rec = r(2, 1, false, 0); rec.got_hex = hex(&exp[1..]);
+        let rep = build(&send, &[rec], 3, "p", "quiet");
+        let ex = &rep.corrupt_examples[0];
+        assert_eq!(ex.expected_hex, hex(&exp));
+        assert!(!ex.expected_hex.contains(&hex(&crate::event::marker(2))));
+        assert_eq!(&ex.expected_hex[2..], ex.got_hex); // byte-for-byte comparable: only the ESC differs
     }
     #[test]
     fn markdown_row_and_negative_latency() {
