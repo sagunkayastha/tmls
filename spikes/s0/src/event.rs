@@ -1,7 +1,7 @@
 //! The numbered key alphabet. Every event is payload bytes followed by a plain-ASCII marker
 //! `#dddddd` that survives any terminal re-rendering. Kind is a pure function of seq.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Kind { Letter, Digit, AltLetter, CtrlLetter, ModArrow, FKey, Repeat, Paste }
 
 pub const KINDS: [Kind; 8] = [Kind::Letter, Kind::Digit, Kind::AltLetter, Kind::CtrlLetter,

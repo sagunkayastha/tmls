@@ -35,6 +35,19 @@ enum Cmd {
         #[arg(long, default_value_t = 30_000)] ready_timeout_ms: u64,
         #[arg(last = true, required = true)] cmd: Vec<String>,
     },
+    /// Join send/recv logs into counts and latency percentiles
+    Report {
+        #[arg(long)] send: PathBuf,
+        #[arg(long)] recv: PathBuf,
+        #[arg(long)] path: String,
+        #[arg(long)] load: String,
+        #[arg(long)] json: Option<PathBuf>,
+        /// Print the Markdown header row first
+        #[arg(long)] header: bool,
+        #[arg(long)] skew_note: Option<String>,
+        /// Events sent (default: number of send records)
+        #[arg(long)] events: Option<u32>,
+    },
     /// Output flood at a bounded rate
     Flood { #[arg(long)] bytes_per_sec: u64 },
 }
@@ -45,6 +58,8 @@ fn main() -> anyhow::Result<()> {
             s0::recv::main(s0::recv::Opts { log, flood, ack, quit_after, ack_queue }),
         Cmd::Send { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, cmd } =>
             s0::send::main(s0::send::Opts { log, events, rate, cols, rows, nav, dump_screen, settle_ms, ready_timeout_ms, cmd }),
+        Cmd::Report { send, recv, path, load, json, header, skew_note, events } =>
+            s0::report::main(s0::report::Opts { send, recv, path, load, json, header, skew_note, events }),
         Cmd::Flood { bytes_per_sec } => { s0::flood::main(bytes_per_sec); Ok(()) }
     }
 }
