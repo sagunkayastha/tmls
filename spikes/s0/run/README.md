@@ -218,7 +218,11 @@ Run on pcl, from a second terminal or ssh session (kitty is the window that must
 
 It prints the receiver command to paste into kitty
 (`s0 recv --plain --log ~/s0-logs/runs/K1-<id>.recv.jsonl --quit-after N --ack false`; no acks, so the
-typed text is not echoed back as noise), waits for the log file, counts down 3 s, then pipes
+typed text is not echoed back as noise), waits for the log file, prints "recv is live" and waits 5 s (click the kitty window now), then types a
+**focus probe** (`x#999999`, seq 999999, out of range: logged by recv but not counted toward `--quit-after`;
+the report shows it as `out_of_range 1`, which is expected). The script polls the recv log up to 3 s for
+`"seq":999999`; if it never appears it prints a red message and **exits 2 without typing the stream**
+(kitty not focused, or recv not running). On "focus OK" it counts down 3 s, then pipes
 `s0 keys --plain --events N` into `ydotool type --key-delay D --file -`, waits for the done line and
 prints the `K1-kitty-ydotool` row. Needs `ydotoold`: `systemctl --user start ydotool` (user unit; there is no
 system unit on pcl) or `ydotoold --socket-path=/run/user/1000/.ydotool_socket --socket-perm=0600 &` +

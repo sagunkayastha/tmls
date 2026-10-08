@@ -41,7 +41,9 @@ K1 run $ID   events=$N   key-delay=${KEY_DELAY_MS}ms   (~${CHARS} keys, est. ~${
 
    $S0 recv --plain --log $LOG --quit-after $N --ack false
 
-2) Then DO NOT touch keyboard/mouse. This script starts typing 3 s after the log appears.
+2) Once the receiver is live, CLICK the kitty window. After 5 s the script types a short focus probe;
+   if the receiver does not see it, nothing else is typed (exit 2). Then DO NOT touch keyboard/mouse.
+   (Expect "out_of_range 1" in the report: that is the probe, seq 999999.)   <-- click kitty, then wait
 MSG
 
 # Wait for the receiver to create its log.
@@ -50,6 +52,22 @@ until [[ -e $LOG ]]; do
   (( SECONDS - t0 < ${K1_TIMEOUT_S:-600} )) || { echo "timed out waiting for $LOG" >&2; exit 1; }
   sleep 0.2
 done
+echo "recv is live — now CLICK the kitty window; probe in 5 s"
+sleep 5
+
+# Focus probe: out-of-range marker (seq 999999). recv logs it but it never counts toward --quit-after
+# or the report's in-range stats (it shows up as out_of_range=1).
+ydotool type --key-delay 20 'x#999999'
+ok=0
+for _ in $(seq 1 30); do
+  grep -q '"seq":999999' "$LOG" 2>/dev/null && { ok=1; break; }
+  sleep 0.1
+done
+if (( ! ok )); then
+  printf '\033[1;31m%s\033[0m\n' "receiver did not see the probe — kitty with \`s0 recv\` is not focused (or recv not running). Nothing else was typed. Click the kitty window and rerun." >&2
+  exit 2
+fi
+echo "focus OK (1 out_of_range in the report is expected: the probe, seq 999999)"
 for i in 3 2 1; do echo "typing in $i ..."; sleep 1; done
 
 echo "typing $N events ..."
