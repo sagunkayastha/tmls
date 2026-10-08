@@ -1,5 +1,6 @@
 //! s1 debug CLI. `s1 capture --file <bytes> [--cols 80 --rows 24]` feeds the raw
 //! byte file into a fresh terminal and prints the captured `(Grid, TermState)` as JSON.
+//! `s1 gen [--out DIR]` writes the adversarial streams from `s1::gen` as `<name>.bin`.
 
 use std::path::PathBuf;
 
@@ -24,6 +25,11 @@ enum Cmd {
         #[arg(long, default_value_t = 24)]
         rows: u16,
     },
+    /// Write every adversarial stream to `<out>/<name>.bin`.
+    Gen {
+        #[arg(long, default_value = "/data/scratch/s1/corpus/gen")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,6 +40,14 @@ fn main() -> anyhow::Result<()> {
             t.vt_write(&bytes);
             let cap = s1::grid::capture(&mut t)?;
             println!("{}", serde_json::to_string_pretty(&cap)?);
+        }
+        Cmd::Gen { out } => {
+            std::fs::create_dir_all(&out)?;
+            for (name, bytes) in s1::r#gen::adversarial() {
+                let p = out.join(format!("{name}.bin"));
+                std::fs::write(&p, &bytes)?;
+                println!("{:>7} {}", bytes.len(), p.display());
+            }
         }
     }
     Ok(())
