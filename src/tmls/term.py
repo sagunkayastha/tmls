@@ -42,6 +42,9 @@ FILE_LINE = re.compile(
     r"(?P<path>[A-Za-z0-9._~/+-]*[A-Za-z0-9_~-]\.[A-Za-z0-9]+|"
     r"[A-Za-z0-9._~+-]*/[A-Za-z0-9._~/+-]+):(?P<line>\d+)(?::\d+)?"
 )
+# A bare absolute or home path with no line ("/data/x.png", "~/notes/a.md"). The lookbehind keeps
+# "and/or" and "1/2" out; a lone "/" never matches.
+BARE_PATH = re.compile(r"(?<![\w.~/-])(?:~/|/)[A-Za-z0-9._~+-][A-Za-z0-9._~+/-]*")
 
 
 def link_at(rows, x, y):
@@ -65,6 +68,12 @@ def link_at(rows, x, y):
             continue
         if match.start() <= x < match.end():
             return "file", match.group("path"), int(match.group("line"))
+    for match in BARE_PATH.finditer(row):
+        if any(match.start() < url.end() and match.end() > url.start() for url in urls):
+            continue
+        value = match.group().rstrip(".,;:!?)]}'\"")
+        if len(value) > 1 and match.start() <= x < match.start() + len(value):
+            return "file", value, None
     return None
 
 

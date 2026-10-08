@@ -429,3 +429,24 @@ async def test_right_click_with_failing_wl_paste_uses_textual_clipboard(tmp_path
         assert await wait_for(pilot, lambda: term.pid is not None)
         await pilot.click(term, offset=(2, 0), button=3)
         assert await wait_for(pilot, lambda: "FALLBACK" in screen_text(term))
+
+
+def test_link_at_bare_absolute_and_home_paths_without_a_line():
+    row = "Saved `/data/scratch/mock/bar left.png` and /data/scratch/mock/bar.png. See ~/notes/a.md, ok"
+    at = lambda text: term_module.link_at([row], row.index(text) + 2, 0)
+    assert at("/data/scratch/mock/bar.png") == ("file", "/data/scratch/mock/bar.png", None)
+    assert at("~/notes") == ("file", "~/notes/a.md", None)
+    # backticks and sentence punctuation are not part of the path
+    assert at("/data/scratch/mock/bar left") == ("file", "/data/scratch/mock/bar", None)
+
+
+def test_link_at_bare_paths_skip_words_with_slashes_and_lone_slash():
+    row = "and/or 1/2 / x"
+    for word in ("and/or", "1/2", "/ x"):
+        assert term_module.link_at([row], row.index(word) + 1, 0) is None
+
+
+def test_link_at_prefers_file_line_and_urls_over_bare_paths():
+    row = "/home/u/src/term.py:214 https://example.com/data/x.png"
+    assert term_module.link_at([row], 3, 0) == ("file", "/home/u/src/term.py", 214)
+    assert term_module.link_at([row], row.index("data"), 0)[0] == "url"

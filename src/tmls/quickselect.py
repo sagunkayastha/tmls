@@ -41,6 +41,8 @@ def candidates(rows):
                     occupied.add(x)
                     x += 1
                 kind, target, line = found
+                if kind == "file" and line is None:
+                    line = 1  # a plain path opens at its top, same as PATH matches below
                 targets.append((start, kind, target, line, row[start:x] if kind == "file" else target))
             else:
                 x += 1

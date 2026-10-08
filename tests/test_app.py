@@ -1,6 +1,9 @@
+import asyncio
+import io
 import re
 
 import pytest
+from PIL import Image
 from textual.widgets import ContentSwitcher, Input, Tabs, TextArea
 
 from tmls import app as tmls_app
@@ -1360,3 +1363,214 @@ async def test_viewers_counted_on_the_row_and_named_under_the_tabs(monkeypatch, 
         assert str(line.render()) == "◉ local 80x24 (you) · web 151x43"
         await open_session(app, pilot, "beta")
         assert not line.display
+
+
+def png_bytes():
+    out = io.BytesIO()
+    Image.new("RGB", (40, 20), "red").save(out, "PNG")
+    return out.getvalue()
+
+
+@pytest.fixture
+def fake_files(monkeypatch):
+    """locate echoes the path; load_image serves a small PNG; open_url is recorded."""
+    calls = {"opened": [], "loaded": []}
+    monkeypatch.setattr(tmls_app, "open_url", calls["opened"].append)
+
+    async def locate(host, session, path):
+        return path, path.endswith("/mock")
+
+    async def load_image(host, session, path):
+        calls["loaded"].append((host, path))
+        if "slow" in path:
+            await asyncio.sleep(1)
+        return png_bytes(), Image.open(io.BytesIO(png_bytes()))
+
+    async def load_file(host, session, path):
+        return path, "first\nsecond\n"
+    monkeypatch.setattr(viewer, "locate", locate)
+    monkeypatch.setattr(viewer, "load_image", load_image)
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    return calls
+
+
+def image_pane_shown(app):
+    return app.query("#image-viewer") and app.query_one("#image-close").region.width > 0
+
+
+async def open_alpha(app, pilot):
+    assert await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'alpha')}"))
+    await open_session(app, pilot, "alpha")
+    return app.query_one(Terminal)
+
+
+async def test_bare_image_path_opens_in_the_image_pane(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/mock/bar left.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        assert fake_files["loaded"] == [("box", "/data/mock/bar left.png")]
+        assert "box:/data/mock/bar left.png" in str(app.query_one("#image-title").render())
+        assert fake_files["opened"] == []
+        assert not app.query("#file-viewer")
+        assert term.has_focus
+        pane = app.query_one("#image-viewer")
+        assert pane.size.width >= 35 and app.query_one("#terms").size.width >= 35
+
+
+@pytest.mark.parametrize("target, url", [("/data/doc.pdf", "sftp://box/data/doc.pdf"),
+                                         ("/data/mock", "sftp://box/data/mock"),
+                                         ("/data/logo.svg", "sftp://box/data/logo.svg")])
+async def test_pdfs_folders_and_vector_images_still_open_in_desktop_apps(fake_hosts, fake_files, target, url):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", target, None))
+        assert await wait_for(pilot, lambda: fake_files["opened"] == [url])
+        assert not app.query("#image-viewer") and not app.query("#file-viewer")
+
+
+async def test_image_with_a_line_number_still_opens_in_the_pane(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", 3))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+
+
+async def test_unreadable_image_notifies_and_falls_back_to_the_desktop_app(fake_hosts, fake_files, monkeypatch):
+    async def load_image(host, session, path):
+        raise viewer.ViewerError("not an image")
+    monkeypatch.setattr(viewer, "load_image", load_image)
+    app = tmls_app.Tmls()
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: fake_files["opened"] == ["sftp://box/data/a.png"])
+        assert notices and "not an image" in notices[-1]
+        assert not app.query("#image-viewer")
+
+
+async def test_missing_image_notifies(fake_hosts, fake_files, monkeypatch):
+    async def locate(host, session, path):
+        raise viewer.ViewerError("not found")
+    monkeypatch.setattr(viewer, "locate", locate)
+    app = tmls_app.Tmls()
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/gone.png", None))
+        assert await wait_for(pilot, lambda: notices)
+        assert "not found" in notices[-1]
+        assert not app.query("#image-viewer") and fake_files["opened"] == []
+
+
+async def test_image_pane_closes_with_button_or_escape_and_restores_focus(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        await pilot.click("#image-close")
+        assert await wait_for(pilot, lambda: not app.query("#image-viewer"))
+        assert term.has_focus
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        app.query_one("#image-save").focus()
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: not app.query("#image-viewer"))
+        assert term.has_focus
+
+
+async def test_only_one_side_pane_at_a_time(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        term.post_message(Terminal.LinkClicked("file", "/data/notes.md", 2))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        assert not app.query("#image-viewer")
+        term.post_message(Terminal.LinkClicked("file", "/data/b.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        assert not app.query("#file-viewer")
+        term.post_message(Terminal.LinkClicked("file", "/data/c.png", None))
+        assert await wait_for(pilot, lambda: "c.png" in str(app.query_one("#image-title").render()))
+        assert len(app.query("#image-viewer")) == 1
+
+
+async def test_a_newer_link_wins_over_a_slow_image_load(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/slow.png", None))
+        await pilot.pause(0.1)
+        term.post_message(Terminal.LinkClicked("file", "/data/notes.md", 2))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        await pilot.pause(1.5)
+        assert app.query("#file-viewer") and not app.query("#image-viewer")
+
+
+async def test_closing_the_image_pane_releases_the_picture(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        picture = app.query_one("#image-picture")
+        assert picture.image is not None
+        await pilot.click("#image-close")
+        assert await wait_for(pilot, lambda: not app.query("#image-viewer"))
+        assert picture.image is None
+
+
+async def test_image_pane_open_in_app_hands_the_file_to_the_desktop(fake_hosts, fake_files):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a b.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        await pilot.click("#image-open")
+        assert await wait_for(pilot, lambda: fake_files["opened"] == ["sftp://box/data/a%20b.png"])
+        assert app.query("#image-viewer")
+
+
+async def test_image_pane_save_copies_into_downloads_without_overwriting(fake_hosts, fake_files, monkeypatch,
+                                                                          tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "Downloads").mkdir()
+    (tmp_path / "Downloads" / "a.png").write_bytes(b"older")
+    app = tmls_app.Tmls()
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test(size=(120, 30)) as pilot:
+        term = await open_alpha(app, pilot)
+        term.post_message(Terminal.LinkClicked("file", "/data/a.png", None))
+        assert await wait_for(pilot, lambda: image_pane_shown(app))
+        await pilot.click("#image-save")
+        saved = tmp_path / "Downloads" / "a (1).png"
+        assert await wait_for(pilot, lambda: saved.exists())
+        assert saved.read_bytes() == png_bytes()
+        assert (tmp_path / "Downloads" / "a.png").read_bytes() == b"older"
+        assert str(saved) in notices[-1]
+
+
+async def test_bare_text_path_opens_viewer_at_the_top(fake_hosts, monkeypatch):
+    async def locate(host, session, path):
+        return path, False
+
+    async def load_file(host, session, path):
+        return path, "first\nsecond\n"
+    monkeypatch.setattr(viewer, "locate", locate)
+    monkeypatch.setattr(viewer, "load_file", load_file)
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'alpha')}"))
+        await open_session(app, pilot, "alpha")
+        app.query_one(Terminal).post_message(Terminal.LinkClicked("file", "/data/SETUPS.md", None))
+        assert await wait_for(pilot, lambda: app.query("#file-viewer"))
+        assert app.query_one(TextArea).cursor_location == (0, 0)

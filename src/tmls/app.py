@@ -17,7 +17,7 @@ from textual.widgets import Button, ContentSwitcher, Input, Static, Tab, Tabs
 
 from tmls import approve, create_form, host_colors, hosts, local, manage, notifications, prompts, viewer
 from tmls.term import Terminal
-from tmls.viewer import FileViewer
+from tmls.viewer import FileViewer, ImageViewer
 
 REFRESH_SECONDS = 5
 BACKGROUND_EVERY = 6  # polls between looks for other tmux servers (`tmux -L NAME`) on each host
@@ -249,6 +249,13 @@ class Tmls(App):
     #viewer-title { width: 1fr; padding: 1 0 0 1; text-overflow: ellipsis; }
     #viewer-close { min-width: 3; width: 3; }
     #viewer-text { height: 1fr; }
+    ImageViewer { width: 50%; height: 1fr; border-left: solid $primary-darken-2; }
+    #image-header { height: 3; }
+    #image-title { width: 1fr; padding: 1 0 0 1; text-overflow: ellipsis; }
+    #image-header Button { min-width: 3; margin-left: 1; }
+    #image-close { width: 3; }
+    #image-body { height: 1fr; align: center middle; }
+    #image-picture { width: auto; height: auto; }
     #bar Tabs { width: 1fr; }
     #bar Button { min-width: 8; margin-left: 1; }
     #quit { margin-left: 3; }
@@ -676,25 +683,60 @@ class Tmls(App):
         if self.current:
             self.query_one(ContentSwitcher).visible_content.focus()
 
-    async def on_terminal_link_clicked(self, event):
+    def on_terminal_link_clicked(self, event):
         if event.kind == "url":
             open_url(event.target)
             return
         session = self.open_sessions.get(self.current)
         if session is None:
             return
+        # A worker, so a slow remote load never holds up tabs and buttons; a newer click cancels it.
+        self.run_worker(self.open_file_link(session, event), group="side-pane", exclusive=True)
+
+    async def open_file_link(self, session, event):
+        # A bare path (no line) may be a folder; images/PDFs never fit the text viewer, even with a line.
+        if event.line is None or viewer.opens_outside(event.target, is_dir=False):
+            try:
+                path, is_dir = await viewer.locate(session.host, session.name, event.target)
+            except viewer.ViewerError as error:
+                self.notify(f"{event.target}: {error}", severity="error", markup=False)
+                return
+            if not is_dir and viewer.is_image(path):
+                try:
+                    data, picture = await viewer.load_image(session.host, session.name, path)
+                except viewer.ViewerError as error:
+                    self.notify(f"{path}: {error}", severity="error", markup=False)
+                    open_url(viewer.outside_url(session.host, path))
+                    return
+                await self.close_side_panes()
+                await self.query_one("#workspace").mount(ImageViewer(session.host, path, data, picture))
+                return
+            if viewer.opens_outside(path, is_dir):
+                open_url(viewer.outside_url(session.host, path))
+                return
         try:
             path, text = await viewer.load_file(session.host, session.name, event.target)
         except viewer.ViewerError as error:
             self.notify(f"{event.target}: {error}", severity="error", markup=False)
             return
-        for old in self.query(FileViewer):
+        await self.close_side_panes()
+        await self.query_one("#workspace").mount(FileViewer(session.host, path, event.line or 1, text))
+
+    async def close_side_panes(self):
+        """One side pane at a time: the text viewer and the image pane share the slot."""
+        for old in self.query("FileViewer, ImageViewer"):
             await old.remove()
-        await self.query_one("#workspace").mount(FileViewer(session.host, path, event.line, text))
 
     async def on_file_viewer_closed(self):
-        await self.query_one(FileViewer).remove()
+        await self.close_side_panes()
         self.focus_terminal()
+
+    async def on_image_viewer_closed(self):
+        await self.close_side_panes()
+        self.focus_terminal()
+
+    def on_image_viewer_open_in_app(self, event):
+        open_url(viewer.outside_url(event.host, event.path))
 
     def on_button_pressed(self, event):
         if event.button.id == "ask-clear":
