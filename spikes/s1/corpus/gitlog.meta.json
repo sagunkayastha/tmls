@@ -1,0 +1,1 @@
+{"cmd": "git log --color=always -p -5 | cat", "cols": 120, "rows": 40, "bytes": 51578, "sha256": "fd6e87c0869b1895a04fca182e8a29aa2c68679b37a4510c3ee91d174f8d488d"}

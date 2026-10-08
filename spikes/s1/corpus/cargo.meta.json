@@ -1,0 +1,1 @@
+{"cmd": "CARGO_TARGET_DIR=/data/scratch/s1/cargo-target cargo build -p s0 --color always", "cols": 120, "rows": 40, "bytes": 11762, "sha256": "f1388620e89f04263b7bbb63b826961c84dd263b4d4ebc6f329e3d4c411dde7b"}
