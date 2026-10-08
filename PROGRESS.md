@@ -2,7 +2,7 @@
 
 Quick session log. Newest entry first.
 
-## 2026-10-07 (night) — S1 emulator spike: libghostty-vt viable, Formatter snapshot needs worker state carry ✅
+## 2026-10-07 (night) — S1 emulator spike: partially passed (Linux, Formatter path); snapshot repair → S1b
 Branch `spike/s1` (commits `0813259`..`e23eba0` + this docs commit), run on archbox (Linux only). Results doc
 `docs/spikes/S1-results.md`; PLAN §3 Emulator row, §5.2, §6 S1 row and status line updated. Plan
 `docs/superpowers/plans/2026-10-07-s1-emulator.md`, ledger `.superpowers/sdd/2026-10-07-s1-emulator/progress.md`.
@@ -19,17 +19,29 @@ Branch `spike/s1` (commits `0813259`..`e23eba0` + this docs commit), run on arch
   | Naive (split at the byte) | 1688 | 50.5 |
   | Aligned (last VT boundary + tail carry) | 2628 | 78.6 |
   | AlignedUnwrap (Aligned + `unwrap(true)`) | 2618 | 78.3 |
-  Aligned removes all 1315 `parser_state_split` cases. Recordings btop/less/nested/vim 100%, cargo 93.6, gitlog
-  86.5, unicode 86.0. The 716 Aligned mismatches: hyperlinks 321 (VT Formatter never emits OSC 8,
+  "Identical" = under the S1 comparison (normalised viewport cells + listed TermState fields + right-trimmed history
+  text). Over 2833 distinct Aligned snapshot points: 2310 identical (81.5%). At the 1670 non-boundary splits Naive
+  fails 1315; under Aligned 940 of those become identical and 375 still fail (text 201, scrollback 100, alt_screen
+  57, title 16, style 1) — Formatter gaps hidden by Naive's first-match label. Recordings btop/less/nested/vim 100%,
+  cargo 93.6, gitlog 86.5, unicode 86.0 (weak: no prompt-first recordings; `nested.bin` mostly blank, record.sh
+  quoting bug fixed, not re-recorded). The 716 Aligned mismatches, each assigned a proposed cause (first match;
+  DECSC and erased bg are hypotheses): hyperlinks 321 (VT Formatter never emits OSC 8,
   `formatter.zig:1246-1250`), trailing blank row → history row lost 126, primary screen lost behind alt 109, DECSC
   saved cursor 69, title 37, erased-cell bg 25, pending wrap 12, invisible-only 17.
-- **Portability** (run3/portability): pyte(snapshot) = libghostty restore(snapshot) on 577/592 rows (97.5%); rest =
-  pyte limits; pyte renders the snapshot better than the raw stream on 7 streams.
-- **Resize** (run3/resize): restore at the snapshot's own size, then resize (restoring into another size breaks);
-  `snapshot_unwrap` needed for reflow after restore, costs 10 wrap_pending cases at same size.
+- **Portability** (run3/portability), text only: right-trimmed visible text of one end-of-stream snapshot per stream,
+  pyte(snapshot) = libghostty restore(snapshot) on 577/592 rows (97.5%); 4/20 snapshots near-empty; pyte(snapshot)
+  vs uninterrupted D only 351/592. No colours/attributes/history/mid-stream.
+- **Resize** (run3/resize): restore at the snapshot's own size, then resize (restoring into another size breaks) —
+  4 streams, tested order only; `snapshot_unwrap` needed for resize-before-tail on wrap_pending, costs 10
+  wrap_pending cases at same size → not a blanket default.
 - **Cost:** snapshot p50 9–390 µs, p95 ≤ 982 µs (gitlog 55 KB); restore p50 31–332 µs incl. `Terminal::new`.
-- **Gate:** S1 partially passed — differences explained; libghostty-vt viable as the authoritative emulator; the
-  Formatter alone is not a sufficient snapshot (worker state carry + boundary alignment); native snapshot = follow-up.
+- **Gate:** S1 partially passed under the S1 comparison — the pinned Linux build parsed the S1 corpus and exposes the
+  capture API S1 needed; authoritative-worker operation and recovery were not exercised. The Formatter alone is not
+  a sufficient snapshot: boundary alignment measured; worker state carry designed, untested → new gate **S1b**
+  (PLAN §6). Native snapshot = follow-up.
+- **Reviews** (Codex `docs/reviews/2026-10-07-codex-sol-s1.md` + final review) folded in: results doc wording/numbers,
+  PLAN §3/§5.2/§6 (S1b row)/§10; `build-env.sh` guard, `record.sh` nested quoting + claude cwd (repo dir).
+  Fix-wave report `.superpowers/sdd/2026-10-07-s1-emulator/fixwave-report.md`.
 - **Gotchas:** libghostty-vt 0.2.2 needs **Zig 0.15.2** (README's 0.16 fails); `Options::max_scrollback` is
   **bytes**, not lines (ghostty `Screen.zig:282`); no `snapshot.h` at the pin; commit **`57151cb` does not build
   alone** (it swept in Task 4's in-progress hunks; `ddf25e0`+ build); workspace-wide cargo now needs Zig
@@ -37,10 +49,13 @@ Branch `spike/s1` (commits `0813259`..`e23eba0` + this docs commit), run on arch
 
 ### NEXT
 1. S2 GUI interaction slice on the PC (live desktop, user driving).
-2. S1 follow-up: native snapshot (newer ghostty with `snapshot.h` + own bindings) or upstream VT fixes (OSC 8,
+2. **S1b snapshot repair** (PLAN §6): atomic handoff (snapshot + offset + resize epoch + subscription), client restore
+   with replies/side effects off, continuation tests (primary-at-alt-entry, hyperlinks, DECSC, kitty stack, pending
+   wrap); re-record `nested` + prompt-first vim/less/btop; DECOM fix-up; 10k-line scrollback.
+3. S1 follow-up: native snapshot (newer ghostty with `snapshot.h` + own bindings) or upstream VT fixes (OSC 8,
    trailing blank rows, erased bg); re-run `s1 run`.
-3. Windows MSVC build of libghostty-vt (S1's Windows half).
-4. Record the Claude TUI stream after accepting folder trust (`spikes/s1/corpus/README.md`).
+4. Windows MSVC build of libghostty-vt (S1's Windows half).
+5. Record the Claude TUI stream: accept folder trust in `~/Others/tmls-rs`, then `spikes/s1/corpus/record.sh claude`.
 
 ## 2026-10-07 (eve) — S0 gate closed: kitty-hosted + real-keyboard runs on the PC ✅
 User-run measurements on the PC (pcl, CachyOS, KDE Wayland, kitty 0.49.2); results folded into

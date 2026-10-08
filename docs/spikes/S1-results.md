@@ -7,8 +7,16 @@ emulator (pyte), and does it survive a resize? No Windows build, no graphics, no
 [Not measured](#not-measured--next-steps)).
 
 Method per case: D = terminal fed the whole stream; A = terminal fed `stream[..split]`; S = `snap::snapshot(A)`;
-C = fresh terminal fed S, then `stream[effective_split..]`. Identical = normalised grids equal, no state-field
-mismatch, history text equal (definitions: `spikes/s1/README.md` "Experiment"; run6 `summary.md` header).
+C = fresh terminal fed S, then `stream[effective_split..]`.
+
+> **"Identical" in this document always means identical under the S1 comparison**, not full terminal
+> equivalence: (1) the normalised viewport cells (grapheme text, fg/bg as palette-resolved RGB, bold, italic,
+> underline on/off, inverse, strike, faint, wide, OSC 8 URI) are equal; (2) the listed `TermState` fields are equal
+> (cursor x/y/visible/style/pending_wrap, alt screen, title, pwd, kitty flags, scrollback/total rows, 13 modes);
+> (3) the history is equal as **right-trimmed text only**.
+> **Not compared:** underline style and colour, blink, invisible, overline, palette index vs RGB, hyperlink id,
+> protection, semantic-prompt marks, the DECSC saved cursor (as state), the kitty keyboard push stack (only current
+> flags), and styles/links in history. Definitions: `spikes/s1/README.md` "Experiment"; run6 `summary.md` header.
 
 ## Summary
 
@@ -16,27 +24,40 @@ mismatch, history text equal (definitions: `spikes/s1/README.md` "Experiment"; r
   Formatter's `Format::Vt` output replayed into a fresh `Terminal` ("VT-reconstruction snapshot"). Everything below
   measures that path, not a native snapshot.
 - **Split matrix (run6, 20 streams, 3344 cases per strategy): identical Naive 1688 (50.5%), Aligned 2628 (78.6%),
-  AlignedUnwrap 2618 (78.3%).** Snapping the split back to the last VT sequence boundary and carrying the tail
-  (Aligned) removes every `parser_state_split` case (Naive 1315 → 0).
-- **All 716 Aligned mismatches are attributed to a named cause** (table in the gate verdict): hyperlinks dropped by
-  the VT Formatter (321 first-match / 334 cases with a hyperlink mismatch), primary screen lost when the snapshot is
+  AlignedUnwrap 2618 (78.3%).** The 3344 Aligned cases cover 2833 distinct snapshot points (several split points
+  snap back to the same boundary); over distinct points 2310 are identical (81.5%).
+- **Boundary alignment (Aligned = snap back to the last VT sequence boundary, carry the tail):** at the 1670
+  non-boundary splits Naive fails 1315 (all first-matched as `parser_state_split`). Under Aligned, 940 of those 1315
+  become identical and **375 still fail** (first match: text 201, scrollback 100, alt_screen 57, title_pwd 16,
+  style_only 1) — Formatter gaps that Naive's first-match `parser_state_split` label hides. For the same reason the
+  Naive column undercounts every other cause.
+- **Each of the 716 Aligned mismatches is assigned a proposed cause** (first-match taxonomy, table in the gate
+  verdict, which also lists which causes are well supported and which are hypotheses): hyperlinks dropped by the VT
+  Formatter (321 first-match / 334 cases with a hyperlink mismatch), primary screen lost when the snapshot is
   taken on the alt screen (109), trailing blank screen row not emitted → one history row lost (126), DECSC saved
   cursor not emitted (69), title not emitted (37), erased-cell background lost (25), pending wrap not emitted (12),
   invisible-only styled blanks (17).
-- **Recordings fare better than the adversarial set:** btop, less, nested, vim 100% identical under Aligned;
-  cargo 93.6%, gitlog 86.5%, unicode 86.0% (run6 `summary.md`).
-- **The VT snapshot is portable:** pyte(snapshot) equals libghostty restore(snapshot) on 577/592 rows (97.5%),
-  17/20 streams; the remaining rows are pyte limits (SGR colon sub-params, `CSI = 5;1 u`, no grapheme clustering).
-  pyte renders the snapshot better than the raw stream on 7 streams.
-- **Resize:** restoring into a different size is not faithful; restoring at the snapshot's own size and resizing
-  afterwards is identical on all 4 streams tested. The default snapshot hard-breaks soft wraps; `snapshot_unwrap`
-  fixes resize-after-restore but costs 10 cases on wrap_pending at same-size restore (96.0% → 87.9%).
+- **Recordings:** btop, less, nested, vim 100% identical under Aligned; cargo 93.6%, gitlog 86.5%, unicode 86.0%
+  (run6 `summary.md`). This says little about real sessions: every recording starts the program directly (no shell
+  prompt first), so the primary screen is empty and the primary-behind-alt gap cannot show in vim/less/btop; and
+  `nested.bin` is mostly blank panes + status bars (a `record.sh` quoting bug, fixed, not re-recorded).
+- **Portability, text only:** for one end-of-stream snapshot per stream, the right-trimmed visible TEXT pyte draws
+  from the snapshot equals libghostty's restore of it on 577/592 rows (97.5%), 17/20 streams; the rest are pyte
+  limits (SGR colon sub-params, `CSI = 5;1 u`, no grapheme clustering). Not measured: colours/attributes, history,
+  mid-stream snapshots, continuation after a pyte restore. 4 of the 20 snapshots are near-empty (btop/less/vim
+  119 B, nested 134 B). Against the uninterrupted terminal D, pyte(snapshot) matches only 351/592 rows.
+- **Resize:** restoring into a different size is not faithful. Restoring at the snapshot's own size and resizing
+  afterwards is identical on the 4 streams tested, in the tested order only; resize-before-tail needs
+  `snapshot_unwrap` for wrap_pending. `snapshot_unwrap` costs 10 same-size cases on wrap_pending (96.0% → 87.9%), so
+  unwrap is not a blanket default.
 - **Cost:** snapshot p50 9–390 µs, p95 ≤ 982 µs (gitlog, 55 KB snapshot, 649 history rows); restore p50 31–332 µs
   incl. `Terminal::new` (run6, Aligned).
 - **Build gotchas:** libghostty-vt 0.2.2 needs **Zig 0.15.2** (upstream README says 0.16 — 0.16.0 fails);
   `Options::max_scrollback` is **bytes**, not lines (ghostty `Screen.zig:282`; the Rust doc says lines).
-- **Gate S1 partially passed: differences are explained; libghostty-vt is viable as the authoritative emulator; the
-  Formatter alone is NOT a sufficient snapshot — worker-side state carry + boundary alignment required; native
+- **Gate S1 partially passed under the S1 comparison: the pinned Linux build parsed the S1 corpus and exposes the
+  capture API S1 needed; authoritative-worker operation and recovery were not exercised. Each difference is assigned
+  a proposed cause, not all verified. The Formatter alone is NOT a sufficient snapshot — boundary alignment
+  (measured) plus worker-side state carry (designed, untested) are required; that repair is gate S1b. Native
   snapshot path = follow-up.**
 
 ## Setup
@@ -53,15 +74,15 @@ mismatch, history text equal (definitions: `spikes/s1/README.md` "Experiment"; r
 | snapshot fix-up | the Formatter emits CUP inside the screen section, then DECSTBM/DECSLRM and the tab-stop rebuild (`CSI 3g`, `CSI nG ESC H`) move the cursor; `snap::snapshot` appends a final absolute CUP (skipped under DECOM, where CUP is region-relative). `snap::snapshot_raw` = untouched Formatter output (`spikes/s1/src/snap.rs:26-45`) |
 | harness | `spikes/s1` on branch `spike/s1`, commits `0813259`..`e23eba0`; run6 built at `e23eba0` (release). Tests: `cargo test -p s1` 30 passed, 2 ignored at `57151cb`'s working tree (task-5 report) |
 | capture/compare | per cell: grapheme text, fg/bg (palette-resolved RGB), bold, italic, underline on/off, inverse, strike, faint, wide, OSC 8 URI (`GridRef::hyperlink_uri`). State: cursor x/y/visible/style/pending_wrap, alt screen, title, pwd, kitty flags, scrollback/total rows, 13 modes. History = Formatter Plain (unwrap off) first `scrollback_rows` lines, right-trimmed. Blank cells `""`/`" "` with no attributes normalised (`grid::normalize`) |
-| not compared | underline style and colour, blink, invisible, overline, palette index vs equal RGB, hyperlink id, protection, semantic-prompt marks, DECSC saved cursor (as state), kitty push stack (run6 `summary.md` header) |
+| not compared | underline style and colour, blink, invisible, overline, palette index vs equal RGB, hyperlink id, protection, semantic-prompt marks, DECSC saved cursor (as state), kitty push stack, styles/links in history (run6 `summary.md` header) |
 | strategies | **Naive**: S taken at the exact split byte. **Aligned**: split snapped back to `splitter::last_boundary_at_or_before` (a parser mirroring ghostty `parse_table.zig`: BEL ends only OSC; DCS/APC/PM/SOS end at ST; ESC aborts CSI/nF; CAN/SUB → ground); the tail from that boundary is fed to C. **AlignedUnwrap**: Aligned with Formatter `unwrap(true)` (`snap::snapshot_unwrap`) |
-| sizes | recordings at their recorded 120x40; generated streams 80x24, except `wrap_pending` 120x24 (its generator assumes 120 columns); `max_scrollback 2000` (= bytes, rounded up to the PageList minimum; gitlog still kept 649 history rows) |
+| sizes | recordings at their recorded 120x40; generated streams 80x24, except `wrap_pending` 120x24 (its generator assumes 120 columns); `max_scrollback 2000` (= bytes, rounded up to the PageList minimum; gitlog still kept 649 history rows; whether any stream was pruned is not measured) |
 | split points | per stream ≤ 400: 0 and len, all ±2 windows around `?1049h/l` and `ESC]8;` anchors, 64 random boundaries, 64 random non-boundaries, then wide-char anchors in the remaining slots (seed 1; `experiment::split_plan`) |
 
 ## Corpus
 
 7 recordings (tmux `pipe-pane` of the program's PTY on a private `-L s1rec` server, `TERM=xterm-256color`; method
-in `spikes/s1/corpus/README.md`) + 13 generated streams (`spikes/s1/src/gen.rs`, deterministic, `s1 gen`). The
+in `spikes/s1/corpus/README.md`; every recording starts the program directly, with no shell prompt first) + 13 generated streams (`spikes/s1/src/gen.rs`, deterministic, `s1 gen`). The
 recorded `.bin` files in the repo (`spikes/s1/corpus/`) and in `/data/scratch/s1/corpus/` have identical sha256.
 `claude` was not recorded (Claude Code's folder-trust dialog; 1.3 KB partial `claude.bin` = dialog only, skipped).
 
@@ -72,13 +93,13 @@ recorded `.bin` files in the repo (`spikes/s1/corpus/`) and in `/data/scratch/s1
 | less | recorded | 120x40 | 20309 | dbad0a394b9b | `less docs/spikes/S0-results.md`, `G g /Result n q` |
 | cargo | recorded | 120x40 | 11762 | f1388620e89f | `cargo build -p s0 --color always`, full build (OSC 8 links) |
 | gitlog | recorded | 120x40 | 51578 | fd6e87c0869b | `git log --color=always -p -5 \| cat` |
-| nested | recorded | 120x40 | 4137 | 87dffd6724bb | inner tmux (`-L s1b`), 2 panes, ls/git |
+| nested | recorded | 120x40 | 4137 | 87dffd6724bb | inner tmux (`-L s1b`); **as recorded mostly blank panes + inner status bars** (a quoting bug in `record.sh` mangled the inner commands; fixed, not re-recorded) |
 | unicode | recorded | 120x40 | 13509 | 2ed3e3e6bf47 | `unicode_gen.py`: `\r` progress, CJK, ZWJ emoji, combining, 256/truecolor, curly underline, OSC 8, OSC 0, bracketed paste, 1049 |
 | sgr_matrix | gen | 80x24 | 8356 | 4179f45f785c | every SGR attribute on/off, 16/256/truecolor, underline styles + colour; ends with a non-default pen |
 | utf8_wide_combining | gen | 80x24 | 3564 | d9140d3c6b0d | CJK, Hangul, ZWJ emoji, flags, skin tones, VS16, combining; wide char at the last column |
 | alt_screen_cycle | gen | 80x24 | 1712 | a4e36e524e0b | primary ↔ alt via 1049/1047/47, cycled 3×; ends on primary |
 | scroll_region | gen | 80x24 | 1934 | 2c047219c88c | DECSTBM scrolling (LF, RI, SU, SD), DECLRMM + DECSLRM; region left set |
-| scrollback_200 | gen | 80x24 | 14950 | b0b2422d04ab | 300 numbered lines (276 go to history at 24 rows) |
+| scrollback_200 | gen | 80x24 | 14950 | b0b2422d04ab | 300 numbered lines (277 go to history at 24 rows) |
 | modes_mix | gen | 80x24 | 1320 | 4e51c73e9da3 | DECCKM, DECAWM, DECTCEM, 2004, mouse 1000/1002/1006, 1004, 2026; mixed end state |
 | kitty_kbd | gen | 80x24 | 1208 | dc3d40e8cbc1 | kitty keyboard push, set, modify, pop, query; ends pushed with flags 5 |
 | osc_title_pwd_hyperlink | gen | 80x24 | 1902 | 6a0fd726bf4b | OSC 0/2 titles, OSC 7 pwd, OSC 8 (with/without id), OSC 52; BEL and ST; ends with a link open |
@@ -104,6 +125,20 @@ Non-boundary split points: 762 inside CSI, 176 inside strings, 430 mid-UTF-8, 30
 | Naive | 3344 | 1688 | 50.5 |
 | Aligned | 3344 | 2628 | 78.6 |
 | AlignedUnwrap | 3344 | 2618 | 78.3 |
+
+Distinct snapshot points: the 3344 Aligned cases snap to 2833 distinct (stream, boundary) offsets; 2310 of those
+are identical (81.5%). The 78.6% weights a boundary by how many split points snapped to it.
+
+Boundary alignment at the 1670 non-boundary splits (counted from `cases.jsonl`, same split per row):
+
+| Naive | Aligned | cases |
+|---|---|---|
+| fails (`parser_state_split`) | identical | 940 |
+| fails (`parser_state_split`) | fails: text 201, scrollback 100, alt_screen 57, title_pwd 16, style_only 1 | **375** |
+| identical | identical | 355 |
+
+So Aligned does not "remove 1315 failures": it removes the parser-state failure; the 375 that remain are Formatter
+gaps that Naive's first-match label hid. The Naive column below undercounts every other class for the same reason.
 
 ### Per stream (identical %)
 
@@ -131,13 +166,15 @@ Non-boundary split points: 762 inside CSI, 176 inside strings, 430 mid-UTF-8, 30
 | resize_marker | 80x24 | 66 | 38 | 97.0 | 97.0 | 97.0 | scrollback_rows (2) |
 
 Source: `/data/scratch/s1/results/2026-10-07-s1-run6/summary.md` (also mean cell mismatches, snapshot sizes, timings).
+The 100% recordings are weak evidence: vim/less/btop start with an empty primary screen (no prompt first), and
+`nested` is mostly blank panes (see Corpus).
 
 ### Taxonomy (first match, priority order as listed)
 
 | class | Naive | Aligned | AlignedUnwrap | example (run6 `taxonomy.md`) |
 |---|---|---|---|---|
 | (identical) | 1688 | 2628 | 2618 | |
-| parser_state_split | 1315 | 0 | 0 | btop @ 1 [Naive]: cell (0,0): D="" C="" bg=(0,0,0) |
+| parser_state_split | 1315 | 0 | 0 | btop @ 1 [Naive]: cell (0,0): D="" C="" bg=(0,0,0) — first match hides other causes; 375 of these still fail under Aligned (above) |
 | alt_screen | 52 | 109 | 109 | unicode @ 8717: snapshot taken on alt screen, tail leaves it |
 | trailing_row_drop | 7 | 7 | 6 | gitlog @ 51578: C = D shifted +1 row; scrollback_rows D=649 C=648 |
 | scrollback | 22 | 122 | 123 | cargo @ 9613 [Aligned]: scrollback_rows D=8 C=7 |
@@ -178,14 +215,15 @@ Aligned non-identical cases by stream × first-match class (counted from run6 `c
 | kitty_kbd | scrollback 60, trailing_row_drop 1 | scrollback 61 | trailing blank row |
 | modes_mix | scrollback 23, trailing_row_drop 1 | scrollback 24 | trailing blank row |
 | gitlog | scrollback 19, trailing_row_drop 1 | scrollback 20 | trailing blank row |
-| utf8_wide_combining | scrollback 7, trailing_row_drop 1, text 2 | scrollback 8 | 4 trailing blank row; 3 history lines lose a wide char / regional indicator at row end + 2 wide `ｗ` at col 78 lost (pending wrap, task-4 attribution) |
+| utf8_wide_combining | scrollback 7, trailing_row_drop 1, text 2 | scrollback 8 | 5 trailing blank row (splits 3525, 3537, 3549, 3557, 3564); 3 history lines lose a wide char / regional indicator at row end + 2 wide `ｗ` at col 78 lost (pending wrap, task-4 attribution) |
 | scrollback_200 | scrollback 2, trailing_row_drop 1 | scrollback 3 | trailing blank row |
 | resize_marker | scrollback 1, trailing_row_drop 1 | scrollback 2 | trailing blank row |
 | wrap_pending | text 4, cursor 1 | – | pending wrap not emitted: next char overwrites col 119 |
 | scroll_region | text 1 | – | pending wrap (task-4 attribution) |
 
 Trailing blank row evidence: of the 129 Aligned `scrollback` + `trailing_row_drop` cases, 126 had A's viewport ending
-in ≥ 1 blank row with history present, and in all 129 C's history = D's minus one line (`scrollback_text_equal`
+in ≥ 1 blank row with history present (the 3 outside are utf8_wide_combining @ 507, 1379, 1553: A has no history
+yet; they are the "history line loses a wide char at row end" cases), and in all 129 C's history = D's minus one line (`scrollback_text_equal`
 false). At a mid-stream split the viewport recovers but one history row is lost for good; at split = len the
 viewport is shifted +1 row.
 
@@ -241,6 +279,10 @@ Not measured: 10k-line scrollback (largest history here: 649 rows).
 snapshot = `snap::snapshot(D)` at len; compared line by line as right-trimmed Plain text; pyte 0.8.2 via
 `spikes/s1/tools/pyte_restore.py` (tmls venv, `-I`). Source: `/data/scratch/s1/results/2026-10-07-s1-run3/portability/summary.md`.
 
+Scope: right-trimmed visible TEXT of **one end-of-stream snapshot per stream**. No colours, attributes, history,
+mid-stream snapshots, or continuation after a pyte restore. 4 of the 20 snapshots are near-empty (btop, less, vim
+119 B; nested 134 B: the program has exited), so their 100% rows say little.
+
 | comparison | lines equal (of 592) | % | streams fully equal (of 20) | cursor match |
 |---|---|---|---|---|
 | ghostty restore(S) vs D (Formatter loss) | 352 | 59.5 | 12 | – |
@@ -254,7 +296,7 @@ snapshot = `snap::snapshot(D)` at len; compared line by line as right-trimmed Pl
 | pyte limit: SGR colon sub-params (`CSI 4:2 m`) drawn as text | sgr_matrix | 23/24 |
 | pyte limit: kitty `CSI = 5;1 u` drawn as `5;1u` | kitty_kbd | 23/24 |
 | pyte limit: no grapheme clustering (ZWJ, flags, skin tones, VS16) | utf8_wide_combining | 11/24 |
-| snapshot more portable than the raw stream | less, vim, alt_screen_cycle, scroll_region, wrap_pending, dcs_apc_noise, kitty_kbd | pyte has no alt screen, draws DCS/APC payloads as text (210 ignored in dcs_apc_noise), crashes on private CSI (`CSI ? 6 n`, wrapped by the helper) |
+| pyte draws the snapshot's text better than the raw stream | less, vim (both near-empty snapshots), alt_screen_cycle, scroll_region, wrap_pending, dcs_apc_noise, kitty_kbd | pyte has no alt screen, draws DCS/APC payloads as text (210 ignored in dcs_apc_noise), crashes on private CSI (`CSI ? 6 n`, wrapped by the helper) |
 | VT subset used by the snapshot | all | SGR, CUP, `CSI n G`, HTS, TBC, kitty `CSI = n;m u`, SGR `4:n` (+ OSC 4 palette, OSC 7, DEC modes) |
 
 ## Resize at split — run3
@@ -274,23 +316,24 @@ Source: `/data/scratch/s1/results/2026-10-07-s1-run3/resize/summary.md`.
 | finding | detail |
 |---|---|
 | restoring into a different size is not faithful | absolute CUP/regions for the original size: scrollback_200's final CUP to row 24 lands 6 rows above the bottom of 30 → the tail overwrites 6 lines |
-| restore at the snapshot's own size, then resize | identical on all 4 streams with unwrap; vim/less/scrollback_200 also without |
+| restore at the snapshot's own size, then resize | identical on the 4 tested streams in the tested orders only: with unwrap for resize-before-tail; vim/less/scrollback_200 also without |
 | default snapshot (`unwrap(false)`) hard-breaks soft wraps | every row ends in CRLF → a later resize cannot reflow joined lines |
-| `snapshot_unwrap(true)` fixes reflow-after-restore | but at same-size restore costs 10 wrap_pending cases (96.0% → 87.9%, run6) → use unwrap only when a resize is expected, or keep both |
+| `snapshot_unwrap(true)` fixes reflow-after-restore | needed for wrap_pending's resize-before-tail; but at same-size restore costs 10 wrap_pending cases (96.0% → 87.9%, run6) → unwrap is not a blanket default: use it only when a resize is expected, or keep both |
 | D itself is not resize-round-trip lossless mid-stream | wrap_pending: content written while narrow stays narrow (libghostty reflow, not a snapshot issue) |
-| vim/less unaffected by alt-screen loss | split on alt screen, empty primary, tail repaints |
+| vim/less unaffected by alt-screen loss | split on alt screen, but the primary was empty anyway (no shell prompt before the program); a prompt-first recording is needed to see the gap |
 
 ## Gate verdict vs PLAN §6 S1
 
-PLAN §6 S1 pass gate: "Identical results; differences explained." Results are **not** identical (Aligned 78.6%);
-every Aligned difference has a named cause. Categories: **(a)** fixed by the worker protocol (snapshot at a VT
+PLAN §6 S1 pass gate: "Identical results; differences explained." Results are **not** identical under the S1 comparison
+(Aligned 78.6%; 81.5% over distinct snapshot points); each Aligned difference is **assigned a proposed cause**.
+Categories: **(a)** fixed by the worker protocol (snapshot at a VT
 sequence boundary, carry the tail); **(b)** recoverable by the worker tracking state outside the Formatter and
 emitting it with the snapshot; **(c)** Formatter limitation needing an upstream patch or a newer ghostty with
 `snapshot.h` + own bindings. (b) and (c) fixes are **not built or measured** in S1.
 
 | difference class | Naive | Aligned (first-match) | groups (Aligned) | category | what fixes it |
 |---|---|---|---|---|---|
-| parser state at the split (inside CSI/string/UTF-8/ESC) | 1315 | 0 | – | **(a)** | measured: Aligned removes all 1315 |
+| parser state at the split (inside CSI/string/UTF-8/ESC) | 1315 | 0 | – | **(a)** | measured: at the 1670 non-boundary splits, 940 of Naive's 1315 failures become identical under Aligned; 375 still fail on the gaps below |
 | hyperlinks (OSC 8) in content not emitted in VT | – | 321 (text 319 + style_only 2) | 334 | **(c)**, (b) workaround | upstream VT emission; or worker re-emits OSC 8 per cell run from `GridRef::hyperlink_uri` (the harness reads URIs this way) — untested |
 | primary screen lost when snapshot taken on alt screen | 52 | 109 | – | **(b)** | worker takes a primary-screen snapshot at alt-screen entry (`?1049h`/`1047h`/`47h` boundary) and replays it before the alt content |
 | trailing blank screen row(s) not emitted → history row lost / viewport shift | 29 | 126 (scrollback 119 + trailing_row_drop 7) | 153 scrollback | **(c)** | upstream; a worker-side pad of the dropped blank rows is untested |
@@ -307,20 +350,38 @@ emitting it with the snapshot; **(c)** Formatter limitation needing an upstream 
 
 Sum of the Aligned first-match column: 321 + 109 + 126 + 69 + 37 + 25 + 12 + 17 = 716 = 3344 − 2628.
 
-**Gate S1 partially passed: differences are explained; libghostty-vt is viable as the authoritative emulator; the
-Formatter alone is NOT a sufficient snapshot — worker-side state carry + boundary alignment required; native
-snapshot path = follow-up.** Windows MSVC build (part of the S1 question) is pending.
+**Attribution caveat.** The 716 are a first-match taxonomy with one proposed cause per case, not 716 verified causes.
+
+| cause | status | evidence |
+|---|---|---|
+| hyperlinks (OSC 8) not emitted | well supported | 334 cases in the hyperlink group; Formatter source comment |
+| title not emitted | well supported | `title` state field D≠C |
+| pending wrap not emitted | well supported | direct before-tail evidence (A pending, C not; next char overwrites col 119) |
+| primary screen lost behind alt | well supported | snapshot taken on alt; `alt_screen_split_roundtrip` test |
+| trailing blank row → history row lost | well supported | 126 of 129 fit (A ends in blank rows with history; history = D minus one line); 3 outside |
+| DECSC saved cursor + pen not emitted | **hypothesis** until repaired and rerun | tail's `ESC 8` pattern; not isolated |
+| erased-cell background lost | **hypothesis** until repaired and rerun | visible bg loss; mechanism not isolated |
+| invisible-only (17) | explained, invisible | blank cell gains fg |
+
+Priority masking: a case gets only its first class (`alt_screen` wins over other fields), so a case first-matched
+as `alt_screen` may also carry title, hyperlink or history differences (`secondary_classes` lists them).
+
+**Gate S1 partially passed under the S1 comparison.** The pinned Linux build parsed the S1 corpus and exposes the
+capture API S1 needed; authoritative-worker operation and recovery were not exercised. The Formatter alone is NOT a
+sufficient snapshot: boundary alignment is measured; worker-side state carry is designed, not built or tested
+(gate S1b, below). Native snapshot path = follow-up. Windows MSVC build and a recorded Claude session (part of the S1
+question) are pending.
 
 ## Consequences for PLAN §3 / §5.2
 
 | item | consequence |
 |---|---|
-| §3 Emulator core | libghostty-vt 0.2.2 stays; build needs Zig 0.15.2 (not 0.16); `max_scrollback` must be sized in bytes |
+| §3 Emulator core | libghostty-vt 0.2.2 stays **provisional**: the pinned Linux build parsed the corpus and exposes the capture API S1 needed; worker operation/recovery not exercised. Build needs Zig 0.15.2 (not 0.16); `max_scrollback` must be sized in bytes. S1b snapshot-repair gate before attach is frozen |
 | §5.2 snapshot point | the worker snapshots only at a VT sequence boundary (its own splitter mirroring ghostty `parse_table.zig`) and sends the bytes after that boundary as the tail |
 | §5.2 snapshot size | restore at the session's size at offset S; resizes come after in the stream (resize epoch) |
-| §5.2 state carry | worker emits, beside the Formatter output: title, pwd (without NUL), kitty keyboard stack, pending-wrap, DECSC saved cursor, hyperlinks (until VT emission exists), and a primary-screen snapshot taken on alt-screen entry |
+| §5.2 state carry (DESIGN, untested) | worker emits, beside the Formatter output: title, pwd (without NUL), kitty keyboard stack, pending-wrap, DECSC saved cursor, hyperlinks (until VT emission exists), and a primary-screen snapshot taken on alt-screen entry |
 | §5.2 "native snapshot" | not available at a887df42; needs a newer ghostty with `snapshot.h` + own bindings (S1 follow-up). Until then the same-version desktop also uses the VT reconstruction |
-| §5.2 portable format | the VT snapshot is the portable format: pyte renders it as well as libghostty does (97.5% rows), better than the raw stream |
+| §5.2 portable format | measured only as text: for one end-of-stream snapshot per stream, pyte's right-trimmed visible text equals libghostty's restore on 577/592 rows (97.5%); 4 of 20 snapshots near-empty; vs uninterrupted D only 351/592; no colours/attributes, history, mid-stream snapshots or continuation. Portable attach (web/CLI) = text-level fidelity until measured further |
 | §10 risk | "no snapshot compatibility guarantee" is moot for now (no native snapshot); the risk moves to Formatter gaps (c) |
 
 ## Not measured / next steps
@@ -328,22 +389,48 @@ snapshot path = follow-up.** Windows MSVC build (part of the S1 question) is pen
 Not measured:
 - **Windows MSVC build** of libghostty-vt (part of the S1 question in PLAN §6).
 - Graphics / kitty images (`kitty_graphics.h` exists; not exercised).
-- **Recorded Claude TUI**: blocked at the folder-trust dialog. To record: `cd ~/Others/tmls-rs && claude`, accept
-  "Yes, I trust this folder", exit, then `spikes/s1/corpus/record.sh claude` (`spikes/s1/corpus/README.md`).
+- **Recorded Claude TUI**: blocked at the folder-trust dialog. `record.sh` runs claude in the repo dir. To record:
+  accept trust once in `~/Others/tmls-rs` (`cd ~/Others/tmls-rs && claude`, "Yes, I trust this folder", exit), then
+  `spikes/s1/corpus/record.sh claude` (`spikes/s1/corpus/README.md`).
+- Prompt-first recordings (a shell prompt on the primary screen before vim/less/btop) and a working `nested`
+  recording (the measured one is mostly blank).
 - Long-scrollback performance (10k lines; largest here 649 rows) and snapshot cost under a byte-sized
-  `max_scrollback`; whether any stream was pruned by the 2000-byte limit (C and D share it).
+  `max_scrollback`; whether any stream was pruned by the 2000-byte limit (C and D share it). Not measured:
+  `spikes/s1/README.md`'s "the minimum exceeds every stream" is an inference from the PageList minimum.
 - Any of the (b) worker-side fixes or a worker-side trailing-row pad — designed above, not built.
 - CUP fix-up under DECOM; modes emitted before content changing how content replays (insert/origin/`?7l`).
 - Cell attributes outside the compare set (underline style/colour, blink, invisible, overline, palette index,
-  hyperlink id, protection, semantic prompts).
+  hyperlink id, protection, semantic prompts), saved cursor, kitty push stack, styles/links in history.
+- Authoritative-worker operation and recovery with libghostty-vt (S1 drove the emulator in a test harness only).
 - `snapshot_unwrap` beyond the 4 resize streams + the run6 matrix.
 
 Next steps:
 1. S2 GUI interaction slice on the PC.
-2. S1 follow-up: native snapshot — newer ghostty with `snapshot.h` + own bindings; or upstream VT hyperlink /
+2. **S1b snapshot repair** (gate in PLAN §6; items in "Open (from reviews)" below).
+3. S1 follow-up: native snapshot — newer ghostty with `snapshot.h` + own bindings; or upstream VT hyperlink /
    trailing-row / erased-bg fixes; re-run `s1 run` against it.
-3. Windows MSVC build of the pinned crate.
-4. Record the Claude TUI corpus stream once trust is accepted; re-run run6's command.
+4. Windows MSVC build of the pinned crate.
+5. Record the Claude TUI corpus stream once trust is accepted; re-run run6's command.
+
+## Open (from reviews)
+
+From `docs/reviews/2026-10-07-codex-sol-s1.md` and the final review. These form the **S1b snapshot-repair gate**
+(PLAN §6) before attach/reconnect (§5.2) is frozen.
+
+- **Atomic handoff:** a snapshot is sent as one unit of snapshot bytes + output offset S + resize epoch + replay
+  subscription from S; output events are retained until delivered; the worker encodes without holding the emulator
+  lock.
+- **Client restore with PTY replies and side effects disabled:** the client emulator never answers queries
+  (the worker is the sole reply authority); bell / OSC 52 / notifications in the snapshot are not re-fired.
+- **Continuation tests** (snapshot, restore, then feed a tail that depends on the state) for each carried item:
+  primary screen at alt-screen entry, hyperlink reconstruction, DECSC saved cursor + pen, kitty keyboard push stack,
+  pending wrap.
+- **Re-recordings:** `nested` (record.sh fixed) and prompt-first vim/less/btop, identical under Aligned.
+- **Claude TUI recording** (accept trust in `~/Others/tmls-rs`, then `record.sh claude`).
+- **Windows MSVC** build of the pinned crate.
+- **DECOM:** the final-CUP fix-up is skipped under origin mode; fix and test.
+- **10k-line scrollback:** snapshot/restore cost and fidelity with a byte-sized `max_scrollback` large enough to
+  hold it.
 
 ## Run inventory
 
