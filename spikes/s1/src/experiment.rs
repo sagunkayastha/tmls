@@ -32,11 +32,21 @@ pub const MAX_SPLITS: usize = 400;
 pub enum Strategy {
     Naive,
     Aligned,
+    /// Aligned, but the snapshot uses the Formatter's `unwrap` option (soft wraps preserved).
+    AlignedUnwrap,
+}
+
+impl Strategy {
+    pub const ALL: [Strategy; 3] = [Strategy::Naive, Strategy::Aligned, Strategy::AlignedUnwrap];
 }
 
 impl fmt::Display for Strategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self { Strategy::Naive => "Naive", Strategy::Aligned => "Aligned" })
+        f.write_str(match self {
+            Strategy::Naive => "Naive",
+            Strategy::Aligned => "Aligned",
+            Strategy::AlignedUnwrap => "AlignedUnwrap",
+        })
     }
 }
 
@@ -165,12 +175,16 @@ pub fn run_case_with(
     let split_is_boundary = bounds.binary_search(&p).is_ok();
     let q = match case.strategy {
         Strategy::Naive => p,
-        Strategy::Aligned => splitter::last_boundary_at_or_before(bounds, p),
+        Strategy::Aligned | Strategy::AlignedUnwrap => splitter::last_boundary_at_or_before(bounds, p),
     };
     let mut a = new_term(cols, rows, scrollback);
     a.vt_write(&bytes[..q]);
     let a_alt_screen = a.active_screen().expect("active_screen") == Screen::Alternate;
-    let (s, snap_d) = snap::timed_snapshot(&a, SnapOpts { palette: false });
+    let (s, snap_d) = {
+        let t0 = std::time::Instant::now();
+        let s = snap::snapshot_unwrap(&a, SnapOpts { palette: false }, case.strategy == Strategy::AlignedUnwrap);
+        (s, t0.elapsed())
+    };
     let (mut c, rest_d) = snap::timed_restore(cols, rows, scrollback as usize, &s);
     let ca = capture_norm(&mut a);
     let a_hist = history_text(&a);
@@ -572,11 +586,20 @@ mod tests {
         let b = b"ab\x1b[31mcd";
         let n = run_case(b, &case(3, Strategy::Naive), 20, 3, 100);
         let a = run_case(b, &case(3, Strategy::Aligned), 20, 3, 100);
+        let au = run_case(b, &case(3, Strategy::AlignedUnwrap), 20, 3, 100);
         assert!(a.identical, "aligned: {a:?}");
+        assert!(au.identical, "aligned_unwrap: {au:?}");
         assert_eq!(a.effective_split, 2);
         // Recorded outcome: the fresh parser in C sees "[31mcd" as text.
         assert!(!n.identical, "naive: {n:?}");
         assert_eq!(n.class.as_deref(), Some("parser_state_split"), "naive: {n:?}");
+    }
+
+    #[test]
+    fn aligned_unwrap_identical_on_plain_text() {
+        let b = b"hello\r\nworld";
+        let r = run_case(b, &case(7, Strategy::AlignedUnwrap), 20, 3, 100);
+        assert!(r.identical, "{r:?}");
     }
 
     #[test]

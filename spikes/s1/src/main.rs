@@ -188,7 +188,7 @@ fn main() -> anyhow::Result<()> {
                 let splits = plan.points.clone();
                 let d = experiment::reference(bytes, *c, *r, scrollback);
                 for &p in &splits {
-                    for st in [Strategy::Naive, Strategy::Aligned] {
+                    for st in Strategy::ALL {
                         let case = Case { stream: name.clone(), split: p, strategy: st };
                         let res = experiment::run_case_with(bytes, &bounds, &d, &case, *c, *r, scrollback);
                         let rec = Record { stream: name.clone(), source: source.clone(), cols: *c, rows: *r,

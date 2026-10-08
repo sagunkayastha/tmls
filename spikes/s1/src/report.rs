@@ -80,7 +80,7 @@ pub fn summary_md(header: &str, streams: &[StreamInfo], recs: &[Record]) -> Stri
     let _ = writeln!(out, "| stream | strategy | cases | identical % | mean cells (non-id) | top-3 state fields | snap B p50 | snap B max | snap µs p50/p95 | restore µs p50/p95 |\n|---|---|---|---|---|---|---|---|---|---|");
     let mut groups: Vec<(String, Strategy)> = Vec::new();
     for s in streams {
-        for st in [Strategy::Naive, Strategy::Aligned] { groups.push((s.name.clone(), st)); }
+        for st in Strategy::ALL { groups.push((s.name.clone(), st)); }
     }
     let mut totals: BTreeMap<Strategy, (usize, usize)> = BTreeMap::new();
     for (name, st) in groups {
@@ -132,27 +132,28 @@ pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     }
     let total = |st: Strategy| recs.iter().filter(|r| r.strategy == st).count();
     let ident = |st: Strategy| recs.iter().filter(|r| r.strategy == st && r.result.identical).count();
-    let _ = writeln!(out, "| class | Naive | Aligned | example (stream @ split [strategy]: first mismatch) |\n|---|---|---|---|");
-    let _ = writeln!(out, "| (identical) | {} | {} | |", ident(Strategy::Naive), ident(Strategy::Aligned));
+    let _ = writeln!(out, "| class | Naive | Aligned | AlignedUnwrap | example (stream @ split [strategy]: first mismatch) |\n|---|---|---|---|---|");
+    let _ = writeln!(out, "| (identical) | {} | {} | {} | |", ident(Strategy::Naive), ident(Strategy::Aligned), ident(Strategy::AlignedUnwrap));
     for c in CLASSES {
         let n = counts.get(&(*c, Strategy::Naive)).copied().unwrap_or(0);
         let a = counts.get(&(*c, Strategy::Aligned)).copied().unwrap_or(0);
-        let ex = example.get(&(*c, Strategy::Aligned)).or_else(|| example.get(&(*c, Strategy::Naive)));
+        let u = counts.get(&(*c, Strategy::AlignedUnwrap)).copied().unwrap_or(0);
+        let ex = example.get(&(*c, Strategy::Aligned)).or_else(|| example.get(&(*c, Strategy::Naive))).or_else(|| example.get(&(*c, Strategy::AlignedUnwrap)));
         let ex = ex.map_or(String::new(), |r| format!("{} @ {} [{}]: {}", r.stream, r.split, r.strategy,
             trunc(r.result.class_detail.as_deref().unwrap_or(""), 160)));
-        let _ = writeln!(out, "| {c} | {n} | {a} | {ex} |");
+        let _ = writeln!(out, "| {c} | {n} | {a} | {u} | {ex} |");
     }
-    let _ = writeln!(out, "| **total** | {} | {} | |", total(Strategy::Naive), total(Strategy::Aligned));
+    let _ = writeln!(out, "| **total** | {} | {} | {} | |", total(Strategy::Naive), total(Strategy::Aligned), total(Strategy::AlignedUnwrap));
 
     let _ = writeln!(out, "\n## All mismatching groups\n\nNon-identical cases with each mismatch group present (`secondary_classes`; a case counts in every group it has, so columns do not sum to the totals).\n");
-    let _ = writeln!(out, "| group | Naive | Aligned |\n|---|---|---|");
+    let _ = writeln!(out, "| group | Naive | Aligned | AlignedUnwrap |\n|---|---|---|---|");
     for gname in GROUPS {
         let n = |st: Strategy| recs.iter().filter(|r| r.strategy == st && !r.result.identical && r.result.secondary_classes.iter().any(|x| x == gname)).count();
-        let _ = writeln!(out, "| {gname} | {} | {} |", n(Strategy::Naive), n(Strategy::Aligned));
+        let _ = writeln!(out, "| {gname} | {} | {} | {} |", n(Strategy::Naive), n(Strategy::Aligned), n(Strategy::AlignedUnwrap));
     }
     let _ = writeln!(out, "\n## Streams per class\n\n| class | strategy | streams (cases) |\n|---|---|---|");
     for c in CLASSES {
-        for st in [Strategy::Naive, Strategy::Aligned] {
+        for st in Strategy::ALL {
             if let Some(m) = streams.get(&(*c, st)) {
                 let mut v: Vec<(&&str, &usize)> = m.iter().collect();
                 v.sort_by(|a, b| b.1.cmp(a.1));
@@ -167,7 +168,7 @@ pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     let _ = writeln!(out, "- *invisible-only* = every cell mismatch is blank-equivalent (`\"\"` vs `\" \"` under the same bg, or fg/bold/italic/faint on a blank) and there is no state/history mismatch.\n");
     let _ = writeln!(out, "| class | strategy | cases | snap lossy | A trailing blank (+history) | invisible-only |\n|---|---|---|---|---|---|");
     for c in CLASSES {
-        for st in [Strategy::Naive, Strategy::Aligned] {
+        for st in Strategy::ALL {
             let g: Vec<&Record> = recs.iter().filter(|r| r.strategy == st && r.result.class.as_deref() == Some(*c)).collect();
             if g.is_empty() { continue; }
             let lossy = g.iter().filter(|r| !r.result.snap_faithful).count();
@@ -179,7 +180,7 @@ pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     }
     let _ = writeln!(out, "\n## Examples per class x strategy\n");
     for c in CLASSES {
-        for st in [Strategy::Naive, Strategy::Aligned] {
+        for st in Strategy::ALL {
             if let Some(r) = example.get(&(*c, st)) {
                 let _ = writeln!(out, "- **{c} / {st}**: `{}` @ {} (effective {}, boundary={}): {}{}", r.stream, r.split,
                     r.result.effective_split, r.result.split_is_boundary, trunc(r.result.class_detail.as_deref().unwrap_or(""), 300),
