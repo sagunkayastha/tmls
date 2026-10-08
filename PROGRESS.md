@@ -2,6 +2,12 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-08 — S1b round 2: corpus gate closed
+
+Branch `spike/s1b-r2`, Linux archbox. ECH overlays erased empty cells with their background and skips wide-cell spacers; the same corrected snapshot is carried behind alternate-screen entries. All 73 round-1 residuals closed, including the three continuation-only mode-47 cases. AlignedCarry is **3901/3901** identical under the unchanged S1 comparison; no upstream issue remains to file. `cases.jsonl` adds post-tail mismatch, alt-entry mode, and diagnostic row-wrap flag equality (3873/3901 equal).
+
+Unwrapped emission plus row-flag fallback improves simulated handoff to **480/480 plain and 477/480 resized** across 24 streams, 20 seeded splits each. The three remaining resize text mismatches are `wrap_pending` splits 679/681/688. A secondary-DA query was added to the short replica query filter; final client PTY reply attempts are zero. Production §5.2 remains provisional because the three resize cases, real transport/atomic subscription, and phase-aware side-effect suppression remain open. Results: `/data/scratch/s1/results/2026-10-08-s1b-r2-run5/` and `/data/scratch/s1/results/2026-10-08-s1b-r2-handoff-verified/`. See `docs/spikes/S1b-results.md` and `docs/spikes/S1b-residuals.md`.
+
 ## 2026-10-08 — S1b snapshot repair measured; gate remains open
 
 Branch `spike/s1b-snapshot-repair`, Linux archbox. Results: `docs/spikes/S1b-results.md`; residuals and upstream issue drafts: `docs/spikes/S1b-residuals.md`. The unchanged S1 comparison reports AlignedCarry 3271/3344 (97.8%) on the original corpus, 3828/3901 (98.1%) with four new recordings; all 557 prompt-first/nested2 splits are identical. Naive/Aligned/AlignedUnwrap original-corpus totals remain 1688/2628/2618. The 73 residuals are generated-stream styled/erased blank cells; three pass the immediate snapshot comparison and diverge after continuation, so their cause remains open. There are three ≤200-byte ignored repro tests and two proposed issue drafts; no issue was filed.

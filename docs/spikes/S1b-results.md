@@ -1,8 +1,32 @@
-# S1b results — carry snapshot and handoff (2026-10-08)
+# S1b results — round 2 (2026-10-08)
 
-**Verdict: S1b remains open.** On Linux archbox, the final Formatter VT reconstruction plus worker carry is identical under the unchanged S1 comparison on **3271/3344 (97.8%)** original-corpus splits and **3828/3901 (98.1%)** expanded-corpus splits. The four v2 recordings contribute 557/557 identical AlignedCarry splits, including prompt-first alt-screen sessions and a fixed nested tmux recording. The remaining 73 cases are classified in [S1b-residuals.md](S1b-residuals.md), with two proposed upstream issue drafts; three pass the immediate snapshot comparison and diverge only after continuation, so their cause is still open. No issue has been filed. The measured handoff streams had zero client PTY reply attempts, but resized continuation differs in 91/400 cases. §5.2 attach/reconnect is not frozen.
+**S1b corpus gate: closed under the unchanged S1 comparison.** AlignedCarry is identical on **3901/3901** expanded-corpus splits. The original 3344 splits and all 557 v2 splits are identical. No S1 residual class remains, and no upstream issue draft needs filing. The simulated attach handoff is **480/480** identical without resize and **477/480** with an ordered resize epoch. Three `wrap_pending` resize cases still differ in viewport text, so production §5.2 attach/reconnect remains provisional pending the remaining reflow repair and a real transport/atomic subscription test.
 
-"Identical" means **identical under the S1 comparison**: normalised viewport cells (including OSC 8 URI), selected `TermState` fields, and right-trimmed history text. It does not prove complete terminal equivalence, graphics, side effects in a real transport, or styles and links in scrollback. This comparison is unchanged from [S1-results.md](S1-results.md).
+"Identical" retains the S1 definition: normalised viewport cells (including OSC 8 URI), selected `TermState` fields, and right-trimmed history text. `wrap_flags_equal` is a separate diagnostic and does not alter that definition.
+
+## Round 2 measurements
+
+| Strategy | Baseline S1b run6 | Round 2 run5 | Cases |
+|---|---:|---:|---:|
+| Naive | 1840 | 1840 | 3901 |
+| Aligned | 2792 | 2792 | 3901 |
+| AlignedUnwrap | 2782 | 2782 | 3901 |
+| AlignedCarry | 3828 | **3901** | 3901 |
+
+ECH overlaid erased empty cells with their background, skipping wide-cell spacers. The same carry snapshot now records the primary screen before alternate-screen entry. This closed the 70 immediate residuals and the three continuation-only `alt_screen_cycle` splits (1394/1395/1400). The latter were faithful on the active alternate screen but had lost empty-cell identity on the hidden primary screen; replaying the ECH-corrected primary snapshot fixed their later divergence. The tracker retains the entry mode (47, 1047, or 1049). `cases.jsonl` now includes `alt_mode_at_split` and `post_tail_first_mismatch`.
+
+The carry path emits Formatter VT with `unwrap(true)` to preserve soft-wrap metadata. If replayed row flags differ from the source, it falls back to the wrapped format, preserving the unchanged S1 identity in the pending-wrap and wide-character cases. Row flags matched on **3873/3901** AlignedCarry snapshots; 28 snapshots still disagree (10 `wrap_pending`, 14 `less`/`less_prompt`, 4 `utf8_wide_combining`) while their S1 state remains identical. The flag check is diagnostic, not part of S1 equality. The simple 300-column reflow test passes after resizing 80×24 to 100×30.
+
+| Handoff variant | Identical | Cases | Remaining mismatch | Client PTY reply attempts |
+|---|---:|---:|---|---:|
+| Plain tail | **480** | 480 | none | 0 |
+| Tail with resize epoch | **477** | 480 | 3 `wrap_pending` viewport-text cases | 0 |
+
+The remaining splits are 679, 681, and 688, each first differing at cell (20,1): reference `"m"`, client empty. The short query filter was extended to secondary DA (`CSI > c`), which was responsible for two reply attempts in an intermediate run. Zero attempts applies to the final measured streams and does not establish a general emulator reply-disable API. Bell/title/clipboard callbacks remain inert in the simulation; phase-aware suppression, network delivery, and atomic replay-subscription races were not tested.
+
+Final artifacts: `/data/scratch/s1/results/2026-10-08-s1b-r2-run5/` (matrix) and `/data/scratch/s1/results/2026-10-08-s1b-r2-handoff-verified/` (handoff). Intermediate run1 revealed ECH touching wide spacers, run2 fixed that, run3 closed the corpus before unwrapped emission, and run4 exposed 14 unwrap regressions that the row-flag fallback resolves.
+
+## Round 1 baseline (historical)
 
 ## Setup and method
 
