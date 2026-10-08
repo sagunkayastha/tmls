@@ -1,0 +1,233 @@
+ls --color=always[?2004hbash-5.3$ ls --color=always
+[?2004lCargo.lock  Cargo.toml  LICENSE-APACHE  LICENSE-MIT  PROGRESS.md  [0m[01;34mdocs[0m  [01;34mspikes[0m  [01;34mtarget[0m  [01;34mtooling[0m
+[?2004hbash-5.3$ echo $RANDOM
+[?2004l29256
+[?2004hbash-5.3$ less docs/spikes/S0-results.md
+[?2004l[?1049h[22;0;0t[40;1H[?1h=# S0 results — key loss / latency (2026-10-07/08)
+
+Scope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes
+numbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each
+event it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The
+one real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real
+keyboard is in any row (see [Not measured](#not-measured--next-steps)).
+Ack columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.
+
+## Summary
+
+- **No scripted event was lost or duplicated on any 10k row**: 0 missing / 0 dup across P1–P5, quiet 50 Hz,
+  quiet 15 Hz and 500 kB/s flood (10,000 events per row, alphabet without Ctrl+P; completeness in the tables).
+- **tmls swallows all keys after Ctrl+P** (Textual command palette): from event 59 onward (141 missing incl.
+  event 59, the `^P`) on each of P4, P5-loop and P5-pcl in the 200-event dry runs; Ctrl+P was then removed from the
+  alphabet, so the 10k rows do not measure it. The palette attribution is not yet confirmed by a palette-disabled
+  control.
+- **tmls corrupts Alt+letter at 15/50 Hz**: 1249–1250/1250 `AltLetter` events arrive as literal `^`+letter
+  (19 patterns) or, for Alt+f, as `ESC[1;5C`, on every 10k tmls row (P4, P5-loop, P5-pcl; quiet and flood);
+  0 corrupt on every non-tmls row. At 5 Hz only Alt+f is corrupt (4/75), with or without a 120 ms marker gap
+  (Alt+f → Ctrl+Right at every rate: `c-tmls-gap120-r50` `corrupt_examples` `expected_hex=1b66`,
+  `got_hex=1b5b313b3543`).
+- **tmls delays Alt+letter and the key after it**: P4 quiet one-way p50 `AltLetter` 45.6 / 140.1 / 102.4 ms at
+  50 / 15 / 5 Hz, `CtrlLetter` (always next) 28.2 / 77.4 / 5.6 ms, vs 3.3–5.7 ms for Letter/Digit/FKey/Repeat/Paste.
+  That Textual *holds* the pending ESC sequence and the next key's bytes *merge* into it is a **supported
+  hypothesis**, not isolated: send rate and next-key interval co-vary in these runs, and CtrlLetter always follows
+  AltLetter.
+- **On the measured loopback interactive ssh path, `ObscureKeystrokeTiming` adds a uniform 0–~21 ms**:
+  P2-ssh-loop one-way p50/p95/p99 10.6/19.5/20.7 ms (flat over 0–20 ms, every kind); with
+  `-o ObscureKeystrokeTiming=no` 0.4/0.6/1.5 ms (2000/2000, loopback). P1-local 0.1/0.2/0.7 ms, P3-tmux-local
+  0.3/0.5/1.3 ms. The archbox↔pcl ssh rows are *consistent with* the same spread (ack RTT p50 9.4–10.8 ms; their
+  one-way numbers carry unrechecked clock skew); the on/off pair was not run across the LAN.
+- **tmls return-output timing is far above tmux**: ack p50 37.2 ms (P4) vs 0.8 ms (P3-tmux-local), quiet 50 Hz,
+  same host and clock.
+- **Flood (500 kB/s) hurts only tmls** (receiver-observed one-way): P4 one-way p50/p99 5.7/50.8 → 13.5/84.1 ms;
+  P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
+  1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
+  quiet ack percentiles.
+- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
+[7mdocs/spikes/S0-results.md[27m[K[K...skipping...
+Controls not yet run (Codex review `docs/reviews/2026-10-07-codex-sol-s0-results.md`):
+- **Ctrl+P with the palette disabled**: rerun the Ctrl+P stream with `ENABLE_COMMAND_PALETTE = False` to confirm the
+  palette (not something else at event 59) swallows the later keys.
+- **Esc→next-key interval varied independently** of send rate and marker gap, and with a lower `ESCDELAY`, to
+  separate the hold from the next-key merge (and from CtrlLetter's fixed position after AltLetter).
+- **`ObscureKeystrokeTiming` on/off across the LAN** (archbox↔pcl) with fresh clock-skew samples.
+- **Modifier/Alt keys via a real keyboard**: K1 (ydotool) covered plain letters only; Alt/Ctrl/F-keys need another
+  injector (e.g. `ydotool key` raw codes) or manual typing.
+- **Key-to-photon** (presentation) latency.
+
+## Run inventory
+
+All under `/data/scratch/s0/runs/<id>/` (`summary.md`, `*.send.jsonl`, `*.recv.jsonl`, `*.report.json`). pcl-side
+logs were fetched back to the same dirs.
+
+| run id | what | rows used here |
+|---|---|---|
+| `20261007-110103` … `20261007-110954` | dry runs, EVENTS=200 (50 for 110954), alphabet still with Ctrl+P. `20261007-11 0237` (P4) and `20261007-110347` (P5-loop, P5-pcl): 59/200 arrived, 141 missing, 8 corrupt each; non-tmls dry rows 0 mis sing | Ctrl+P result |
+| `t9-dry-flood` | flood dry check (P1, P4) | — |
+| `20261007-111023` (A) | quiet, 10k, 50 Hz, binary d69ca3f | P1, P2-loop, P2-pcl, P3-local, P4, P5-loop (P3-pcl, P5-pcl  failed: pcl down) |
+| `20261007-113151` (B) | flood 500 kB/s, 10k, 50 Hz | P1, P2-loop, P3-local (pcl rows failed: pcl down; tmls rows faile d: S0READY harness gap) |
+| `20261007-114338` (C) | quiet, 10k, 15 Hz | P4 (P5-pcl, P2-pcl failed: pcl down) |
+| `r2-quiet50-pcl` | quiet 50 Hz re-run, binary e1a4b8a | P3-ssh-tmux-pcl, P5-tmls-ssh-pcl |
+| `r2-flood50` | flood re-run with lazy flood (7b0237e) | P2-pcl, P3-pcl, P4, P5-loop, P5-pcl |
+| `r2-quiet15-pcl` | quiet 15 Hz re-run | P5-tmls-ssh-pcl, P2-ssh-pcl |
+| `c-ssh-noobscure` | P2-ssh-loop, 2000 ev, 50 Hz, `ObscureKeystrokeTiming=no` | controls |
+| `c-ssh-rate10` / `c-ssh-rate200` | P2-ssh-loop, 1000 ev @ 10 Hz / 4000 ev @ 200 Hz (174 eff.) | controls |
+| `c-tmls-gap0-r5` / `c-tmls-gap120-r5` | P4-tmls-local, 600 ev @ 5 Hz, marker gap 0 / 120 ms | controls |
+| `c-tmls-gap120-r50` | P4-tmls-local, 2000 ev @ 50 Hz requested (8.2 eff.), gap 120 ms | controls |
+| `P6-20261007-211414` | P6 kitty-hosted P1/P2/P5, 10k @ 50 Hz, kitty 0.49.2 on pcl, nonce `b06d92954b70e4a4` | P6 |
+| `K1-20261008-035007` | K1 ydotool plain letters into kitty, 2000 events (`recv.jsonl`, `report.json`) | K1 |
+| `K1-20261008-023228`, `-025903`, `-033637` | aborted / misfocused K1 attempts (`-033637`: 280/280 before abort) | — (n ot measurements) |
+| `skew.txt` | NTP status + archbox↔pcl offset (only the pre-A sample succeeded) | clock caveat |
+| `/data/scratch/s0/analysis/tmls-per-kind.md` | per-kind analysis of A and C | per-kind section |
+[7m(END)[27m[K[K[H[2J[HM- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
+[HM  quiet ack percentiles.
+[HM  1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
+[HM  P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
+[HM- **Flood (500 kB/s) hurts only tmls** (receiver-observed one-way): P4 one-way p50/p99 5.7/50.8 → 13.5/84.1 ms;
+[HM  same host and clock.
+[HM- **tmls return-output timing is far above tmux**: ack p50 37.2 ms (P4) vs 0.8 ms (P3-tmux-local), quiet 50 Hz,
+[HM  one-way numbers carry unrechecked clock skew); the on/off pair was not run across the LAN.
+[HM  0.3/0.5/1.3 ms. The archbox↔pcl ssh rows are *consistent with* the same spread (ack RTT p50 9.4–10.8 ms; their
+[HM  `-o ObscureKeystrokeTiming=no` 0.4/0.6/1.5 ms (2000/2000, loopback). P1-local 0.1/0.2/0.7 ms, P3-tmux-local
+[HM  P2-ssh-loop one-way p50/p95/p99 10.6/19.5/20.7 ms (flat over 0–20 ms, every kind); with
+[HM- **On the measured loopback interactive ssh path, `ObscureKeystrokeTiming` adds a uniform 0–~21 ms**:
+[HM  AltLetter.
+[HM  hypothesis**, not isolated: send rate and next-key interval co-vary in these runs, and CtrlLetter always follows
+[HM  That Textual *holds* the pending ESC sequence and the next key's bytes *merge* into it is a **supported
+[HM  50 / 15 / 5 Hz, `CtrlLetter` (always next) 28.2 / 77.4 / 5.6 ms, vs 3.3–5.7 ms for Letter/Digit/FKey/Repeat/Paste.
+[HM- **tmls delays Alt+letter and the key after it**: P4 quiet one-way p50 `AltLetter` 45.6 / 140.1 / 102.4 ms at
+[HM  `got_hex=1b5b313b3543`).
+[HM  (Alt+f → Ctrl+Right at every rate: `c-tmls-gap120-r50` `corrupt_examples` `expected_hex=1b66`,
+[HM  0 corrupt on every non-tmls row. At 5 Hz only Alt+f is corrupt (4/75), with or without a 120 ms marker gap
+[HM  (19 patterns) or, for Alt+f, as `ESC[1;5C`, on every 10k tmls row (P4, P5-loop, P5-pcl; quiet and flood);
+[HM- **tmls corrupts Alt+letter at 15/50 Hz**: 1249–1250/1250 `AltLetter` events arrive as literal `^`+letter
+[HM  control.
+[HM  alphabet, so the 10k rows do not measure it. The palette attribution is not yet confirmed by a palette-disabled
+[HM  event 59, the `^P`) on each of P4, P5-loop and P5-pcl in the 200-event dry runs; Ctrl+P was then removed from the
+[HM- **tmls swallows all keys after Ctrl+P** (Textual command palette): from event 59 onward (141 missing incl.
+[HM  quiet 15 Hz and 500 kB/s flood (10,000 events per row, alphabet without Ctrl+P; completeness in the tables).
+[HM- **No scripted event was lost or duplicated on any 10k row**: 0 missing / 0 dup across P1–P5, quiet 50 Hz,
+[HM
+[HM## Summary
+[HM
+[HMAck columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.
+[HMkeyboard is in any row (see [Not measured](#not-measured--next-steps)).
+[HMone real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real
+[HMevent it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The
+[HMnumbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each
+[HMScope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes
+[HM
+[HM# S0 results — key loss / latency (2026-10-07/08)
+[40;1H[K:[K[K/[KRR[Kee[Kss[Kuu[Kll[Ktt[K[1;1H[K# S0 results — key loss / latency (2026-10-07/08)
+[2;1H[K
+[3;1H[KScope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes
+[4;1H[Knumbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each
+[5;1H[Kevent it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The
+[6;1H[Kone real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real
+[7;1H[Kkeyboard is in any row (see [Not measured](#not-measured--next-steps)).
+[8;1H[KAck columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.
+[9;1H[K
+[10;1H[K## Summary
+[11;1H[K
+[12;1H[K- **No scripted event was lost or duplicated on any 10k row**: 0 missing / 0 dup across P1–P5, quiet 50 Hz,
+[13;1H[K  quiet 15 Hz and 500 kB/s flood (10,000 events per row, alphabet without Ctrl+P; completeness in the tables).
+[14;1H[K- **tmls swallows all keys after Ctrl+P** (Textual command palette): from event 59 onward (141 missing incl.
+[15;1H[K  event 59, the `^P`) on each of P4, P5-loop and P5-pcl in the 200-event dry runs; Ctrl+P was then removed from the
+[16;1H[K  alphabet, so the 10k rows do not measure it. The palette attribution is not yet confirmed by a palette-disabled
+[17;1H[K  control.
+[18;1H[K- **tmls corrupts Alt+letter at 15/50 Hz**: 1249–1250/1250 `AltLetter` events arrive as literal `^`+letter
+[19;1H[K  (19 patterns) or, for Alt+f, as `ESC[1;5C`, on every 10k tmls row (P4, P5-loop, P5-pcl; quiet and flood);
+[20;1H[K  0 corrupt on every non-tmls row. At 5 Hz only Alt+f is corrupt (4/75), with or without a 120 ms marker gap
+[21;1H[K  (Alt+f → Ctrl+Right at every rate: `c-tmls-gap120-r50` `corrupt_examples` `expected_hex=1b66`,
+[22;1H[K  `got_hex=1b5b313b3543`).
+[23;1H[K- **tmls delays Alt+letter and the key after it**: P4 quiet one-way p50 `AltLetter` 45.6 / 140.1 / 102.4 ms at
+[24;1H[K  50 / 15 / 5 Hz, `CtrlLetter` (always next) 28.2 / 77.4 / 5.6 ms, vs 3.3–5.7 ms for Letter/Digit/FKey/Repeat/Paste.
+[25;1H[K  That Textual *holds* the pending ESC sequence and the next key's bytes *merge* into it is a **supported
+[26;1H[K  hypothesis**, not isolated: send rate and next-key interval co-vary in these runs, and CtrlLetter always follows
+[27;1H[K  AltLetter.
+[28;1H[K- **On the measured loopback interactive ssh path, `ObscureKeystrokeTiming` adds a uniform 0–~21 ms**:
+[29;1H[K  P2-ssh-loop one-way p50/p95/p99 10.6/19.5/20.7 ms (flat over 0–20 ms, every kind); with
+[30;1H[K  `-o ObscureKeystrokeTiming=no` 0.4/0.6/1.5 ms (2000/2000, loopback). P1-local 0.1/0.2/0.7 ms, P3-tmux-local
+[31;1H[K  0.3/0.5/1.3 ms. The archbox↔pcl ssh rows are *consistent with* the same spread (ack RTT p50 9.4–10.8 ms; their
+[32;1H[K  one-way numbers carry unrechecked clock skew); the on/off pair was not run across the LAN.
+[33;1H[K- **tmls return-output timing is far above tmux**: ack p50 37.2 ms (P4) vs 0.8 ms (P3-tmux-local), quiet 50 Hz,
+[34;1H[K  same host and clock.
+[35;1H[K- **Flood (500 kB/s) hurts only tmls** (receiver-observed one-way): P4 one-way p50/p99 5.7/50.8 → 13.5/84.1 ms;
+[36;1H[K  P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
+[37;1H[K  1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
+[38;1H[K  quiet ack percentiles.
+[39;1H[K- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
+[40;1H[1;1H[K# S0 results — key loss / latency (2026-10-07/08)
+[2;1H[K
+[3;1H[KScope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes
+[4;1H[Knumbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each
+[5;1H[Kevent it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The
+[6;1H[Kone real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real
+[7;1H[Kkeyboard is in any row (see [Not measured](#not-measured--next-steps)).
+[8;1H[KAck columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.
+[9;1H[K
+[10;1H[K## Summary
+[11;1H[K
+[12;1H[K- **No scripted event was lost or duplicated on any 10k row**: 0 missing / 0 dup across P1–P5, quiet 50 Hz,
+[13;1H[K  quiet 15 Hz and 500 kB/s flood (10,000 events per row, alphabet without Ctrl+P; completeness in the tables).
+[14;1H[K- **tmls swallows all keys after Ctrl+P** (Textual command palette): from event 59 onward (141 missing incl.
+[15;1H[K  event 59, the `^P`) on each of P4, P5-loop and P5-pcl in the 200-event dry runs; Ctrl+P was then removed from the
+[16;1H[K  alphabet, so the 10k rows do not measure it. The palette attribution is not yet confirmed by a palette-disabled
+[17;1H[K  control.
+[18;1H[K- **tmls corrupts Alt+letter at 15/50 Hz**: 1249–1250/1250 `AltLetter` events arrive as literal `^`+letter
+[19;1H[K  (19 patterns) or, for Alt+f, as `ESC[1;5C`, on every 10k tmls row (P4, P5-loop, P5-pcl; quiet and flood);
+[20;1H[K  0 corrupt on every non-tmls row. At 5 Hz only Alt+f is corrupt (4/75), with or without a 120 ms marker gap
+[21;1H[K  (Alt+f → Ctrl+Right at every rate: `c-tmls-gap120-r50` `corrupt_examples` `expected_hex=1b66`,
+[22;1H[K  `got_hex=1b5b313b3543`).
+[23;1H[K- **tmls delays Alt+letter and the key after it**: P4 quiet one-way p50 `AltLetter` 45.6 / 140.1 / 102.4 ms at
+[24;1H[K  50 / 15 / 5 Hz, `CtrlLetter` (always next) 28.2 / 77.4 / 5.6 ms, vs 3.3–5.7 ms for Letter/Digit/FKey/Repeat/Paste.
+[25;1H[K  That Textual *holds* the pending ESC sequence and the next key's bytes *merge* into it is a **supported
+[26;1H[K  hypothesis**, not isolated: send rate and next-key interval co-vary in these runs, and CtrlLetter always follows
+[27;1H[K  AltLetter.
+[28;1H[K- **On the measured loopback interactive ssh path, `ObscureKeystrokeTiming` adds a uniform 0–~21 ms**:
+[29;1H[K  P2-ssh-loop one-way p50/p95/p99 10.6/19.5/20.7 ms (flat over 0–20 ms, every kind); with
+[30;1H[K  `-o ObscureKeystrokeTiming=no` 0.4/0.6/1.5 ms (2000/2000, loopback). P1-local 0.1/0.2/0.7 ms, P3-tmux-local
+[31;1H[K  0.3/0.5/1.3 ms. The archbox↔pcl ssh rows are *consistent with* the same spread (ack RTT p50 9.4–10.8 ms; their
+[32;1H[K  one-way numbers carry unrechecked clock skew); the on/off pair was not run across the LAN.
+[33;1H[K- **tmls return-output timing is far above tmux**: ack p50 37.2 ms (P4) vs 0.8 ms (P3-tmux-local), quiet 50 Hz,
+[34;1H[K  same host and clock.
+[35;1H[K- **Flood (500 kB/s) hurts only tmls** (receiver-observed one-way): P4 one-way p50/p99 5.7/50.8 → 13.5/84.1 ms;
+[36;1H[K  P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
+[37;1H[K  1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
+[38;1H[K  quiet ack percentiles.
+[39;1H[K- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
+[40;1H...skipping...
+## [7mResult[27ms
+
+Run key: **A** = `20261007-111023` (quiet 50 Hz), **B** = `20261007-113151` (flood), **C** = `20261007-114338`
+(quiet 15 Hz) — first matrix (logs carry the done-line fields; `complete`/`dropped_acks` re-reported, see
+Completeness). **R** = `r2-*` re-runs. ⇄ = cross-host one-way. All rows: events = 10000, reorder = 0,
+out_of_range = 0.
+
+### Quiet, 50 Hz
+
+| path | run | arrived | missing | dup | corrupt | acked | dropped_acks | complete | one-way p50/p95/p99/max ms | ack p5 0/p95/p99/max ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| P1-local | A | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.1/0.2/0.7/16.5 | 0.3/0.4/1.3/17.8 |
+| P2-ssh-loop | A | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 10.6/19.5/20.7/29.8 | 11.1/20.0/21.3/32.4 |
+| P2-ssh-pcl ⇄ | A | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 13.4/22.6/23.8/37.1 | 10.8/20.0/21.2/49.7 |
+| P3-tmux-local | A | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.3/0.5/1.3/12.8 | 0.8/1.0/2.0/13.0 |
+| P3-ssh-tmux-pcl ⇄ | R `r2-quiet50-pcl` | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 9.2/18.0/19.2/21.8 | 10.8/19.5/20.9/32. 0 |
+| P4-tmls-local | A | 10000 | 0 | 0 | 1250 | 9953 | 0 | yes (no S0DONE) | 5.7/46.8/50.8/87.4 | 37.2/81.6/98.4/164.1 |
+| P5-tmls-ssh-loop | A | 10000 | 0 | 0 | 1250 | 9943 | 0 | yes (no S0DONE) | 20.0/58.2/66.0/99.1 | 49.4/92.4/107.1/182.7  |
+| P5-tmls-ssh-pcl ⇄ (pcl→archbox) | R `r2-quiet50-pcl` | 10000 | 0 | 0 | 1250 | 9940 | 0 | yes (no S0DONE) | 20.8/59.0/6 6.7/97.6 | 49.0/91.9/106.1/183.2 |
+
+Run A's P3-ssh-tmux-pcl and P5-tmls-ssh-pcl failed (pcl unreachable, exit 255); replaced by R.
+
+### Flood, 500 kB/s, 50 Hz
+
+| path | run | arrived | missing | dup | corrupt | acked | dropped_acks | complete | one-way p50/p95/p99/max ms | ack p5 0/p95/p99/max ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| P1-local | B | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.1/0.2/0.3/4.1 | 0.3/0.5/0.7/5.4 |
+| P2-ssh-loop | B | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 9.9/19.4/20.7/22.1 | 10.4/19.9/21.2/23.6 |
+| P2-ssh-pcl ⇄ | R `r2-flood50` | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 8.9/19.0/20.2/25.6 | 9.7/19.8/21.1/32.4 |
+| P3-tmux-local | B | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.4/0.5/0.5/5.8 | 0.8/1.0/1.1/15.6 |
+| P3-ssh-tmux-pcl ⇄ | R `r2-flood50` | 10000 | 0 | 0 | 0 | 9999 | 0 | yes | 8.8/19.1/20.3/28.5 | 9.4/19.8/21.1/33.9 |
+| P4-tmls-local | R `r2-flood50` | 10000 | 0 | 0 | 1250 | **1855** | 0 | yes (no S0DONE) | 13.5/59.9/84.1/136.8 | 29.1/7 5.1/102.9/126.0 (n=1855) |
+| P5-tmls-ssh-loop | R `r2-flood50` | 10000 | 0 | 0 | 1250 | **1079** | 0 | yes (no S0DONE) | 23.5/68.7/90.3/135.2 | 51. :[K[K/[K[K[7mPattern not found: Result  (press RETURN)[27m[40;1H[K[K[?1l>[?1049l[23;0;0t[?2004hbash-5.3$ echo after program
+[?2004lafter program
+[?2004hbash-5.3$ exit
+[?2004lexit

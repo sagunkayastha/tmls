@@ -1,0 +1,1 @@
+{"cmd": "env -u TMUX tmux -L s1b-v2-3152118 new-session -s inner", "cols": 120, "rows": 40, "bytes": 15233, "sha256": "b2cf5d348b5fe9b194f3f709e3d8c795055e15409230cb6b111aa0125c74cf8f"}

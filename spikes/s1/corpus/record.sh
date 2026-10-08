@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 # Record raw PTY output streams of real terminal programs (spike S1).
-# Usage: record.sh [name ...]   (default: all)
+# Usage: record.sh [vim_prompt less_prompt btop_prompt nested2] (default: all four)
 # Output: /data/scratch/s1/corpus/<name>.bin + <name>.meta.json; <200KB copied next to this script.
 set -euo pipefail
 
-REPO=/home/sgkayast/Others/tmls-rs
-OUT=/data/scratch/s1/corpus
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOCK=s1rec
+REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+OUT=${S1_CORPUS_OUT:-/data/scratch/s1/corpus}
+SOCK=s1rec-v2-$$
 COLS=120
 ROWS=40
 export TMPDIR=/data/scratch/s1
 mkdir -p "$OUT" "$TMPDIR"
-STATUS="$OUT/status.tsv"
-: > "$STATUS"
+STATUS=$(mktemp "$OUT/status-v2.XXXXXX.tsv")
 
 T() { tmux -L "$SOCK" "$@"; }
 
 # start NAME CMD : fresh private tmux server, pipe-pane attached before CMD paints.
 start() {
   local name=$1 cmd=$2
+  [ ! -e "$OUT/$name.bin" ] && [ ! -e "$OUT/$name.meta.json" ] || {
+    echo "recording already exists: $name; refusing to overwrite" >&2; return 1;
+  }
   : > "$OUT/$name.bin"
-  tmux -L "$SOCK" kill-server 2>/dev/null || true
   T new-session -d -x $COLS -y $ROWS -s rec -c "${CWD:-$REPO}" \
     "env TERM=xterm-256color COLORTERM=truecolor TMPDIR=$TMPDIR sh -c 'sleep 1; $cmd'"
   T pipe-pane -o -t rec "cat >> $OUT/$name.bin"
@@ -40,8 +41,9 @@ finish() {
 import sys, json, hashlib
 out, name, cmd, cols, rows = sys.argv[1:]
 b = open(f"{out}/{name}.bin", "rb").read()
-json.dump({"cmd": cmd, "cols": int(cols), "rows": int(rows), "bytes": len(b),
-           "sha256": hashlib.sha256(b).hexdigest()}, open(f"{out}/{name}.meta.json", "w"))
+with open(f"{out}/{name}.meta.json", "x") as meta:
+    json.dump({"cmd": cmd, "cols": int(cols), "rows": int(rows), "bytes": len(b),
+               "sha256": hashlib.sha256(b).hexdigest()}, meta)
 PY
 }
 
@@ -174,16 +176,78 @@ rec_claude() {
   finish claude "$c"
 }
 
-ALL=(vim btop less cargo gitlog nested unicode claude)
+prompt_start() {
+  local name=$1
+  start "$name" "bash --norc --noprofile -i"
+  sleep 1
+  lit 'ls --color=always'; keys Enter
+  lit 'echo $RANDOM'; keys Enter
+}
+prompt_finish() {
+  local name=$1 program=$2
+  lit 'echo after program'; keys Enter
+  lit 'exit'; keys Enter
+  waitdone 5
+  finish "$name" "prompt-first bash: ls --color=always; echo \$RANDOM; $program; echo after program"
+}
+rec_vim_prompt() {
+  prompt_start vim_prompt; lit 'vim spikes/s0/src/send.rs'; keys Enter; sleep 2
+  lit ':set nu'; keys Enter
+  keys C-f; keys C-f; keys C-f
+  lit '/fn '; keys Enter; keys n
+  lit ':q!'; keys Enter
+  prompt_finish vim_prompt vim
+}
+rec_less_prompt() {
+  prompt_start less_prompt; lit 'less docs/spikes/S0-results.md'; keys Enter; sleep 2
+  keys G; keys g; lit '/Result'; keys Enter; keys n; keys q
+  prompt_finish less_prompt less
+}
+rec_btop_prompt() {
+  prompt_start btop_prompt; lit 'btop'; keys Enter; sleep 6
+  keys q
+  prompt_finish btop_prompt btop
+}
+rec_nested2() {
+  local inner=s1b-v2-$$
+  local c="env -u TMUX tmux -L $inner new-session -s inner"
+  IT2() { tmux -L "$inner" "$@" || { echo "nested2: inner tmux $* failed" >&2; return 1; }; }
+  start nested2 "$c"
+  local i up=0
+  for ((i=0; i<50; i++)); do
+    sleep 0.2
+    if tmux -L "$inner" has-session -t inner 2>/dev/null; then up=1; break; fi
+  done
+  [ "$up" = 1 ] || { echo "nested2: inner tmux did not start" >&2; return 1; }
+  IT2 split-window -h -t inner -c "$REPO"
+  local panes left right
+  panes=$(IT2 list-panes -t inner -F '#{pane_id}')
+  left=$(sed -n 1p <<<"$panes"); right=$(sed -n 2p <<<"$panes")
+  [ -n "$left" ] && [ -n "$right" ] || { echo "nested2: expected 2 panes" >&2; return 1; }
+  IT2 send-keys -t "$right" 'ls --color=always -la spikes/s0/src' Enter
+  IT2 send-keys -t "$left" "git -C $REPO status" Enter
+  sleep 2
+  IT2 send-keys -t "$left" "git -C $REPO log --oneline --color=always | head -30" Enter
+  IT2 send-keys -t "$right" 'ls --color=always -laR docs spikes | head -60' Enter
+  sleep 2
+  IT2 kill-server
+  waitdone 5
+  finish nested2 "$c"
+}
+
+ALL=(vim_prompt less_prompt btop_prompt nested2)
 SEL=("$@"); [ ${#SEL[@]} -gt 0 ] || SEL=("${ALL[@]}")
 for n in "${SEL[@]}"; do
+  case "$n" in
+    vim_prompt|less_prompt|btop_prompt|nested2) ;;
+    *) echo "record.sh v2 accepts only new recording names; refusing $n" >&2; exit 2 ;;
+  esac
   echo "== $n"
   if ( "rec_$n" ); then
     printf '%s\tOK\n' "$n" >> "$STATUS"
   else
     printf '%s\tFAILED\n' "$n" >> "$STATUS"
     tmux -L "$SOCK" kill-server 2>/dev/null || true
-    tmux -L s1b kill-server 2>/dev/null || true   # nested's inner server, if left running
   fi
 done
 
@@ -195,8 +259,14 @@ m = json.load(open(sys.argv[1])); n = os.path.basename(sys.argv[1])[:-10]
 print("%-10s %10d  %s%s" % (n, m["bytes"], m["sha256"][:12], "" if m["bytes"] >= 4096 else "  (<4KB!)"))
 PY
 done
-for b in "$OUT"/*.bin; do
-  grep -q "^$(basename "${b%.bin}")	OK" "$STATUS" || continue
-  [ "$(stat -c %s "$b")" -lt 204800 ] && cp "$b" "${b%.bin}.meta.json" "$HERE/"
+for n in "${SEL[@]}"; do
+  grep -q "^${n}[[:space:]]*OK" "$STATUS" || continue
+  b="$OUT/$n.bin"
+  if [ "$(stat -c %s "$b")" -lt 204800 ]; then
+    [ ! -e "$HERE/$n.bin" ] && [ ! -e "$HERE/$n.meta.json" ] || {
+      echo "repo recording already exists: $n; refusing to overwrite" >&2; continue;
+    }
+    cp "$b" "$OUT/$n.meta.json" "$HERE/"
+  fi
 done
 cat "$STATUS"

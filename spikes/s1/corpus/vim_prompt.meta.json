@@ -1,0 +1,1 @@
+{"cmd": "prompt-first bash: ls --color=always; echo $RANDOM; vim; echo after program", "cols": 120, "rows": 40, "bytes": 23267, "sha256": "95f1ab2838f8c08da3ee18514448ad794a72566baee8f402a272f23cacdecf0e"}

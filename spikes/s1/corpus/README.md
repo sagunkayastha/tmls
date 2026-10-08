@@ -4,7 +4,7 @@ Raw bytes real programs wrote to their PTY, for replaying into the S1 parser/gri
 
 ## Method
 
-`record.sh` starts a private tmux server (`tmux -L s1rec`, never the default server) with
+The original S1 `record.sh` started a private tmux server (`tmux -L s1rec`, never the default server) with
 `new-session -d -x 120 -y 40 -s rec "env TERM=xterm-256color COLORTERM=truecolor TMPDIR=/data/scratch/s1 sh -c 'sleep 1; <cmd>'"`,
 then immediately `pipe-pane -o 'cat >> /data/scratch/s1/corpus/<name>.bin'`. The 1 s `sleep` guarantees
 pipe-pane is attached before the program paints. Input is driven with `send-keys`; the session is
@@ -15,6 +15,19 @@ re-rendering to a client is NOT included). `TERM` is forced with `env` because t
 
 Each `<name>.meta.json`: `{"cmd","cols":120,"rows":40,"bytes","sha256"}`.
 Full set lives in `/data/scratch/s1/corpus/`; recordings < 200 KB are copied here (all of them currently).
+
+The current `record.sh` is v2: it defaults to four **new names**, uses a unique private tmux socket and a new status file, and refuses to overwrite any existing `.bin` or `.meta.json`. It starts an interactive `bash --norc --noprofile` prompt for each prompt-first stream, types `ls --color=always` and `echo $RANDOM`, runs the program, then types `echo after program` after quitting. The prior seven recordings remain byte-for-byte unchanged. `skip.txt` excludes the partial `claude.bin` from corpus loading.
+
+## S1b v2 recordings
+
+| name | bytes | sha256 (12) | content |
+|---|---:|---|---|
+| `vim_prompt` | 23267 | 95f1ab2838f8 | prompt commands, vim navigation/search, quit, post command |
+| `less_prompt` | 20729 | 3da8baebcfc2 | prompt commands, less search/navigation, quit, post command |
+| `btop_prompt` | 93712 | a4d7f8ae53fa | prompt commands, btop, quit, post command |
+| `nested2` | 15233 | b2cf5d348b5f | two inner tmux panes with `ls` listing and `git -C <repo> status` output |
+
+The new streams are in `/data/scratch/s1/corpus/` and copied beside this README. `nested2` contains the command text (`ls --color=always` and `git -C … status`) and `On branch` output; the old `nested.bin` remains the degraded S1 recording. Claude was skipped pending confirmation that the repo trust dialog has been accepted. The previously captured 1.3 KB trust-dialog stream stays excluded.
 
 ## Recordings
 
@@ -55,12 +68,11 @@ screen is empty when vim/less/btop enter the alt screen. These streams therefore
   into its own `CARGO_TARGET_DIR=/data/scratch/s1/cargo-target` (first run = full build incl. deps). A second run
   into the same dir is again tiny; for a full build use `S1_CARGO_TARGET=/data/scratch/s1/cargo-target-2`.
 
-## Re-record
+## Record another v2 corpus
 
 ```
-cd /home/sgkayast/Others/tmls-rs
-spikes/s1/corpus/record.sh            # all
-spikes/s1/corpus/record.sh vim less   # subset (names above)
+cd /path/to/tmls-rs
+spikes/s1/corpus/record.sh            # four v2 names, only if they do not exist
+spikes/s1/corpus/record.sh vim_prompt # one new name, only if it does not exist
 ```
-Existing `.bin` files are truncated and rewritten. Results table is printed at the end;
-per-run status in `/data/scratch/s1/corpus/status.tsv`.
+The script refuses existing recording paths; use distinct names for further captures. Results are printed at the end; each invocation has a new `/data/scratch/s1/corpus/status-v2.*.tsv` file.

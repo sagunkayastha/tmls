@@ -136,6 +136,9 @@ type Stream = (String, String, u16, u16, Vec<u8>);
 
 fn load_streams(corpus_dir: &std::path::Path, with_gen: bool, cols: u16, rows: u16, gen_cols: u16, gen_rows: u16, skip: &[String]) -> anyhow::Result<Vec<Stream>> {
     let mut streams: Vec<Stream> = Vec::new();
+    let skip_txt = std::fs::read_to_string(corpus_dir.join("skip.txt")).unwrap_or_default();
+    let mut skip_names: Vec<String> = skip.to_vec();
+    skip_names.extend(parse_skip_txt(&skip_txt).into_iter().map(str::to_owned));
     let mut files: Vec<PathBuf> = std::fs::read_dir(corpus_dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "bin"))
@@ -143,7 +146,7 @@ fn load_streams(corpus_dir: &std::path::Path, with_gen: bool, cols: u16, rows: u
     files.sort();
     for f in files {
         let name = f.file_stem().unwrap().to_string_lossy().to_string();
-        if skip.contains(&name) { eprintln!("skip {name}"); continue; }
+        if skip_names.contains(&name) { eprintln!("skip {name}"); continue; }
         let (c, r) = meta_size(&f.with_extension("meta.json")).unwrap_or((cols, rows));
         streams.push((name, "recorded".into(), c, r, std::fs::read(&f)?));
     }
@@ -156,9 +159,24 @@ fn load_streams(corpus_dir: &std::path::Path, with_gen: bool, cols: u16, rows: u
     Ok(streams)
 }
 
+fn parse_skip_txt(text: &str) -> Vec<&str> {
+    text.lines().filter_map(|line| {
+        let name = line.split('#').next().unwrap_or("").trim();
+        if name.is_empty() { None } else { Some(name) }
+    }).collect()
+}
+
 fn meta_size(path: &std::path::Path) -> Option<(u16, u16)> {
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     Some((v.get("cols")?.as_u64()? as u16, v.get("rows")?.as_u64()? as u16))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn skip_file_parses_names_and_comments() {
+        assert_eq!(super::parse_skip_txt("# partial recording\nclaude\n\n nested # degraded\n"), vec!["claude", "nested"]);
+    }
 }
 
 fn main() -> anyhow::Result<()> {

@@ -1,0 +1,1 @@
+{"cmd": "prompt-first bash: ls --color=always; echo $RANDOM; btop; echo after program", "cols": 120, "rows": 40, "bytes": 93712, "sha256": "a4d7f8ae53faccc6a2c1f7d3dc91809dda7e69b5f0957794b6e8260734ff51b7"}

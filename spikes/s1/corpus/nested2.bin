@@ -1,0 +1,227 @@
+[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004h[?2031h[?996n(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;40r[c[>c[>q]10;?\]11;?\[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[inner] 1:tmux*[80X[80C"archbox" 00:03 08-Oct-26(B[m[?12l[?25h[1;1H[?1004h[?7727h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;40r[?1004h[?7727h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;40r[?1004h[?7727h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;40r(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;40r[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[inner] 1:tmux*[80X[80C"archbox" 00:03 08-Oct-26(B[m[?12l[?25h[1;1H[?25l[60C│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[1;60H[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K
+[1K[1;62H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[inner] 1:tmux*[80X[80C"archbox" 00:03 08-Oct-26(B[m[?12l[?25h[1;62Hls --color=always -la spikes/s0/src[2;62H[Hgit -C /data/scratch/s1/s1b-worktree status[2;62H[sgkayast@archbox s1b-worktree]$ [sgkayast@archbox s1b-worktree]$ git -C /data/scratch/s1/s1b
+-worktree status[2;95Hls --color=always -la spik[3;62Hes/s0/src[?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[30m[42m
+[inner] 1:tmux*[66X[66C"sgkayast@archbox:/dat" 00:03 08-Oct-26(B[m[?12l[?25h[4;62Htotal 96[5;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m.[6;62H(B[mdrwxr-xr-x 5 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m[4;1HOn branch spike/s1b-snapshot-repair[7;62H-rw-r--r-- 1 sgkayast sgkayast  7584 Oct  7 23:33 ack.rs[8;62H-rw-r--r-- 1 sgkayast sgkayast  4917 Oct  7 23:33 event.rs[9;62H-rw-r--r-- 1 sgkayast sgkayast  1318 Oct  7 23:33 flood.rs[10;62H-rw-r--r-- 1 sgkayast sgkayast   132 Oct  7 23:33 lib.rs[11;62H-rw-r--r-- 1 sgkayast sgkayast  1207 Oct  7 23:33 log.rs[12;62H-rw-r--r-- 1 sgkayast sgkayast  4552 Oct  7 23:33 main.rs[13;62H-rw-r--r-- 1 sgkayast sgkayast  2623 Oct  7 23:33 nav.rs[14;62H-rw-r--r-- 1 sgkayast sgkayast  6505 Oct  7 23:33 recv.rs[15;62H-rw-r--r-- 1 sgkayast sgkayast 18116 Oct  7 23:33 report.rs[16;62H-rw-r--r-- 1 sgkayast sgkayast 15719 Oct  7 23:33 send.rs[17;62H-rw-r--r-- 1 sgkayast sgkayast  3866 Oct  7 23:33 tokenizer[18;62H.rs[19;62H[5;1HChanges not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working
+ directory)
+        [31mmodified:   spikes/s1/corpus/record.sh
+[39m        [31mmodified:   spikes/s1/src/main.rs[12;1H[39mUntracked files:
+  (use "git add <file>..." to include in what will be commit
+ted)
+        [31mspikes/s1/corpus/skip.txt[17;1H[39mno changes added to commit (use "git add" and/or "git commit
+ -a")[19;62H[?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[?12l[?25h[19d[sgkayast@archbox s1b-worktree]$ [28C[sgkayast@archbox s1b-worktree]$ [?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[?12l[?25h[19;95H[?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[30m[42m
+[inner] 1:bash*[66X[66C"sgkayast@archbox:/dat" 00:03 08-Oct-26(B[m[?12l[?25h[19;95H[34Ggit -C /data/scratch/s1/s1b
+-worktree log --oneline --color=always | head -30[19;95Hls --color=always -laR doc[20;62Hs spikes | head -60[21;62H[33m8d3df76[39m s1b: handoff protocol simulation (offset, resize epo
+ch, client reply suppression)[21;62H[23;1H[33me295b7d[39m docs: S1b residual analysis + upstream issue drafts
+[33m3beb4a4[39m s1b: AlignedCarry strategy in the split matrix[21;62H[25;1H[33mab74ac2[39m s1b: carry::snapshot_full (trailing-row pad, hyperli
+nk overlay, pending wrap, title/pwd, kitty stack, DECSC, DEC
+OM-safe CUP)[21;62H[28;1H[33mc100fd0[39m s1b: carry::Tracker (title, pwd, kitty stack, DECSC,
+ alt-entry primary snapshot)[21;62H[30;1H[33m97096af[39m docs: S1b and S2 implementation plans; PROGRESS hand
+-off entry[21;62H[32;1H[33md8fca23[39m s1: drop the partial claude recording (trust dialog 
+only)[21;62H[34;1H[33m7fd556b[39m Merge spike/s1: S1 emulator spike (libghostty-vt sna
+pshot/restore fidelity, corpus, results, reviews)[21;62H[36;1H[33m697ad9f[39m docs: S1 results/PLAN wording after reviews; S1b sna
+pshot-repair gate[21;62H[?25l[Hpshot-repair gate[43X[33m
+f2f3437[39m s1: build-env guard, record.sh nested quoting + clau
+de cwd, docker README note[34X[33m
+8b0144b[39m docs: Codex review of the S1 spike[18X[33m
+9389549[39m docs: S1 results, PLAN emulator/attach updates, PROG
+RESS[56X[33m
+e23eba0[39m s1: AlignedUnwrap strategy (with_unwrap snapshot) in
+ the split matrix[43X[33m
+ddf25e0[39m s1: fix round 1: hyperlink compare, anchor-first spl
+it plan, tight trailing_row_drop, mismatch groups[11X[33m
+57151cb[39m s1: pyte portability probe + resize-at-split experim
+ent[57X[33m
+c780a07[39m s1: snapshot/restore experiment runner + taxonomy re
+port[56X[33m
+c17a5d1[39m s1: splitter mirrors ghostty string termination; bla
+nk normalisation; pending_wrap[30X[33m
+c662594[39m s1: corpus README + record.sh (claude recording retr
+ied from ~, skipped at trust dialog)[24X[33m
+b90fae5[39m s1: VT sequence splitter + Formatter snapshot/restor
+e primitives[48X[33m
+417034c[39m s1: adversarial stream generator[20X[33m
+0813259[39m s1: crate skeleton, pinned libghostty-vt build, Grid
+/TermState capture + diff[35X[33m
+91d07e1[39m docs: S1 emulator spike implementation plan         [33m
+b48466c[39m docs: S0 summary P6 numbers labelled correctly; sing
+le Summary list[45X[33m
+d18a85d[39m docs: S0 P6 (kitty-hosted) and K1 (real keyboard) re
+sults; gate closed[42X[33m
+71eaf1e[39m s0 run: receiver line prints CLICK THIS WINDOW banne
+r[59X[33m
+24146bd[39m s0 run: k1 focus probe before typing[16X[33m
+0dd9b6a[39m s0 run: p6.sh (kitty paths) + k1-keys.sh (ydotool in
+jection)[52X[33m
+2417855[39m s0: plain mode, keys subcommand, recv-only report (k
+eyboard injection)[42X[33m
+dcf5de8[39m Merge spike/s0: S0 key-loss spike (harness, matrix r
+esults, reviews, PC build image)[28X[33m
+f35e8e3[39m docs: PROGRESS.md session log for S0[16X[39;60H[1K[?12l[?25h[21;62H[?25l[1ddrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:56 [34m[1mspikes(B[m   [2;62Hdrwxr-xr-x 3 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1msuperpowe(B[m[34m[1m[3;62Hrs(B[m[K[4;62H[K
+docs/research:[K[6;62Htotal 148[K[7;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m.(B[m        [8;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [9;62H-rw-r--r-- 1 sgkayast sgkayast 29831 Oct  7 23:33 R1-termin[10;62Hals.md[K[11;62H-rw-r--r-- 1 sgkayast sgkayast 21825 Oct  7 23:33 R2-multip[12;62Hlexers.md[K[13;62H-rw-r--r-- 1 sgkayast sgkayast 24016 Oct  7 23:33 R3-gui.md[14;62H-rw-r--r-- 1 sgkayast sgkayast 22338 Oct  7 23:33 R4-agent-[15;62Hmanagers.md[K[16;62H-rw-r--r-- 1 sgkayast sgkayast 25242 Oct  7 23:33 R5-web.md[17;62H-rw-r--r-- 1 sgkayast sgkayast  4470 Oct  7 23:33 R6-old-pi[18;62Hcks.md[K[19;62H[K
+docs/reviews:[K[21;62Htotal 48[K[22;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m.(B[m        [23;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [24;62H-rw-r--r-- 1 sgkayast sgkayast 28577 Oct  7 23:33 2026-10-0[25;62H7-codex-astra.md[K[26;62H-rw-r--r-- 1 sgkayast sgkayast  2598 Oct  7 23:33 2026-10-0[27;62H7-codex-sol-s0-harness.md[K[28;62H-rw-r--r-- 1 sgkayast sgkayast  2448 Oct  7 23:33 2026-10-0[29;62H7-codex-sol-s0-results.md[K[30;62H-rw-r--r-- 1 sgkayast sgkayast  3174 Oct  7 23:33 2026-10-0[31;62H7-codex-sol-s1.md[K[32;62H[K
+docs/spikes:[K[34;62Htotal 88[K[35;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:56 [34m[1m.(B[m        [36;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [37;62H-rw-r--r-- 1 sgkayast sgkayast 32701 Oct  7 23:33 S0-result[38;62Hs.md[K[39;62H[K[?12l[?25h[?25l[1d-rw-r--r-- 1 sgkayast sgkayast 22338 Oct  7 23:33 R4-agent-[2;62Hmanagers.md[K[3;62H-rw-r--r-- 1 sgkayast sgkayast 25242 Oct  7 23:33 R5-web.md[4;62H-rw-r--r-- 1 sgkayast sgkayast  4470 Oct  7 23:33 R6-old-pi[5;62Hcks.md[K[6;62H[K
+docs/reviews:[K[8;62Htotal 48[K[9;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m.(B[m        [10;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [11;62H-rw-r--r-- 1 sgkayast sgkayast 28577 Oct  7 23:33 2026-10-0[12;62H7-codex-astra.md[K[13;62H-rw-r--r-- 1 sgkayast sgkayast  2598 Oct  7 23:33 2026-10-0[14;62H7-codex-sol-s0-harness.md[K[15;62H-rw-r--r-- 1 sgkayast sgkayast  2448 Oct  7 23:33 2026-10-0[16;62H7-codex-sol-s0-results.md[K[17;62H-rw-r--r-- 1 sgkayast sgkayast  3174 Oct  7 23:33 2026-10-0[18;62H7-codex-sol-s1.md[K[19;62H[K
+docs/spikes:[K[21;62Htotal 88[K[22;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:56 [34m[1m.(B[m        [23;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [24;62H-rw-r--r-- 1 sgkayast sgkayast 32701 Oct  7 23:33 S0-result[25;62Hs.md[K[26;62H-rw-r--r-- 1 sgkayast sgkayast 39044 Oct  7 23:33 S1-result[27;62Hs.md[K[28;62H-rw-r--r-- 1 sgkayast sgkayast  4865 Oct  7 23:57 S1b-resid[29;62Huals.md[K[30;62H[K
+docs/superpowers:[K[32;62Htotal 12[K[33;62Hdrwxr-xr-x 3 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m.(B[m         [34;62Hdrwxr-xr-x 6 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m..(B[m        [35;62Hdrwxr-xr-x 2 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1mplans(B[m     [36;62H[K
+docs/superpowers/plans:[K[38;62Htotal 112[K[39;62H[K[?12l[?25h[?25l[1d[K
+docs/spikes:[K[3;62Htotal 88[K[4;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:56 [34m[1m.(B[m        [5;62Hdrwxr-xr-x 6 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [6;62H-rw-r--r-- 1 sgkayast sgkayast 32701 Oct  7 23:33 S0-result[7;62Hs.md[K[8;62H-rw-r--r-- 1 sgkayast sgkayast 39044 Oct  7 23:33 S1-result[9;62Hs.md[K[10;62H-rw-r--r-- 1 sgkayast sgkayast  4865 Oct  7 23:57 S1b-resid[11;62Huals.md[K[12;62H[K
+docs/superpowers:[K[14;62Htotal 12[K[15;62Hdrwxr-xr-x 3 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m.(B[m         [16;62Hdrwxr-xr-x 6 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m..(B[m        [17;62Hdrwxr-xr-x 2 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1mplans(B[m     [18;62H[K
+docs/superpowers/plans:[K[20;62Htotal 112[K[21;62Hdrwxr-xr-x 2 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m.(B[m        [22;62Hdrwxr-xr-x 3 sgkayast sgkayast  4096 Oct  7 23:33 [34m[1m..(B[m       [23;62H-rw-r--r-- 1 sgkayast sgkayast 44900 Oct  7 23:33 2026-10-0[24;62H7-s0-key-loss.md[K[25;62H-rw-r--r-- 1 sgkayast sgkayast 21094 Oct  7 23:33 2026-10-0[26;62H7-s1-emulator.md[K[27;62H-rw-r--r-- 1 sgkayast sgkayast 14860 Oct  7 23:33 2026-10-0[28;62H8-s1b-snapshot-repair.md[K[29;62H-rw-r--r-- 1 sgkayast sgkayast 17075 Oct  7 23:33 2026-10-0[30;62H8-s2-interaction-slice.md[K[31;62H[K
+spikes:[K[33;62Htotal 16[K[34;62Hdrwxr-xr-x 4 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m.(B[m         [35;62Hdrwxr-xr-x 7 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1m..(B[m        [36;62Hdrwxr-xr-x 5 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1ms0(B[m        [37;62Hdrwxr-xr-x 5 sgkayast sgkayast 4096 Oct  7 23:33 [34m[1ms1(B[m        [38;62H[K
+[K[?12l[?25h[?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[?12l[?25h[sgkayast@archbox s1b-worktree]$ [28C[?25l[1;61H│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H[32m│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;61H│(B[m[?12l[?25h[sgkayast@archbox s1b-worktree]$ [1;40r(B[m[?1l>[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004l[?7727l[?1004l[>4m[?1049l[23;0;0t[?2031l[server exited]
