@@ -39,7 +39,7 @@ K1 run $ID   events=$N   key-delay=${KEY_DELAY_MS}ms   (~${CHARS} keys, est. ~${
 
 1) In the kitty window (focused, normal size), paste this receiver command and press Enter:
 
-   $S0 recv --plain --log $LOG --quit-after $N --ack false
+   clear; printf '\n\n\n      >>>  CLICK THIS WINDOW  <<<\n      (receiver — leave it focused, do not type)\n\n\n'; $S0 recv --plain --log $LOG --quit-after $N --ack false
 
 2) Once the receiver is live, CLICK the kitty window. After 5 s the script types a short focus probe;
    if the receiver does not see it, nothing else is typed (exit 2). Then DO NOT touch keyboard/mouse.
