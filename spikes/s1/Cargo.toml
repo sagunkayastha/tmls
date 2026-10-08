@@ -1,0 +1,15 @@
+[package]
+name = "s1"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "tmls-rs spike S1: libghostty-vt snapshot/restore fidelity"
+
+[dependencies]
+libghostty-vt = "=0.2.2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = { version = "0.9", features = ["std_rng"] }
+sha2 = "0.10"

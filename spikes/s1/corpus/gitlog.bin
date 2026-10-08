@@ -1,0 +1,547 @@
+[33mcommit 91d07e14eda0df39ef632ca500dc1695c0df8a81[m
+Author: sgkayast <sgn.kayastha@gmail.com>
+Date:   Wed Oct 7 22:26:32 2026 -0600
+
+    docs: S1 emulator spike implementation plan
+
+[1mdiff --git a/docs/superpowers/plans/2026-10-07-s1-emulator.md b/docs/superpowers/plans/2026-10-07-s1-emulator.md[m
+[1mnew file mode 100644[m
+[1mindex 0000000..190ccad[m
+[1m--- /dev/null[m
+[1m+++ b/docs/superpowers/plans/2026-10-07-s1-emulator.md[m
+[36m@@ -0,0 +1,218 @@[m
+[32m+[m[32m# S1 Emulator Spike Implementation Plan[m
+[32m+[m
+[32m+[m[32m> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.[m
+[32m+[m
+[32m+[m[32m**Goal:** Measure whether libghostty-vt 0.2.2 (pinned ghostty a887df42) can serve as tmls-rs's authoritative emulator *and* snapshot source: feed recorded and adversarial terminal streams, snapshot via `fmt::Formatter` (`Format::Vt`) at arbitrary and at sequence-aligned byte boundaries, restore into a fresh terminal, continue the stream, and compare cell-for-cell with an uninterrupted run; report mismatch classes, snapshot sizes and timings; probe portability of the VT snapshot into a second emulator (pyte).[m
+[32m+[m
+[32m+[m[32m**Architecture:** New crate `spikes/s1` in the workspace. `corpus` = recorded `script` sessions (vim, btop, less, cargo, git, nested tmux, a short Claude Code session) + generated adversarial streams. `grid` = a plain-Rust `Grid` struct (rows × cells: graphemes, fg, bg, style flags, wide/spacer) extracted from `render::RenderState`, plus `TermState` (cursor x/y/visible/style, active screen, modes bitmap, title, pwd, kitty flags, scrollback_rows). `splitter` = a tiny VT state machine (same shape as `spikes/s0/src/ack.rs` stripper) that marks sequence-complete byte offsets. `experiment` = for each (stream, split, strategy) run A→snapshot→C vs D and diff; `report` = Markdown + JSON. A Python helper feeds the VT snapshot to pyte and compares plain text.[m
+[32m+[m
+[32m+[m[32m**Tech Stack:** Rust 1.96, `libghostty-vt = "0.2.2"` (needs Zig 0.15.2 on PATH: `/data/scratch/zig/y/zig-x86_64-linux-0.15.2`; `GHOSTTY_SOURCE_DIR=/data/scratch/s1-probe/target/debug/build/libghostty-vt-sys-90a98b82a8a190aa/out/ghostty-src` avoids the network clone; the PC Docker image already has Zig 0.15.2), `serde`/`serde_json`, `clap`, `anyhow`, `rand` (seeded splits). Python 3 + `pyte 0.8.2` from `~/Others/tmls/.venv` for the portability probe (read-only use of that venv).[m
+[32m+[m
+[32m+[m[32m**Spec:** `docs/PLAN.md` §3 (Emulator core — provisional, gate S1), §5.2 (attach = snapshot at offset S + output from S; portable VT reconstruction with documented limits), §6 row S1 ("libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. Pass: identical results; differences explained"), §10 risks. Probe facts: `/data/scratch/s1-probe/REPORT.md`.[m
+[32m+[m
+[32m+[m[32m## Global Constraints[m
+[32m+[m
+[32m+[m[32m- Linux only tonight; Windows MSVC build is out of scope (laptop needed) — state it in the results.[m
+[32m+[m[32m- All scratch/corpus/results under `/data/scratch/s1/` (never `/tmp`; `TMPDIR=/data/scratch/s1`). Recorded corpus files are committed under `spikes/s1/corpus/` only if < 200 KB each; bigger ones stay in `/data/scratch/s1/corpus/` and are referenced by path + sha256.[m
+[32m+[m[32m- Never record the user's existing tmux sessions or Claude sessions; the Claude Code recording is a fresh `claude` run under `script` with one trivial prompt and `/exit`.[m
+[32m+[m[32m- Zig 0.15.2 only (0.16 fails — probe). Pin `libghostty-vt = "=0.2.2"`.[m
+[32m+[m[32m- `cargo test -p s0` must keep passing without Zig? — No: adding `spikes/s1` to the workspace makes a root `cargo test` need Zig. Ruling: accept; document in `tooling/docker/README.md` and `spikes/s1/README.md` that `-p s0` alone still builds without Zig, and the PC image has Zig.[m
+[32m+[m[32m- Commits: author `sgkayast <sgn.kayastha@gmail.com>`, no Claude attribution lines.[m
+[32m+[m[32m- Terminology in results: "VT-reconstruction snapshot" (not "native snapshot"); mismatch counts are per cell / per state field; "identical" means `Grid == Grid && TermState == TermState`.[m
+[32m+[m
+[32m+[m[32m## Review Focus[m
+[32m+[m
+[32m+[m[32m1. **Split inside a multi-byte UTF-8 char or an escape sequence** — expected: the naive strategy shows a mismatch (parser state lost), the sequence-aligned strategy ("tail carry": snapshot at the last complete boundary ≤ p and replay bytes from that boundary) is identical. Test: Task 4 `split_inside_csi_naive_differs_aligned_identical`.[m
+[32m+[m[32m2. **Alternate screen active at the split** — expected: restore lands on the alt screen with the primary screen content preserved; if the Formatter cannot encode both screens, the results doc says so (Task 4 test `alt_screen_split_roundtrip`).[m
+[32m+[m[32m3. **Scrollback at the split** — expected: `scrollback_rows` and scrollback text equal after restore, or the limit is documented (Task 4 `scrollback_preserved_or_documented`).[m
+[32m+[m[32m4. **Modes and keyboard protocol** — DECCKM, bracketed paste (2004), mouse tracking (1000/1002/1006), kitty keyboard flags, DECTCEM cursor hidden — expected identical after restore (Task 4 `modes_roundtrip`).[m
+[32m+[m[32m5. **Snapshot taken while a hyperlink / wide char / combining sequence is in progress** — expected identical with the aligned strategy (Task 2 corpus includes these; Task 4 compares).[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 1: Crate skeleton, pinned build, Grid/TermState extraction[m
+[32m+[m
+[32m+[m[32m**Files:**[m
+[32m+[m[32m- Modify: `Cargo.toml` (workspace members += `spikes/s1`)[m
+[32m+[m[32m- Create: `spikes/s1/Cargo.toml`, `spikes/s1/README.md`, `spikes/s1/src/lib.rs`, `spikes/s1/src/grid.rs`, `spikes/s1/src/main.rs`, `spikes/s1/build-env.sh`[m
+[32m+[m[32m- Test: inline in `grid.rs`[m
+[32m+[m
+[32m+[m[32m**Interfaces:**[m
+[32m+[m[32m- Produces: `grid::Cell { text: String, fg: Option<(u8,u8,u8)>, bg: Option<(u8,u8,u8)>, bold: bool, italic: bool, underline: bool, inverse: bool, strike: bool, faint: bool, wide: bool }`, `grid::Grid { cols: u16, rows: u16, cells: Vec<Cell> }` (row-major, `cells.len() == cols*rows`), `grid::TermState { cursor_x: u16, cursor_y: u16, cursor_visible: bool, cursor_style: String, alt_screen: bool, modes: Vec<(String,bool)>, title: String, pwd: String, kitty_flags: u32, scrollback_rows: usize, total_rows: usize }`, `grid::capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)>` using `render::RenderState::update` → `RowIterator`/`CellIterator` (`graphemes_utf8`, `fg_color`, `bg_color`, `style()` flags) and `Terminal` getters (`cursor_x/y`, `is_cursor_visible`, `cursor_style`, `active_screen`, `mode(Mode::…)` for the fixed list below, `title`, `pwd`, `kitty_keyboard_flags`, `scrollback_rows`, `total_rows`). `grid::diff(a: &(Grid,TermState), b: &(Grid,TermState)) -> Diff { cell_mismatches: Vec<(u16,u16,Cell,Cell)>, state_mismatches: Vec<(String,String,String)> }`, `Diff::is_identical()`.[m
+[32m+[m[32m- Mode list (fixed, by name): `cursor_keys (DECCKM 1)`, `origin (6)`, `autowrap (7)`, `cursor_visible (25)`, `alt_screen (1049)`, `bracketed_paste (2004)`, `mouse_normal (1000)`, `mouse_button (1002)`, `mouse_any (1003)`, `mouse_sgr (1006)`, `focus_events (1004)`, `synchronized_output (2026)`, `grapheme_cluster (2027)`. Use the crate's `Mode` enum variants that exist; skip (and list in README) any that are missing.[m
+[32m+[m[32m- `build-env.sh`: `export PATH=/data/scratch/zig/y/zig-x86_64-linux-0.15.2:$PATH GHOSTTY_SOURCE_DIR=<probe checkout> TMPDIR=/data/scratch/s1` — sourced before cargo.[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 1: Cargo + env**[m
+[32m+[m
+[32m+[m[32m`spikes/s1/Cargo.toml`:[m
+[32m+[m[32m```toml[m
+[32m+[m[32m[package][m
+[32m+[m[32mname = "s1"[m
+[32m+[m[32mversion = "0.1.0"[m
+[32m+[m[32medition.workspace = true[m
+[32m+[m[32mlicense.workspace = true[m
+[32m+[m[32mdescription = "tmls-rs spike S1: libghostty-vt snapshot/restore fidelity"[m
+[32m+[m
+[32m+[m[32m[dependencies][m
+[32m+[m[32mlibghostty-vt = "=0.2.2"[m
+[32m+[m[32manyhow = "1"[m
+[32m+[m[32mclap = { version = "4", features = ["derive"] }[m
+[32m+[m[32mserde = { version = "1", features = ["derive"] }[m
+[32m+[m[32mserde_json = "1"[m
+[32m+[m[32mrand = { version = "0.9", features = ["std_rng"] }[m
+[32m+[m[32msha2 = "0.10"[m
+[32m+[m[32m```[m
+[32m+[m[32mWorkspace `members = ["spikes/s0", "spikes/s1"]`.[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 2: Failing tests** (`grid.rs`)[m
+[32m+[m
+[32m+[m[32m```rust[m
+[32m+[m[32m#[cfg(test)][m
+[32m+[m[32mmod tests {[m
+[32m+[m[32m    use super::*;[m
+[32m+[m[32m    use libghostty_vt::terminal::{Options, Terminal};[m
+[32m+[m[32m    fn term(cols: u16, rows: u16) -> Terminal<'static, 'static> {[m
+[32m+[m[32m        Terminal::new(Options { cols, rows, max_scrollback: 1000 }).unwrap()[m
+[32m+[m[32m    }[m
+[32m+[m[32m    #[test][m
+[32m+[m[32m    fn capture_reads_text_and_colour() {[m
+[32m+[m[32m        let mut t = term(10, 2);[m
+[32m+[m[32m        t.vt_write(b"ab\x1b[31mc\x1b[0m\r\nxy");[m
+[32m+[m[32m        let (g, s) = capture(&mut t).unwrap();[m
+[32m+[m[32m        assert_eq!((g.cols, g.rows, g.cells.len()), (10, 2, 20));[m
+[32m+[m[32m        assert_eq!(g.cells[0].text, "a");[m
+[32m+[m[32m        assert_eq!(g.cells[2].text, "c");[m
+[32m+[m[32m        assert!(g.cells[2].fg.is_some(), "red fg captured");[m
+[32m+[m[32m        assert_eq!(g.cells[10].text, "x");[m
+[32m+[m[32m        assert_eq!((s.cursor_x, s.cursor_y), (2, 1));[m
+[32m+[m[32m    }[m
+[32m+[m[32m    #[test][m
+[32m+[m[32m    fn wide_char_marks_spacer() {[m
+[32m+[m[32m        let mut t = term(10, 1);[m
+[32m+[m[32m        t.vt_write("日本".as_bytes());[m
+[32m+[m[32m        let (g, _) = capture(&mut t).unwrap();[m
+[32m+[m[32m        assert_eq!(g.cells[0].text, "日");[m
+[32m+[m[32m        assert!(g.cells[0].wide);[m
+[32m+[m[32m        assert_eq!(g.cells[2].text, "本");[m
+[32m+[m[32m    }[m
+[32m+[m[32m    #[test][m
+[32m+[m[32m    fn diff_identical_and_mismatch() {[m
+[32m+[m[32m        let mut a = term(5, 1); a.vt_write(b"abc");[m
+[32m+[m[32m        let mut b = term(5, 1); b.vt_write(b"abd");[m
+[32m+[m[32m        let ca = capture(&mut a).unwrap(); let cb = capture(&mut b).unwrap();[m
+[32m+[m[32m        assert!(diff(&ca, &ca).is_identical());[m
+[32m+[m[32m        let d = diff(&ca, &cb);[m
+[32m+[m[32m        assert_eq!(d.cell_mismatches.len(), 1);[m
+[32m+[m[32m        assert_eq!(d.cell_mismatches[0].0, 2);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    #[test][m
+[32m+[m[32m    fn modes_and_alt_screen_in_state() {[m
+[32m+[m[32m        let mut t = term(5, 2);[m
+[32m+[m[32m        t.vt_write(b"\x1b[?1049h\x1b[?2004h\x1b[?25l");[m
+[32m+[m[32m        let (_, s) = capture(&mut t).unwrap();[m
+[32m+[m[32m        assert!(s.alt_screen);[m
+[32m+[m[32m        assert!(!s.cursor_visible);[m
+[32m+[m[32m        assert!(s.modes.iter().any(|(n, v)| n == "bracketed_paste" && *v));[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 3: Run, verify fail** — `source spikes/s1/build-env.sh && cargo test -p s1 2>&1 | tail` (first build ≈ 1–2 min).[m
+[32m+[m[32m- [ ] **Step 4: Implement** `grid.rs` per the interface (read `render.rs`/`terminal.rs` in `~/.cargo/registry/src/*/libghostty-vt-0.2.2/src/` for exact signatures: `RenderState::update(&mut self, &mut Terminal, …)` → `Snapshot`; `RowIterator::update(&snapshot)`, `.next()`; `CellIterator::update(row)`, `.next()`, `.graphemes_utf8(&mut String)`, `.fg_color()`, `.bg_color()`, `.style()` → `Style` with flag getters; wide detection via `raw_cell()` width or a spacer flag — pick what the API offers and document). `main.rs`: clap stub with `capture --file <bytes> [--cols 80 --rows 24]` printing the JSON of `(Grid, TermState)` — handy for debugging.[m
+[32m+[m[32m- [ ] **Step 5: Run, verify pass.**[m
+[32m+[m[32m- [ ] **Step 6: Commit** — `s1: crate skeleton, pinned libghostty-vt build, Grid/TermState capture + diff`[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 2: Corpus — recordings + adversarial generator[m
+[32m+[m
+[32m+[m[32m**Files:**[m
+[32m+[m[32m- Create: `spikes/s1/corpus/record.sh`, `spikes/s1/src/gen.rs`, `spikes/s1/corpus/README.md`, generated files under `/data/scratch/s1/corpus/` (small ones copied to `spikes/s1/corpus/`)[m
+[32m+[m[32m- Test: inline in `gen.rs`[m
+[32m+[m
+[32m+[m[32m**Interfaces:**[m
+[32m+[m[32m- `record.sh`: runs each program under `script -q -f -c "<cmd>" /data/scratch/s1/corpus/<name>.bin` inside `env TERM=xterm-256color COLUMNS=120 LINES=40` with stdin driven by a here-doc of keystrokes/`sleep`s (use `script -c` + a `(sleep; printf …) |` feeder, or `tmux -L s1 new-session -d -x 120 -y 40` + `tmux pipe-pane -o 'cat >> file'` + `tmux send-keys` — pick one, document). Programs: `vim` (open `spikes/s1/src/grid.rs`, `:set nu`, scroll `Ctrl-F` ×3, `/fn`, `:q!`), `btop` (5 s, `q`), `less` (`+G` then `g`, `/Result`, `q` on `docs/spikes/S0-results.md`), `cargo build -p s0 --color always` (touch a file first), `git -C . log --color=always -p -5`, nested `tmux -L s1b` with a split and `ls --color`, `python3 -c` progress-bar/wide-char/emoji script, and `claude` (fresh session: wait for the TUI, type `say hi`, Enter, wait 30 s, `/exit`) — if `claude` needs interaction that cannot be scripted within 2 attempts, skip it and record why. Each recording: ≥ 4 KB; write `<name>.meta.json` {cmd, cols, rows, bytes, sha256}.[m
+[32m+[m[32m- `gen::adversarial() -> Vec<(String, Vec<u8>)>`: named streams — `sgr_matrix` (all SGR attrs, 16/256/truecolor), `utf8_wide_combining` (CJK, emoji ZWJ, combining marks, split-prone), `alt_screen_cycle` (primary text, 1049h, alt text, 1049l, more primary), `scroll_region` (DECSTBM + scrolling + DECSLRM), `scrollback_200` (300 lines on a 24-row terminal), `modes_mix` (1,7,25,2004,1000,1002,1006,1004,2026 on/off), `kitty_kbd` (`CSI > 1 u`, `CSI = 5;1 u`), `osc_title_pwd_hyperlink` (OSC 0, OSC 7, OSC 8 open/close, OSC 52), `tabs_and_cursor_save` (HTS, TBC, DECSC/DECRC, CUP/CUF/CUB/CUU/CUD), `erase_insert_delete` (ED, EL, ICH, DCH, IL, DL), `wrap_pending` (text exactly to column 120 then more), `dcs_apc_noise` (DCS/APC/PM strings with ST), `resize_marker` (plain text; the harness resizes at the split in a dedicated experiment). Each ≥ 1 KB, deterministic.[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 1: Failing tests** — `adversarial_streams_nonempty_and_named` (≥ 13 streams, each ≥ 1024 bytes, unique names), `alt_screen_cycle_ends_on_primary` (feed to a Terminal; `active_screen` primary after it).[m
+[32m+[m[32m- [ ] **Step 2: Run, fail.** **Step 3: Implement `gen.rs` + `record.sh`; run `record.sh`** (it writes to `/data/scratch/s1/corpus/`; print per-file sizes). **Step 4: Pass.**[m[41m [m
+[32m+[m[32m- [ ] **Step 5: Commit** — `s1: adversarial stream generator + script-based recording corpus` (recordings < 200 KB copied into `spikes/s1/corpus/`, `.meta.json` for all).[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 3: Splitter (sequence boundaries) + snapshot/restore primitives[m
+[32m+[m
+[32m+[m[32m**Files:**[m
+[32m+[m[32m- Create: `spikes/s1/src/splitter.rs`, `spikes/s1/src/snap.rs`[m
+[32m+[m[32m- Test: inline[m
+[32m+[m
+[32m+[m[32m**Interfaces:**[m
+[32m+[m[32m- `splitter::boundaries(bytes: &[u8]) -> Vec<usize>`: offsets `p` where the stream is "between complete units": not inside ESC/CSI/OSC/DCS/APC/PM/SOS sequences and not inside a UTF-8 multibyte char (state machine like `spikes/s0/src/ack.rs` + UTF-8 continuation tracking). `0` and `len` are always boundaries. `splitter::last_boundary_at_or_before(bounds: &[usize], p: usize) -> usize`.[m
+[32m+[m[32m- `snap::snapshot(term: &Terminal, opts: SnapOpts) -> Vec<u8>` = `Formatter::new(term, FormatterOptions::new().with_format(Format::Vt).with_unwrap(false).with_trim(false).with_palette(o.palette).with_modes(true).with_scrolling_region(true).with_tabstops(true).with_pwd(true).with_keyboard(true).with_cursor(true).with_style(true).with_hyperlink(true).with_protection(true).with_kitty_keyboard(true).with_charsets(true)).format_alloc(None)`; `SnapOpts { palette: bool }`. `snap::restore(cols, rows, max_scrollback, snapshot: &[u8]) -> Terminal` = new Terminal + `vt_write(snapshot)`.[m
+[32m+[m[32m- Timing helpers: `snap::timed_snapshot(...) -> (Vec<u8>, Duration)`, `snap::timed_restore(...) -> (Terminal, Duration)`.[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 1: Failing tests**[m
+[32m+[m[32m```rust[m
+[32m+[m[32m#[test] fn boundaries_exclude_inside_csi_and_utf8() {[m
+[32m+[m[32m    let b = b"a\x1b[31mb\xe6\x97\xa5c";[m
+[32m+[m[32m    let v = boundaries(b);[m
+[32m+[m[32m    assert!(v.contains(&1)); assert!(!v.contains(&2)); assert!(!v.contains(&3)); assert!(v.contains(&6)); // after 'm'[m
+[32m+[m[32m    assert!(v.contains(&7)); assert!(!v.contains(&8)); assert!(!v.contains(&9)); assert!(v.contains(&10)); assert!(v.contains(&11));[m
+[32m+[m[32m}[m
+[32m+[m[32m#[test] fn osc_until_st_or_bel() { let v = boundaries(b"\x1b]0;ti\x07x\x1b]8;;u\x1b\\y"); assert!(v.contains(&8)); assert!(!v.contains(&4)); assert!(v.contains(&16)); }[m
+[32m+[m[32m#[test] fn snapshot_restore_plain_text_identical() {[m
+[32m+[m[32m    let mut t = Terminal::new(Options{cols:20,rows:3,max_scrollback:100}).unwrap();[m
+[32m+[m[32m    t.vt_write(b"hello\r\n\x1b[1;34mworld\x1b[0m");[m
+[32m+[m[32m    let s = snapshot(&t, SnapOpts{palette:true});[m
+[32m+[m[32m    let mut r = restore(20,3,100,&s);[m
+[32m+[m[32m    assert!(crate::grid::diff(&crate::grid::capture(&mut t).unwrap(), &crate::grid::capture(&mut r).unwrap()).is_identical());[m
+[32m+[m[32m}[m
+[32m+[m[32m```[m
+[32m+[m[32m- [ ] **Step 2: fail. Step 3: implement. Step 4: pass. Step 5: Commit** — `s1: VT sequence splitter + Formatter snapshot/restore primitives`[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 4: Experiment runner + report[m
+[32m+[m
+[32m+[m[32m**Files:**[m
+[32m+[m[32m- Create: `spikes/s1/src/experiment.rs`, `spikes/s1/src/report.rs`; modify `main.rs` (`run` subcommand)[m
+[32m+[m[32m- Test: inline (the Review Focus tests live here)[m
+[32m+[m
+[32m+[m[32m**Interfaces:**[m
+[32m+[m[32m- `experiment::Strategy { Naive, Aligned }`; `experiment::Case { stream: String, split: usize, strategy: Strategy }`; `experiment::run_case(bytes: &[u8], case: &Case, cols: u16, rows: u16, scrollback: u32) -> CaseResult { identical: bool, cell_mismatches: usize, state_mismatches: Vec<String>, snapshot_bytes: usize, snapshot_us: u128, restore_us: u128, first_mismatch: Option<String> }`:[m
+[32m+[m[32m  - D: fresh terminal, `vt_write(bytes)`.[m
+[32m+[m[32m  - Naive: A ← `bytes[..p]`; S ← snapshot(A); C ← restore(S); C ← `bytes[p..]`.[m
+[32m+[m[32m  - Aligned: `q = last_boundary_at_or_before(p)`; A ← `bytes[..q]`; S ← snapshot(A); C ← restore(S); C ← `bytes[q..]` (tail carry).[m
+[32m+[m[32m  - Compare `capture(C)` vs `capture(D)`; additionally compare **scrollback text**: `Formatter Plain` with… (check if the Formatter can include scrollback: use `with_selection` over the full history or `scroll_viewport` to top then `RenderState` rows — implement one approach and record which; if neither works, record `scrollback_compared: false`).[m
+[32m+[m[32m- `experiment::split_points(bytes, boundaries, seed) -> Vec<usize>`: all boundaries? too many — pick: 64 random boundaries, 64 random non-boundaries (inside sequences / UTF-8), plus every offset within ±2 of each `\x1b[?1049`, `\x1b[?1049l`, OSC 8 and wide-char positions found by scanning (≤ 400 points per stream).[m
+[32m+[m[32m- `main run --corpus-dir /data/scratch/s1/corpus --gen --out /data/scratch/s1/results/<id> [--cols 120 --rows 40 --scrollback 2000] [--seed 1]` → per-case JSONL + `summary.md`.[m
+[32m+[m[32m- `report`: per stream × strategy: cases, identical %, mean cell mismatches when not identical, top-3 state fields mismatching, snapshot bytes p50/max, snapshot/restore µs p50/p95; a "mismatch taxonomy" table (parser-state at split / alt-screen / scrollback / modes / cursor / style / wide-char / hyperlink / other) with an example per class.[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 1: Failing tests** — `split_inside_csi_naive_differs_aligned_identical` (stream `"ab\x1b[31mcd"`, split at 3: Naive not identical OR identical-but-explain; Aligned identical — assert Aligned identical, and record Naive result), `alt_screen_split_roundtrip` (split inside alt screen with primary content), `scrollback_preserved_or_documented` (300 lines, split at end: assert `scrollback_rows` equal OR `scrollback_compared == false` with a reason string), `modes_roundtrip` (modes_mix stream, split after modes set: state_mismatches empty for the mode fields), `split_points_bounded` (≤ 400 and includes 0 and len).[m
+[32m+[m[32m- [ ] **Step 2: fail. Step 3: implement. Step 4: pass.** **Step 5: Run the full experiment** on the corpus (both strategies) → `/data/scratch/s1/results/<id>/summary.md`. **Step 6: Commit** — `s1: snapshot/restore experiment runner + report`[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 5: Portability probe (pyte) + resize-at-split[m
+[32m+[m
+[32m+[m[32m**Files:**[m
+[32m+[m[32m- Create: `spikes/s1/tools/pyte_restore.py`, `spikes/s1/src/portability.rs` (or a `portability` subcommand)[m
+[32m+[m[32m- Test: a Rust test that shells out to the Python only when `S1_PYTE=1` is set (skipped otherwise)[m
+[32m+[m
+[32m+[m[32m- [ ] **Step 1:** `pyte_restore.py <snapshot.vt> <cols> <rows>` → prints the pyte screen as plain text lines (use `~/Others/tmls/.venv/bin/python`, read-only). `portability` subcommand: for each corpus stream, snapshot at the end (Aligned), feed to pyte, compare with `Formatter Plain` of the libghostty terminal line-by-line → % lines equal, first differing line; also log sequences pyte does not support (it ignores many) by diffing. Output into the same results dir.[m
+[32m+[m[32m- [ ] **Step 2:** Resize experiment: for 3 streams, at a split: restore into a terminal of a different size (e.g. 100×30) then `resize` back to 120×40 and continue vs D resized the same way at the same point — report identical or not (documents reflow behaviour).[m
+[32m+[m[32m- [ ] **Step 3: Commit** — `s1: pyte portability probe + resize-at-split experiment`[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 6: Results doc + PLAN update[m
+[32m+[m
+[32m+[m[32m- [ ] Write `docs/spikes/S1-results.md`: setup (crate versions, pinned commit, Zig 0.15.2, no `snapshot.h` at the pinned commit → Formatter is the only snapshot path), corpus inventory (with sha256 and sizes), tables from `summary.md`, mismatch taxonomy with examples, timings (snapshot bytes/µs vs terminal size and scrollback), portability (pyte) results, resize results, **gate verdict vs PLAN §6 S1** ("identical results; differences explained" — list each difference class and whether it is explained/fixable: tail-carry fixes parser-state splits; what is NOT recoverable through the Formatter), consequences for PLAN §3/§5.2 (worker must snapshot at sequence boundaries and carry the tail; "native snapshot" needs a newer ghostty with `snapshot.h` + own bindings — note as the S1-follow-up option), not measured (Windows MSVC, graphics/kitty images, performance under 10k-line scrollback), next steps.[m
+[32m+[m[32m- [ ] Update `docs/PLAN.md` §3 Emulator row status + §6 S1 row status + §5.2 wording (snapshot = Formatter VT at a sequence boundary with tail carry) — keep edits minimal and factual.[m
+[32m+[m[32m- [ ] `PROGRESS.md` entry. Commit — `docs: S1 results and PLAN emulator/attach updates`[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+[32m+[m[32m### Task 7: Codex review gate[m
+[32m+[m
+[32m+[m[32m- [ ] `codex` (gpt-6-sol) review of `spikes/s1` + `docs/spikes/S1-results.md` (brief: does the experiment answer PLAN §6 S1; is "identical" defined tightly enough; are the mismatch explanations supported; what is unmeasured). Save to `docs/reviews/<date>-codex-sol-s1.md`; one fix wave; re-review.[m
+
+[33mcommit b48466cbfa27611b27bb2bd39099b652fafee14b[m
+Author: sgkayast <sgn.kayastha@gmail.com>
+Date:   Wed Oct 7 22:03:40 2026 -0600
+
+    docs: S0 summary P6 numbers labelled correctly; single Summary list
+
+[1mdiff --git a/docs/spikes/S0-results.md b/docs/spikes/S0-results.md[m
+[1mindex c1b1bdb..c974af3 100644[m
+[1m--- a/docs/spikes/S0-results.md[m
+[1m+++ b/docs/spikes/S0-results.md[m
+[36m@@ -36,11 +36,11 @@[m [mAck columns are **observed return-output timing** (ack text scanned from the pat[m
+   P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —[m
+   1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the[m
+   quiet ack percentiles.[m
+[31m-[m
+ - **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the[m
+   parent process (10,000 events @ 50 Hz, quiet): 0 missing / 0 dup on all three; tmls row again 1250 corrupt[m
+[31m-  AltLetter (detected K=5). Receiver-observed ack p50 0.0 ms (local), 5.7 ms (ssh to archbox), 16.9 ms (tmls[m
+[31m-  via ssh). Same scripted-PTY bytes, so this does not exercise kitty's keyboard handling.[m
+[32m+[m[32m  AltLetter (detected K=5). One-way p50 (pcl→archbox cross-host, skew not re-sampled) 0.0 / 5.7 / 16.9 ms and[m
+[32m+[m[32m  ack (return-output) p50 0.0 / 11.0 / 49.5 ms for local / ssh / tmls-via-ssh. Same scripted-PTY bytes, so this[m
+[32m+[m[32m  does not exercise kitty's keyboard handling.[m
+ - **Real keyboard events (uinput→KDE Wayland→kitty→PTY→receiver): 2000/2000, no loss/corruption, plain letters[m
+   only.** K1: `ydotool type` (key-delay 20 ms, ~3.4 events/s) into a focused kitty running `s0 recv --plain`;[m
+   receiver-observed, no latency (ydotool has no timestamps). No Alt/Ctrl/F-keys/paste (ydotool types printable text).[m
+
+[33mcommit d18a85d7b9d3807e59801e9aaa7b212a0915620f[m
+Author: sgkayast <sgn.kayastha@gmail.com>
+Date:   Wed Oct 7 22:02:56 2026 -0600
+
+    docs: S0 P6 (kitty-hosted) and K1 (real keyboard) results; gate closed
+
+[1mdiff --git a/PROGRESS.md b/PROGRESS.md[m
+[1mindex 8fd5b4e..3a0c828 100644[m
+[1m--- a/PROGRESS.md[m
+[1m+++ b/PROGRESS.md[m
+[36m@@ -2,6 +2,37 @@[m
+ [m
+ Quick session log. Newest entry first.[m
+ [m
+[32m+[m[32m## 2026-10-07 (eve) — S0 gate closed: kitty-hosted + real-keyboard runs on the PC ✅[m
+[32m+[m[32mUser-run measurements on the PC (pcl, CachyOS, KDE Wayland, kitty 0.49.2); results folded into[m
+[32m+[m[32m`docs/spikes/S0-results.md` (new P6 and K1 sections, Summary, Not measured, Run inventory), PLAN §1/§6 updated.[m
+[32m+[m[32m- **P6 — kitty-hosted P1/P2/P5** (run `20261007-211414`, 10k @ 50 Hz, quiet, nonce `b06d92954b70e4a4`; summary[m
+[32m+[m[32m  `/data/scratch/s0/runs/P6-20261007-211414/summary.md`, JSON beside it; tmls row detected K=5). Receiver-observed;[m
+[32m+[m[32m  same scripted-PTY bytes, so kitty's keyboard handling is NOT exercised; cross-host one-way carries unrechecked[m
+[32m+[m[32m  skew, compare by ack:[m
+[32m+[m[32m  | path | arrived | missing | dup | corrupt | acked | one-way p50/p95/p99/max | ack p50/p95/p99/max |[m
+[32m+[m[32m  |---|---|---|---|---|---|---|---|[m
+[32m+[m[32m  | P6-kitty-local | 10000 | 0 | 0 | 0 | 10000 | 0.0/0.0/0.0/0.9 | 0.0/0.0/0.1/2.3 |[m
+[32m+[m[32m  | P6-kitty-ssh (pcl→archbox) | 10000 | 0 | 0 | 0 | 10000 | 5.7/14.6/16.1/26.6 | 11.0/19.9/21.5/31.2 |[m
+[32m+[m[32m  | P6-kitty-tmls (pcl→archbox) | 10000 | 0 | 0 | 1250 | 9936 | 16.9/55.0/62.7/88.8 | 49.5/93.3/108.9/215.2 |[m
+[32m+[m[32m- **K1 — real keyboard events** (run `K1-20261008-035007`, `/data/scratch/s0/runs/K1-20261008-035007/{recv.jsonl,report.json}`):[m
+[32m+[m[32m  `ydotool type` (uinput, key-delay 20 ms, ~3.4 events/s) into a focused kitty running[m
+[32m+[m[32m  `s0 recv --plain --quit-after 2000 --ack false`. Plain letters + markers only (no Alt/Ctrl/F-keys/paste).[m
+[32m+[m[32m  `K1-kitty-ydotool`: 2000 events, 2000 arrived, 0 missing/dup/corrupt, complete=yes; 2001 arrivals = 2000 + the[m
+[32m+[m[32m  focus probe `x#999999` (out_of_range 1, intact=false by design). No latency (ydotool has no timestamps).[m
+[32m+[m[32m  Aborted/misfocused attempts `K1-20261008-023228`, `-025903`, `-033637` are not measurements.[m
+[32m+[m[32m- **Lesson:** `ydotool` types into whatever window is focused — the K1 script now probes focus first (and the[m
+[32m+[m[32m  receiver prints a CLICK THIS WINDOW banner).[m
+[32m+[m[32m- **Gate:** S0 closed for key loss (none found outside tmls); presentation latency and modifier keys via a real[m
+[32m+[m[32m  keyboard remain for S2.[m
+[32m+[m
+[32m+[m[32m### NEXT[m
+[32m+[m[32m1. S1 (emulator) on the PC Docker image (`tmls-rs-build:latest`): snapshot/restore round-trip via libghostty VT[m
+[32m+[m[32m   Formatter at adversarial byte boundaries.[m
+[32m+[m[32m2. S2 GUI slice on the PC's live desktop with the user driving (key-to-photon, modifier/Alt keys via real keyboard).[m
+[32m+[m[32m3. tmls quick fixes: `ENABLE_COMMAND_PALETTE = False`; Alt-key handling per defect #2; then re-run P4/P5.[m
+[32m+[m[32m4. Open mechanism controls (results doc "Open (from reviews)"): Ctrl+P with palette disabled; Esc→next-key interval[m
+[32m+[m[32m   independent of rate / `ESCDELAY`; ssh obfuscation on/off across the LAN with fresh skew samples.[m
+[32m+[m
+ ## 2026-10-07 — S0 key-loss spike built, run and reviewed ✅ (gate not closed: GUI/keyboard paths pending)[m
+ Overnight autonomous run on branch `spike/s0` (from `d949858`). Harness + full path matrix + results doc; two Codex[m
+ (gpt-6-sol) reviews and a final whole-branch review folded in. Nothing merged to main yet.[m
+[1mdiff --git a/docs/PLAN.md b/docs/PLAN.md[m
+[1mindex aa2b2b7..75a510b 100644[m
+[1m--- a/docs/PLAN.md[m
+[1m+++ b/docs/PLAN.md[m
+[36m@@ -1,7 +1,7 @@[m
+ # tmls-rs — plan (draft 3, 2026-10-07)[m
+ [m
+ Working name. A native, GPU-drawn terminal + session system in Rust to replace tmls + tmux.[m
+[31m-Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 scripted PTY paths measured (2026-10-07/08); S0 GUI/keyboard paths pending (user). Nothing built yet.**[m
+[32m+[m[32mStatus: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 done (scripted PTY paths, kitty-hosted, real-keyboard plain letters); next S1/S2. Nothing built yet.**[m
+ History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `docs/reviews/2026-10-07-codex-astra.md`).[m
+ [m
+ ## 1. Why — and what we know vs assume[m
+[36m@@ -33,8 +33,10 @@[m [mnext-key interval co-vary in these runs, and Ctrl+letter always follows Alt+lett[m
+ (ack p50 37.2 ms) is far above tmux's (0.8 ms); under flood only tmls's receiver-side timing degrades (tmls flood[m
+ ack percentiles come from a 10–19% subsample of events). On the measured loopback interactive ssh path, OpenSSH[m
+ `ObscureKeystrokeTiming` adds a uniform 0–~21 ms (off → one-way p50 0.4 ms); the pcl ssh rows are consistent with[m
+[31m-the same spread (cross-host one-way carries clock skew; LAN on/off pair not run). Not measured: real keyboard / GUI[m
+[31m-terminal / laptop, key-to-photon.[m
+[32m+[m[32mthe same spread (cross-host one-way carries clock skew; LAN on/off pair not run). Re-running P1/P2/P5 from a[m
+[32m+[m[32mkitty window on the PC (P6) gave the same picture (0 missing / 0 dup; tmls again 1250 corrupt Alt+letters), and[m
+[32m+[m[32m2000 real keyboard events (K1: `ydotool` uinput → KDE Wayland → kitty → PTY, plain letters only) arrived 2000/2000[m
+[32m+[m[32mwith no loss or corruption. Not measured: modifier/Alt keys via a real keyboard, IME, laptop, key-to-photon.[m
+ [m
+ **Hypothesis (revised after S0):** for scripted input, key loss/garbling is tmls's (Textual key parsing and[m
+ bindings), not ssh/tmux/PTY; lag comes from tmls (tens of ms for Alt/Ctrl keys — the hold-and-merge mechanism is a[m
+[36m@@ -155,7 +157,7 @@[m [manswers rejected; hostd down → Claude's own prompt still works in the terminal[m
+ [m
+ | Spike | Question | Pass gate |[m
+ |---|---|---|[m
+[31m-| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: partially measured 2026-10-07 (scripted PTY paths; see docs/spikes/S0-results.md); gate not closed — GUI/keyboard paths pending (user).** |[m
+[32m+[m[32m| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: measured 2026-10-07 (scripted PTY paths + kitty-hosted + real-keyboard plain letters on the PC; see docs/spikes/S0-results.md) — gate closed for key loss: none found; presentation latency and modifier keys via real keyboard remain for S2.** |[m
+ | S1 Emulator | libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. | Identical results; differences explained. |[m
+ | S2 Interaction slice | Grid + sidebar + one editable form + selection + clipboard + IME (fcitx5, Windows TSF), in raw wgpu vs gpui; 60 Hz + high refresh, fractional scaling, monitor move. | p50/p95/p99 key-to-present (and camera-checked photon sample), CPU, idle power, text quality; pick on latency **and** coverage. |[m
+ | S3 Worker survival | Kill hostd abruptly 100× incl. during create/adopt, long downtime under flood. | Programs survive; promised state restorable; no duplicate replies/input; memory within limits. |[m
+[1mdiff --git a/docs/spikes/S0-results.md b/docs/spikes/S0-results.md[m
+[1mindex 5f7853b..c1b1bdb 100644[m
+[1m--- a/docs/spikes/S0-results.md[m
+[1m+++ b/docs/spikes/S0-results.md[m
+[36m@@ -1,8 +1,10 @@[m
+ # S0 results — key loss / latency (2026-10-07/08)[m
+ [m
+[31m-Scope: **receiver-observed delivery for scripted PTY input.** A sender (`s0 send`) writes numbered events into a[m
+[31m-PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each event it parses. No real[m
+[31m-keyboard, GUI terminal, IME or Windows laptop is in any row (see [Not measured](#not-measured--next-steps)).[m
+[32m+[m[32mScope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes[m
+[32m+[m[32mnumbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each[m
+[32m+[m[32mevent it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The[m
+[32m+[m[32mone real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real[m
+[32m+[m[32mkeyboard is in any row (see [Not measured](#not-measured--next-steps)).[m
+ Ack columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.[m
+ [m
+ ## Summary[m
+[36m@@ -35,6 +37,14 @@[m [mAck columns are **observed return-output timing** (ack text scanned from the pat[m
+   1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the[m
+   quiet ack percentiles.[m
+ [m
+[32m+[m[32m- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the[m
+[32m+[m[32m  parent process (10,000 events @ 50 Hz, quiet): 0 missing / 0 dup on all three; tmls row again 1250 corrupt[m
+[32m+[m[32m  AltLetter (detected K=5). Receiver-observed ack p50 0.0 ms (local), 5.7 ms (ssh to archbox), 16.9 ms (tmls[m
+[32m+[m[32m  via ssh). Same scripted-PTY bytes, so this does not exercise kitty's keyboard handling.[m
+[32m+[m[32m- **Real keyboard events (uinput→KDE Wayland→kitty→PTY→receiver): 2000/2000, no loss/corruption, plain letters[m
+[32m+[m[32m  only.** K1: `ydotool type` (key-delay 20 ms, ~3.4 events/s) into a focused kitty running `s0 recv --plain`;[m
+[32m+[m[32m  receiver-observed, no latency (ydotool has no timestamps). No Alt/Ctrl/F-keys/paste (ydotool types printable text).[m
+[32m+[m
+ ## Setup[m
+ [m
+ | item | value |[m
+[36m@@ -129,6 +139,46 @@[m [mone-way p50 (computed from the logs, cross-host): AltLetter 151.4, CtrlLetter 87[m
+ 16.3–17.2 ms. P2-ssh-pcl's max 124.9 ms is one event (seq 5918, then 69.8 ms for seq 5919); every other event[m
+ ≤ 60 ms.[m
+ [m
+[32m+[m[32m## P6 — kitty-hosted paths on the PC (run `20261007-211414`)[m
+[32m+[m
+[32m+[m[32mRun `P6-20261007-211414`, 10,000 events @ 50 Hz, quiet, nonce `b06d92954b70e4a4`. `s0 send` ran **inside a kitty[m
+[32m+[m[32m0.49.2 window on pcl** (CachyOS); summary `/data/scratch/s0/runs/P6-20261007-211414/summary.md`, JSON reports[m
+[32m+[m[32mbeside it. The tmls row detected K=5. All rows: events = 10000, reorder = 0, out_of_range = 0.[m
+[32m+[m
+[32m+[m[32m| path | arrived | missing | dup | corrupt | acked | dropped_acks | complete | one-way p50/p95/p99/max ms | ack p50/p95/p99/max ms |[m
+[32m+[m[32m|---|---|---|---|---|---|---|---|---|---|[m
+[32m+[m[32m| P6-kitty-local | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.0/0.0/0.0/0.9 | 0.0/0.0/0.1/2.3 |[m
+[32m+[m[32m| P6-kitty-ssh (pcl→archbox) ⇄ | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 5.7/14.6/16.1/26.6 | 11.0/19.9/21.5/31.2 |[m
+[32m+[m[32m| P6-kitty-tmls (pcl→archbox tmls) ⇄ | 10000 | 0 | 0 | 1250 | 9936 | 0 | yes | 16.9/55.0/62.7/88.8 | 49.5/93.3/108.9/215.2 |[m
+[32m+[m
+[32m+[m[32mCaveats:[m
+[32m+[m[32m- P6 = P1/P2/P5 re-run from pcl with kitty as the parent process; the scripted-PTY bytes are the same, so it[m
+[32m+[m[32m  **does not exercise kitty's keyboard handling**.[m
+[32m+[m[32m- Cross-host one-way (⇄) carries clock skew that was **not re-sampled**: compare by the ack columns. Direction is[m
+[32m+[m[32m  pcl→archbox. (The one-way p50 of 5.7 ms for P6-kitty-ssh is below its ack p50 of 11.0 ms, consistent with skew[m
+[32m+[m[32m  and/or the ~20 ms ssh obfuscation spread; not resolved here.)[m
+[32m+[m[32m- The tmls row's 1250 corrupt events are the AltLetter defect (#2), as in every earlier 10k tmls row.[m
+[32m+[m
+[32m+[m[32m## K1 — real keyboard events (run `K1-20261008-035007`)[m
+[32m+[m
+[32m+[m[32mLogs `/data/scratch/s0/runs/K1-20261008-035007/{recv.jsonl,report.json}`. `ydotool type` (uinput virtual keyboard,[m
+[32m+[m[32mkey-delay 20 ms, ~3.4 events/s) into a **focused kitty window on pcl (KDE Wayland)** running[m
+[32m+[m[32m`s0 recv --plain --quit-after 2000 --ack false`. Alphabet = **plain mode**: letters + `#dddddd` markers only,[m
+[32m+[m[32mbecause ydotool types printable text (no Alt/Ctrl/F-keys/paste). Recv-only report; no sender log, so no latency[m
+[32m+[m[32m(ydotool has no timestamps) and no ack.[m
+[32m+[m
+[32m+[m[32m| path | load | events | arrived | missing | dup | corrupt | reorder | acked | dropped_acks | recv_exit | saw_done | out_of_range | one-way | ack | complete |[m
+[32m+[m[32m|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|[m
+[32m+[m[32m| K1-kitty-ydotool | quiet | 2000 | 2000 | 0 | 0 | 0 | 0 | – | – | quit_after | – | 0 | – | – | yes |[m
+[32m+[m
+[32m+[m[32m- Receiver arrivals were 2001 = 2000 + the focus probe `x#999999` (out_of_range 1, `intact=false` by design).[m
+[32m+[m[32m- Earlier K1 attempts `K1-20261008-023228`, `-025903` and `-033637` were aborted or misfocused by the user and are[m
+[32m+[m[32m  **not measurements**; `-033637` had 280/280 arrived before the abort.[m
+[32m+[m[32m- **Operational lesson:** `ydotool` types into whatever window is focused, so a misfocused run types into the wrong[m
+[32m+[m[32m  program. The K1 script now sends a focus probe first (and the receiver prints a "CLICK THIS WINDOW" banner).[m
+[32m+[m[32m- What K1 shows: for plain letters, uinput → KDE Wayland → kitty → PTY → receiver lost, duplicated and corrupted[m
+[32m+[m[32m  nothing in 2000 events at ~3.4 events/s. It says nothing about modifier/Alt keys, higher rates, paste or IME.[m
+[32m+[m
+ ## tmls per-kind breakdown[m
+ [m
+ Source: `/data/scratch/s0/analysis/tmls-per-kind.md` (script `tmls_per_kind.py`, read-only on the logs). Runs A[m
+[36m@@ -241,8 +291,9 @@[m [mnot from `KEY_NAME_REPLACEMENTS` (`keys.py:205`, which only renames Unicode key[m
+ ## Not measured / next steps[m
+ [m
+ Not measured (Codex review, `docs/reviews/2026-10-07-codex-sol-s0-harness.md`):[m
+[31m-- Real keyboard, GUI-terminal key encoding, focus, IME, the Windows laptop. Every row is scripted bytes into a PTY.[m
+[31m-  The cause of a missed *physical* key is therefore not inferred.[m
+[32m+[m[32m- Modifier/Alt/Ctrl/F-keys and paste via a real keyboard (K1 covers plain letters only), IME, the Windows laptop.[m
+[32m+[m[32m  Every other row is scripted bytes into a PTY (P6 included). The cause of a missed *physical* key is therefore[m
+[32m+[m[32m  not inferred.[m
+ - Presentation (key-to-photon) latency; the 30 Hz redraw's share of tmls ack time.[m
+ - Esc→next-key interval independently of send rate (the controls varied rate and marker gap only); jittered send[m
+   intervals; `ObscureKeystrokeTiming=no` across the LAN (loopback only).[m
+[36m@@ -251,11 +302,7 @@[m [mNot measured (Codex review, `docs/reviews/2026-10-07-codex-sol-s0-harness.md`):[m
+ - Clock skew after pcl's reboots.[m
+ [m
+ Next steps:[m
+[31m-1. **User, morning — P6 kitty paths** (`spikes/s0/run/README.md` § "Morning run"): `P6-kitty-local`,[m
+[31m-   `P6-kitty-ssh`, `P6-kitty-tmls` are P1 / P2 / P5 re-run **from pcl with kitty as the parent process**, then[m
+[31m-   `s0 report --events $N` on archbox. `s0 send` still writes into its own PTY, so they do **not** exercise kitty's[m
+[31m-   keyboard handling. The real next step for keyboard→app delivery is key injection — `ydotool type` into a focused[m
+[31m-   kitty window running a bare `s0 recv` — or typing by hand (user-run; needs the desktop session).[m
+[32m+[m[32m1. *(done: P6 kitty-hosted and K1 ydotool plain-letter runs, see above.)*[m
+ 2. tmls quick fixes to try (then re-run P4/P5): `ENABLE_COMMAND_PALETTE = False`; Alt-key handling per defect #2.[m
+ 3. Re-sample archbox↔pcl skew before any further cross-host one-way comparison.[m
+ 4. Presentation timing and the Claude-output workload belong with S2 / §9, not S0.[m
+[36m@@ -268,8 +315,8 @@[m [mControls not yet run (Codex review `docs/reviews/2026-10-07-codex-sol-s0-results[m
+ - **Esc→next-key interval varied independently** of send rate and marker gap, and with a lower `ESCDELAY`, to[m
+   separate the hold from the next-key merge (and from CtrlLetter's fixed position after AltLetter).[m
+ - **`ObscureKeystrokeTiming` on/off across the LAN** (archbox↔pcl) with fresh clock-skew samples.[m
+[31m-- **Keyboard injection**: `ydotool type` into a focused kitty running a bare `s0 recv` (or manual typing) — the[m
+[31m-  P6 runs do not cover this.[m
+[32m+[m[32m- **Modifier/Alt keys via a real keyboard**: K1 (ydotool) covered plain letters only; Alt/Ctrl/F-keys need another[m
+[32m+[m[32m  injector (e.g. `ydotool key` raw codes) or manual typing.[m
+ - **Key-to-photon** (presentation) latency.[m
+ [m
+ ## Run inventory[m
+[36m@@ -291,5 +338,8 @@[m [mlogs were fetched back to the same dirs.[m
+ | `c-ssh-rate10` / `c-ssh-rate200` | P2-ssh-loop, 1000 ev @ 10 Hz / 4000 ev @ 200 Hz (174 eff.) | controls |[m
+ | `c-tmls-gap0-r5` / `c-tmls-gap120-r5` | P4-tmls-local, 600 ev @ 5 Hz, marker gap 0 / 120 ms | controls |[m
+ | `c-tmls-gap120-r50` | P4-tmls-local, 2000 ev @ 50 Hz requested (8.2 eff.), gap 120 ms | controls |[m
+[32m+[m[32m| `P6-20261007-211414` | P6 kitty-hosted P1/P2/P5, 10k @ 50 Hz, kitty 0.49.2 on pcl, nonce `b06d92954b70e4a4` | P6 |[m
+[32m+[m[32m| `K1-20261008-035007` | K1 ydotool plain letters into kitty, 2000 events (`recv.jsonl`, `report.json`) | K1 |[m
+[32m+[m[32m| `K1-20261008-023228`, `-025903`, `-033637` | aborted / misfocused K1 attempts (`-033637`: 280/280 before abort) | — (not measurements) |[m
+ | `skew.txt` | NTP status + archbox↔pcl offset (only the pre-A sample succeeded) | clock caveat |[m
+ | `/data/scratch/s0/analysis/tmls-per-kind.md` | per-kind analysis of A and C | per-kind section |[m
+
+[33mcommit 71eaf1ea166c78dfa074f483194e060075b74083[m
+Author: sgkayast <sgn.kayastha@gmail.com>
+Date:   Wed Oct 7 21:41:31 2026 -0600
+
+    s0 run: receiver line prints CLICK THIS WINDOW banner
+
+[1mdiff --git a/spikes/s0/run/k1-keys.sh b/spikes/s0/run/k1-keys.sh[m
+[1mindex 0f00977..6062934 100755[m
+[1m--- a/spikes/s0/run/k1-keys.sh[m
+[1m+++ b/spikes/s0/run/k1-keys.sh[m
+[36m@@ -39,7 +39,7 @@[m [mK1 run $ID   events=$N   key-delay=${KEY_DELAY_MS}ms   (~${CHARS} keys, est. ~${[m
+ [m
+ 1) In the kitty window (focused, normal size), paste this receiver command and press Enter:[m
+ [m
+[31m-   $S0 recv --plain --log $LOG --quit-after $N --ack false[m
+[32m+[m[32m   clear; printf '\n\n\n      >>>  CLICK THIS WINDOW  <<<\n      (receiver — leave it focused, do not type)\n\n\n'; $S0 recv --plain --log $LOG --quit-after $N --ack false[m
+ [m
+ 2) Once the receiver is live, CLICK the kitty window. After 5 s the script types a short focus probe;[m
+    if the receiver does not see it, nothing else is typed (exit 2). Then DO NOT touch keyboard/mouse.[m
+
+[33mcommit 24146bd357b2c8fd9780ff918a54573b86ec62b6[m
+Author: sgkayast <sgn.kayastha@gmail.com>
+Date:   Wed Oct 7 21:33:07 2026 -0600
+
+    s0 run: k1 focus probe before typing
+
+[1mdiff --git a/spikes/s0/run/README.md b/spikes/s0/run/README.md[m
+[1mindex 0e08094..4b1a630 100644[m
+[1m--- a/spikes/s0/run/README.md[m
+[1m+++ b/spikes/s0/run/README.md[m
+[36m@@ -218,7 +218,11 @@[m [mRun on pcl, from a second terminal or ssh session (kitty is the window that must[m
+ [m
+ It prints the receiver command to paste into kitty[m
+ (`s0 recv --plain --log ~/s0-logs/runs/K1-<id>.recv.jsonl --quit-after N --ack false`; no acks, so the[m
+[31m-typed text is not echoed back as noise), waits for the log file, counts down 3 s, then pipes[m
+[32m+[m[32mtyped text is not echoed back as noise), waits for the log file, prints "recv is live" and waits 5 s (click the kitty window now), then types a[m
+[32m+[m[32m**focus probe** (`x#999999`, seq 999999, out of range: logged by recv but not counted toward `--quit-after`;[m
+[32m+[m[32mthe report shows it as `out_of_range 1`, which is expected). The script polls the recv log up to 3 s for[m
+[32m+[m[32m`"seq":999999`; if it never appears it prints a red message and **exits 2 without typing the stream**[m
+[32m+[m[32m(kitty not focused, or recv not running). On "focus OK" it counts down 3 s, then pipes[m
+ `s0 keys --plain --events N` into `ydotool type --key-delay D --file -`, waits for the done line and[m
+ prints the `K1-kitty-ydotool` row. Needs `ydotoold`: `systemctl --user start ydotool` (user unit; there is no[m
+ system unit on pcl) or `ydotoold --socket-path=/run/user/1000/.ydotool_socket --socket-perm=0600 &` +[m
+[1mdiff --git a/spikes/s0/run/k1-keys.sh b/spikes/s0/run/k1-keys.sh[m
+[1mindex 16d85ca..0f00977 100755[m
+[1m--- a/spikes/s0/run/k1-keys.sh[m
+[1m+++ b/spikes/s0/run/k1-keys.sh[m
+[36m@@ -41,7 +41,9 @@[m [mK1 run $ID   events=$N   key-delay=${KEY_DELAY_MS}ms   (~${CHARS} keys, est. ~${[m
+ [m
+    $S0 recv --plain --log $LOG --quit-after $N --ack false[m
+ [m
+[31m-2) Then DO NOT touch keyboard/mouse. This script starts typing 3 s after the log appears.[m
+[32m+[m[32m2) Once the receiver is live, CLICK the kitty window. After 5 s the script types a short focus probe;[m
+[32m+[m[32m   if the receiver does not see it, nothing else is typed (exit 2). Then DO NOT touch keyboard/mouse.[m
+[32m+[m[32m   (Expect "out_of_range 1" in the report: that is the probe, seq 999999.)   <-- click kitty, then wait[m
+ MSG[m
+ [m
+ # Wait for the receiver to create its log.[m
+[36m@@ -50,6 +52,22 @@[m [muntil [[ -e $LOG ]]; do[m
+   (( SECONDS - t0 < ${K1_TIMEOUT_S:-600} )) || { echo "timed out waiting for $LOG" >&2; exit 1; }[m
+   sleep 0.2[m
+ done[m
+[32m+[m[32mecho "recv is live — now CLICK the kitty window; probe in 5 s"[m
+[32m+[m[32msleep 5[m
+[32m+[m
+[32m+[m[32m# Focus probe: out-of-range marker (seq 999999). recv logs it but it never counts toward --quit-after[m
+[32m+[m[32m# or the report's in-range stats (it shows up as out_of_range=1).[m
+[32m+[m[32mydotool type --key-delay 20 'x#999999'[m
+[32m+[m[32mok=0[m
+[32m+[m[32mfor _ in $(seq 1 30); do[m
+[32m+[m[32m  grep -q '"seq":999999' "$LOG" 2>/dev/null && { ok=1; break; }[m
+[32m+[m[32m  sleep 0.1[m
+[32m+[m[32mdone[m
+[32m+[m[32mif (( ! ok )); then[m
+[32m+[m[32m  printf '\033[1;31m%s\033[0m\n' "receiver did not see the probe — kitty with \`s0 recv\` is not focused (or recv not running). Nothing else was typed. Click the kitty window and rerun." >&2[m
+[32m+[m[32m  exit 2[m
+[32m+[m[32mfi[m
+[32m+[m[32mecho "focus OK (1 out_of_range in the report is expected: the probe, seq 999999)"[m
+ for i in 3 2 1; do echo "typing in $i ..."; sleep 1; done[m
+ [m
+ echo "typing $N events ..."[m

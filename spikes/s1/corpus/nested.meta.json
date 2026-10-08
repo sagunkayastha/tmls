@@ -1,0 +1,1 @@
+{"cmd": "env -u TMUX tmux -L s1b new-session -s inner \\; split-window -h \\; send-keys 'ls --color=always -la spikes/s0/src' Enter \\; select-pane -L \\; send-keys 'git -C /home/sgkayast/Others/tmls-rs status' Enter", "cols": 120, "rows": 40, "bytes": 4137, "sha256": "87dffd6724bb668a3aec059a807e292279bd16ff49010a55bafc7af7b12b7abd"}
