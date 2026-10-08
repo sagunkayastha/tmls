@@ -588,6 +588,32 @@ def rows(app):
     return {r.session.name: str(r.render()).rstrip() for r in app.query(tmls_app.SessionRow)}
 
 
+async def test_a_status_change_updates_rows_in_place_without_rebuilding_the_list(clock_hosts):
+    # rebuilding repaints the whole left panel every poll while Claude works (15 kB per poll over
+    # a slow terminal); a change to one session must only touch that session's row
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        before = {r.session.name: r for r in app.query(tmls_app.SessionRow)}
+        header = app.query_one(".host-header")
+        clock_hosts["claude"]["alpha"] = ("busy", 3600)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: rows(app)["alpha"].endswith("●"))
+        after = {r.session.name: r for r in app.query(tmls_app.SessionRow)}
+        assert all(after[n] is before[n] for n in before)
+        assert app.query_one(".host-header") is header
+        assert after["alpha"].session.claude == "busy"
+
+
+async def test_a_new_session_still_rebuilds_the_list(clock_hosts):
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(pilot, lambda: app.query(tmls_app.SessionRow))
+        clock_hosts["claude"]["gamma"] = ("idle", 0)
+        app.refresh_sessions()
+        assert await wait_for(pilot, lambda: list(rows(app)) == ["alpha", "beta", "gamma"])
+
+
 async def test_marks_running_and_idle_in_name_order(clock_hosts):
     app = tmls_app.Tmls()
     async with app.run_test(size=(120, 30)) as pilot:

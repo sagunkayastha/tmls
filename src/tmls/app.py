@@ -53,26 +53,35 @@ def fill_style(pct):
     return "bold #e06c75" if pct >= 90 else "bold #ff8c00" if pct >= 70 else "dim"
 
 
+def row_text(session, mark, queued=0):
+    count = f"{queued}✉ " if queued else ""
+    count += f"◉{len(session.viewers)} " if session.viewers else ""  # attached tmux clients
+    left = Text(session.name)
+    left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2) - len(count),
+                  overflow="ellipsis", pad=True)
+    text = left + (" ⋯ " if session.host != hosts.KITTY else " ") + count + MARKS[mark]
+    title = session.title if session.title != session.name else None
+    pct = hosts.context_pct(session)
+    if title or pct is not None:
+        second = Text(f"  {title or ''}", style="dim")
+        second.truncate(ROW_WIDTH - 5, overflow="ellipsis", pad=True)
+        if pct is not None:
+            second += Text(f"{pct:>4}%", style=fill_style(pct))
+        text += Text("\n") + second
+    return text
+
+
 class SessionRow(Static):
     def __init__(self, session, mark, queued=0):
-        count = f"{queued}✉ " if queued else ""
-        count += f"◉{len(session.viewers)} " if session.viewers else ""  # attached tmux clients
-        left = Text(session.name)
-        left.truncate(ROW_WIDTH - (5 if session.host != hosts.KITTY else 2) - len(count),
-                      overflow="ellipsis", pad=True)
-        text = left + (" ⋯ " if session.host != hosts.KITTY else " ") + count + MARKS[mark]
-        title = session.title if session.title != session.name else None
-        pct = hosts.context_pct(session)
-        if title or pct is not None:
-            second = Text(f"  {title or ''}", style="dim")
-            second.truncate(ROW_WIDTH - 5, overflow="ellipsis", pad=True)
-            if pct is not None:
-                second += Text(f"{pct:>4}%", style=fill_style(pct))
-            text += Text("\n") + second
-        super().__init__(text, id=f"s-{slug(session.host, session.name)}")
+        super().__init__(row_text(session, mark, queued), id=f"s-{slug(session.host, session.name)}")
         self.session = session
-        if mark == "waiting":
-            self.tooltip = session.waiting  # the row has no room for why
+        self.tooltip = session.waiting if mark == "waiting" else None  # the row has no room for why
+
+    def show(self, session, mark, queued=0):
+        """New status for the same session, drawn in place: only this row repaints."""
+        self.session = session
+        self.update(row_text(session, mark, queued))
+        self.tooltip = session.waiting if mark == "waiting" else None
 
     async def on_click(self, event):
         if self.session.host != hosts.KITTY and event.y == 0 and event.x >= ROW_WIDTH - 4:
@@ -285,6 +294,7 @@ class Tmls(App):
         self.open_sessions = {}  # slug -> Session
         self.current = None      # slug of the tab being shown
         self._listing = None
+        self._shape = None       # hosts and sessions in the list, in order: same shape -> redraw in place
         self._results = []       # [(host, online, sessions)] from the last poll
         self._refreshing = False  # a poll is in flight
         self._refresh_again = False  # a refresh was asked for during it
@@ -402,19 +412,35 @@ class Tmls(App):
         if listing == self._listing:
             return  # rebuilding would flicker and lose the scroll position
         self._listing = listing
-        box = self.query_one("#sessions")
-        await box.remove_children()
-        widgets = []
-        if not any_hosts:
-            widgets.append(Static(f"no hosts: tmux isn't installed here and {hosts.CONFIG} "
-                                  "lists none", classes="host-label"))
-        # other tmux servers: hidden behind one header, and only those with sessions
+        # background servers: hidden behind one header, and only those with sessions
         background = [(h, online, sm) for h, online, sm in rows if hosts.is_background(h) and online and sm]
         rows = [r for r in rows if not hosts.is_background(r[0])]
         if background:
             rows.append((None, True, []))
             if self.show_background:
                 rows.extend(background)
+        # Same hosts and sessions in the same order: redraw changed rows in place. Rebuilding
+        # repaints the whole left panel, every poll while Claude works (context %, marks).
+        shape = (any_hosts, sum(len(x[2]) for x in background), self.show_background,
+                 [(h, online, [s.name for s, _ in sm]) for h, online, sm in rows])
+        box = self.query_one("#sessions")
+        if shape == self._shape:
+            shown = {(r.session.host, r.session.name): r for r in box.query(SessionRow)}
+            for h, _, sm in rows:
+                for s, m in sm:
+                    row = shown[(s.host, s.name)]
+                    queued = len(self.queue.get(slug(s.host, s.name), ()))
+                    if row_text(s, m, queued) != row.content or row.session.waiting != s.waiting:
+                        row.show(s, m, queued)
+                    else:
+                        row.session = s  # newer clocks and fields; nothing on screen changes
+            return
+        self._shape = shape
+        await box.remove_children()
+        widgets = []
+        if not any_hosts:
+            widgets.append(Static(f"no hosts: tmux isn't installed here and {hosts.CONFIG} "
+                                  "lists none", classes="host-label"))
         for h, online, sm in rows:
             if h is None:
                 widgets.append(BackgroundToggle(sum(len(x[2]) for x in background), self.show_background))
