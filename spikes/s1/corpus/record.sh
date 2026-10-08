@@ -81,13 +81,34 @@ rec_gitlog() {
   finish gitlog "$c"
 }
 rec_nested() {
-  local c="env -u TMUX tmux -L s1b new-session -s inner \; split-window -h \; send-keys 'ls --color=always -la spikes/s0/src' Enter \; select-pane -L \; send-keys 'git -C /home/sgkayast/Others/tmls-rs status' Enter"
-  start nested "$c"; sleep 4
-  # extra traffic in both inner panes so the stream is >= 4 KB
-  tmux -L s1b send-keys -t inner:0.0 'git -C /home/sgkayast/Others/tmls-rs log --oneline --color=always | head -30' Enter 2>/dev/null || true
-  tmux -L s1b send-keys -t inner:0.1 'ls --color=always -laR docs spikes | head -60' Enter 2>/dev/null || true
-  sleep 2
+  # The outer pane runs only the inner tmux client (no quotes inside $c: start() wraps it in
+  # sh -c '...'). The inner server (-L s1b) is then driven from here, and every inner command
+  # must succeed; panes are addressed by pane id, so base-index settings do not matter.
+  local c="env -u TMUX tmux -L s1b new-session -s inner"
+  IT() { tmux -L s1b "$@" || { echo "nested: inner 'tmux $*' failed" >&2; return 1; }; }
   tmux -L s1b kill-server 2>/dev/null || true
+  start nested "$c"
+  local i up=0
+  for ((i=0; i<50; i++)); do
+    sleep 0.2
+    if tmux -L s1b has-session -t inner 2>/dev/null; then up=1; break; fi
+  done
+  [ $up = 1 ] || { echo "nested: inner tmux session did not start within 10s" >&2; finish nested "$c"; return 1; }
+  sleep 1
+  IT split-window -h -t inner -c "$REPO" || return 1
+  local panes left right
+  panes=$(IT list-panes -t inner -F '#{pane_id}') || return 1
+  left=$(sed -n 1p <<<"$panes"); right=$(sed -n 2p <<<"$panes")
+  [ -n "$left" ] && [ -n "$right" ] || { echo "nested: expected 2 inner panes, got: $panes" >&2; return 1; }
+  IT send-keys -t "$right" 'ls --color=always -la spikes/s0/src' Enter || return 1
+  IT select-pane -t "$left" || return 1
+  IT send-keys -t "$left" "git -C $REPO status" Enter || return 1
+  sleep 2
+  # extra traffic in both inner panes so the stream is >= 4 KB
+  IT send-keys -t "$left" "git -C $REPO log --oneline --color=always | head -30" Enter || return 1
+  IT send-keys -t "$right" 'ls --color=always -laR docs spikes | head -60' Enter || return 1
+  sleep 2
+  IT kill-server || return 1
   waitdone 5
   finish nested "$c"
 }
@@ -132,8 +153,10 @@ PY
   finish unicode "$c"
 }
 rec_claude() {
+  # Runs in the repo dir ($REPO, start()'s default cwd). Accept Claude Code's folder trust there
+  # once by hand first (cd ~/Others/tmls-rs && claude, "Yes, I trust this folder", exit);
+  # otherwise this stops at the trust dialog and fails.
   local c="claude"
-  CWD=/home/sgkayast   # trusted folder (the repo dir shows a trust dialog)
   start claude "$c"
   local i ok=0
   for ((i=0; i<20; i++)); do
@@ -160,6 +183,7 @@ for n in "${SEL[@]}"; do
   else
     printf '%s\tFAILED\n' "$n" >> "$STATUS"
     tmux -L "$SOCK" kill-server 2>/dev/null || true
+    tmux -L s1b kill-server 2>/dev/null || true   # nested's inner server, if left running
   fi
 done
 

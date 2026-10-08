@@ -5,7 +5,7 @@ Question: can `libghostty-vt` 0.2.2 be tmls-rs's authoritative emulator and snap
 ## Building
 
 ```sh
-source spikes/s1/build-env.sh     # Zig 0.15.2 on PATH, GHOSTTY_SOURCE_DIR, TMPDIR=/data/scratch/s1
+source spikes/s1/build-env.sh     # Zig 0.15.2 on PATH, GHOSTTY_SOURCE_DIR (if present), TMPDIR=/data/scratch/s1
 cargo test -p s1
 cargo run -p s1 -- capture --file <bytes> [--cols 80 --rows 24]   # prints (Grid, TermState) as JSON
 ```
@@ -14,8 +14,10 @@ cargo run -p s1 -- capture --file <bytes> [--cols 80 --rows 24]   # prints (Grid
   `a887df42c56f6de86c0fe6da9c4eeca37931e083` with `zig build`.
 - **Zig 0.15.2 exactly** is required. Zig 0.16.x fails (`Your Zig version v0.16.0 does not meet the
   required build version of v0.15.2`), despite the upstream README saying 0.16.
-- `GHOSTTY_SOURCE_DIR` points at an existing checkout of that commit, so `build.rs` skips its git
-  clone. Without it the build clones ghostty over the network into `OUT_DIR`.
+- `build-env.sh` exports `GHOSTTY_SOURCE_DIR` only if the probe checkout of that commit exists
+  (`/data/scratch/s1-probe/.../out/ghostty-src/build.zig`); then `build.rs` skips its git clone. If the
+  checkout is missing it prints a one-line note and leaves the variable unset, and the build clones
+  ghostty over the network into `OUT_DIR`.
 - Cold build of the crate on this 4-core box: about 30 s (the zig package cache was already warm
   from the probe). `cargo test -p s0` needs no Zig; only `-p s1` / workspace-wide builds do.
 - All libghostty-vt handles are `!Send`/`!Sync`; the spike is single-threaded throughout.
@@ -103,8 +105,9 @@ cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
   hyperlink data, so the URI comes from `Terminal::grid_ref(Point::Viewport)` →
   `GridRef::hyperlink_uri`, resolved only for cells with `has_hyperlink`.
 - **Not compared:** underline style and colour, blink, invisible, overline, palette index vs an
-  equal RGB, hyperlink *id*, protection, semantic-prompt marks, the DECSC saved cursor, and the
-  kitty keyboard push stack (only the current flags are compared).
+  equal RGB, hyperlink *id*, protection, semantic-prompt marks, the DECSC saved cursor, the
+  kitty keyboard push stack (only the current flags are compared), and styles/links in history (history is
+  compared as right-trimmed text only).
 - **Finding: the VT Formatter drops every hyperlink in the content.** ghostty `formatter.zig`:
   "We currently only emit hyperlinks for HTML". Only the cursor's *active* link is re-emitted, as
   extra state. `osc_title_pwd_hyperlink` is therefore about 2% identical, and cases with OSC 8 links on
@@ -113,8 +116,9 @@ cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
   covers the whole PageList, history first, with trailing blank rows always trimmed. The first
   `scrollback_rows` lines (right-trimmed) are the history, compared as `scrollback_text_equal`.
 - **`max_scrollback` is in BYTES** in ghostty (`Screen.zig`: "amount of scrollback to keep in
-  bytes"), even though the Rust doc says "lines". PageList rounds it up to its minimum size. That
-  minimum is still more than every corpus stream needs (gitlog keeps 649 history rows at 2000).
+  bytes"), even though the Rust doc says "lines". PageList rounds it up to its minimum size. Whether
+  any corpus stream was pruned is **not measured**; that the minimum exceeds every stream is an
+  inference from the PageList minimum (gitlog keeps 649 history rows at 2000; C and D share the limit).
 - Taxonomy: each non-identical case gets the first class that matches, in this priority order:
   `parser_state_split > alt_screen > trailing_row_drop > scrollback > modes > cursor > title_pwd > kitty_kbd > style_only > text > other`.
 - `trailing_row_drop` requires three things:

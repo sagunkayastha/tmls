@@ -18,6 +18,10 @@ Run cargo (artifacts go to `target-docker/`, git-ignored):
 (`target-docker/tmp/`), the report unit test under `$S0_TEST_DIR` or the system temp dir.
 On archbox, tests keep running with `TMPDIR=/data/scratch/s0` so nothing lands in `/tmp`.
 
+`cargo test -p s0` builds without Zig. A workspace-root build (`cargo build`/`cargo test` with no `-p`) or
+`-p s1` also builds `libghostty-vt-sys`, which needs **Zig 0.15.2** exactly (0.16 fails); the image has it.
+Without a `GHOSTTY_SOURCE_DIR` checkout that build git-clones ghostty, so it needs network.
+
 Remove everything:
 
     docker rmi tmls-rs-build:latest; docker volume rm tmls-rs-cargo

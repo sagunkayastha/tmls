@@ -127,7 +127,7 @@ fn scroll_region() -> String {
     s
 }
 
-/// 300 numbered lines (on a 24-row terminal 276 go to scrollback).
+/// 300 numbered lines, each ending in CRLF (on a 24-row terminal 277 go to scrollback).
 fn scrollback_200() -> String {
     let mut s = String::new();
     for i in 0..300 {
