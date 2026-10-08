@@ -15,6 +15,7 @@ import pyte
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
+from textual.geometry import Region
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
@@ -139,6 +140,17 @@ class VT(pyte.Screen):
     def __init__(self, columns, lines, reply):
         super().__init__(columns, lines)
         self.reply = reply
+        self.screen_switches = 0
+
+    def set_mode(self, *modes, **kwargs):
+        super().set_mode(*modes, **kwargs)
+        if kwargs.get("private") and set(modes) & {47, 1047, 1049}:
+            self.screen_switches += 1
+
+    def reset_mode(self, *modes, **kwargs):
+        super().reset_mode(*modes, **kwargs)
+        if kwargs.get("private") and set(modes) & {47, 1047, 1049}:
+            self.screen_switches += 1
 
     def write_process_input(self, data):
         self.reply(data)
@@ -173,6 +185,9 @@ class Terminal(Widget, can_focus=True):
         self.fd = None
         self.exited = False
         self._dirty = False
+        self._cursor_row = self.vt.cursor.y
+        self._cursor_state = (self.vt.cursor.x, self.vt.cursor.hidden, self.exited)
+        self._screen_switches = self.vt.screen_switches
         self.clipboard = Clipboard()
         self._held = None  # xterm code of the button held down, for drags
         self._selection = None
@@ -185,6 +200,8 @@ class Terminal(Widget, can_focus=True):
     def on_resize(self, event):
         cols, rows = max(event.size.width, 2), max(event.size.height, 2)
         self.vt.resize(rows, cols)
+        self.vt.dirty.clear()
+        self.refresh()
         if self.pid is None:
             self._spawn(rows, cols)
         elif not self.exited:
@@ -230,9 +247,41 @@ class Terminal(Widget, can_focus=True):
         self._dirty = True
 
     def _flush(self):
-        if self._dirty:
-            self._dirty = False
+        if not self._dirty:
+            return
+        self._dirty = False
+        cursor = self.vt.cursor
+        cursor_state = (cursor.x, cursor.hidden, self.exited)
+        if self.vt.screen_switches != self._screen_switches:
+            self._screen_switches = self.vt.screen_switches
+            self._cursor_row = cursor.y
+            self._cursor_state = cursor_state
+            self.vt.dirty.clear()
             self.refresh()
+            return
+        rows = set(self.vt.dirty)
+        if cursor.y != self._cursor_row or cursor_state != self._cursor_state:
+            rows.update((self._cursor_row, cursor.y))
+        self._cursor_row = cursor.y
+        self._cursor_state = cursor_state
+        self.vt.dirty.clear()
+        rows = sorted(y for y in rows if 0 <= y < self.vt.lines)
+        if not rows:
+            return
+        start = end = rows[0]
+        for y in rows[1:]:
+            if y == end + 1:
+                end = y
+            else:
+                self.refresh(Region(0, start, self.size.width, end - start + 1))
+                start = end = y
+        self.refresh(Region(0, start, self.size.width, end - start + 1))
+
+    def on_focus(self):
+        self.refresh()
+
+    def on_blur(self):
+        self.refresh()
 
     def render_line(self, y):
         if y >= self.vt.lines:

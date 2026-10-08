@@ -1,14 +1,88 @@
 import asyncio
 import os
+from types import SimpleNamespace
+from unittest.mock import PropertyMock, patch
 
 from textual.app import App
 
 import pyte
 
 from textual import events
+from textual.geometry import Region, Size
 
 from tmls import term as term_module
 from tmls.term import BRACKETED_PASTE, VT, Clipboard, Terminal, color, key_to_bytes, mouse_bytes
+
+
+def redraw_probe():
+    term = Terminal(["true"])
+    calls = []
+    term.refresh = lambda region=None, **kwargs: calls.append(region)
+    term.vt.dirty.clear()
+    term._dirty = False
+    return term, calls
+
+
+def test_flush_refreshes_only_changed_line():
+    term, calls = redraw_probe()
+    term._cursor_row = 3
+    term.stream.feed(b"\x1b[4;1Hchanged")
+    term._dirty = True
+    with patch.object(Terminal, "size", new_callable=PropertyMock, return_value=Size(80, 24)):
+        term._flush()
+    assert calls == [Region(0, 3, 80, 1)]
+    assert not term.vt.dirty
+
+
+def test_flush_refreshes_old_and_new_cursor_rows():
+    term, calls = redraw_probe()
+    term._cursor_row = 0
+    term.stream.feed(b"\x1b[4;1H")
+    term._dirty = True
+    with patch.object(Terminal, "size", new_callable=PropertyMock, return_value=Size(80, 24)):
+        term._flush()
+    assert calls == [Region(0, 0, 80, 1), Region(0, 3, 80, 1)]
+
+
+def test_pyte_marks_scroll_index_and_erase_dirty():
+    term, _ = redraw_probe()
+    for output in (b"\x1b[24;1H\n", b"\x1b[1;1H\x1bM", b"\x1b[2J"):
+        term.vt.dirty.clear()
+        term.stream.feed(output)
+        assert term.vt.dirty == set(range(term.vt.lines))
+
+
+def test_alternate_screen_switch_forces_full_refresh():
+    term, calls = redraw_probe()
+    with patch.object(Terminal, "size", new_callable=PropertyMock, return_value=Size(80, 24)):
+        for sequence in (b"\x1b[?1049h", b"\x1b[?1049l", b"\x1b[?47h", b"\x1b[?47l"):
+            term.stream.feed(sequence)
+            term._dirty = True
+            term._flush()
+    assert calls == [None] * 4
+
+
+async def test_selection_and_quick_select_changes_refresh_all_rows():
+    term, calls = redraw_probe()
+    term._selection = ((0, 0), (0, 0))
+    term._selecting = True
+    term.on_mouse_move(SimpleNamespace(x=5, y=2, stop=lambda: None))
+    assert calls == [None]
+    calls.clear()
+    term.quick_hits = [SimpleNamespace(label="a")]
+    await term._on_key(events.Key("escape", None))
+    assert term.quick_hits == []
+    assert calls == [None]
+
+
+def test_resize_and_focus_changes_refresh_all_rows():
+    term, calls = redraw_probe()
+    term._spawn = lambda rows, cols: None
+    term.on_resize(SimpleNamespace(size=Size(90, 30)))
+    term.on_focus()
+    term.on_blur()
+    assert calls == [None, None, None]
+    assert (term.vt.columns, term.vt.lines) == (90, 30)
 
 
 def test_special_keys():
