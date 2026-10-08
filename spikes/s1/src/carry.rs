@@ -53,7 +53,7 @@ impl Tracker {
         }
     }
 
-    fn before_unit(&mut self, term: &Terminal, unit: &[u8]) {
+    fn before_unit(&mut self, term: &mut Terminal, unit: &[u8]) {
         if unit == b"\x1b7" || unit == b"\x1b[s" {
             self.saved_cursor = Some(SavedCursor {
                 x: term.cursor_x().expect("cursor x"),
@@ -72,7 +72,7 @@ impl Tracker {
                     if let Some(&mode) = alt_modes.first() {
                         self.alt_entry = Some(AltEntry {
                             mode,
-                            primary_snapshot: snap::snapshot(term, SnapOpts { palette: true }),
+                            primary_snapshot: snapshot_full(term, self, SnapOpts { palette: true }),
                             primary_cursor: (term.cursor_x().expect("x"), term.cursor_y().expect("y")),
                         });
                     }

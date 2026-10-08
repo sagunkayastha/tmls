@@ -96,6 +96,9 @@ pub struct CaseResult {
     pub snap_faithful: bool,
     /// First A-vs-restore(S) mismatch when `!snap_faithful`.
     pub snap_first_mismatch: Option<String>,
+    /// Mismatch introduced only by continuation after a faithful snapshot.
+    pub post_tail_first_mismatch: Option<String>,
+    pub alt_mode_at_split: Option<u16>,
     pub a_scrollback_rows: usize,
     /// Fully plain-blank rows at the bottom of A's viewport when snapshotted.
     pub a_trailing_blank_rows: u16,
@@ -234,6 +237,8 @@ pub fn run_case_with(
         class_detail: None,
         snap_faithful,
         snap_first_mismatch: if snap_faithful { None } else { first_mismatch(&d0, &a_hist, &c0_hist) },
+        post_tail_first_mismatch: if snap_faithful { first_mismatch(&diff, &d.history, &c_hist) } else { None },
+        alt_mode_at_split: tracker.alt_entry.as_ref().map(|entry| entry.mode),
         a_scrollback_rows: ca.1.scrollback_rows,
         a_trailing_blank_rows: trailing_blank_rows(&ca.0),
         cells_blank_equivalent: diff.cell_mismatches.iter().filter(|(_, _, a, b)| blank_equivalent(a, b)).count(),
@@ -700,17 +705,15 @@ mod tests {
         assert!(r.identical, "{r:?}");
     }
 
-    /// After the 47 exit, primary cell (29,8): D text="", C text=" " with fg=(204,102,102).
+    /// The carried primary snapshot preserves empty-cell identity through a 47-mode exit.
     #[test]
-    #[ignore]
     fn residual_alt_screen_repro() {
         let prefix = b"\n\n\x1b[?1049h\x1b[?1049l\n\n\n\n\n\nprimary cycle 1 line 5 \x1b[35mcolour\x1b[?1047hs\x1b[?1047lb\x1b[?47h";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"\x1b[?47lback");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 80, 24, 2000);
-        assert_eq!(r.class.as_deref(), Some("alt_screen"), "{r:?}");
-        assert!(r.first_mismatch.as_deref().is_some_and(|s| s.starts_with("cell (29,8): D=\"\" C=\" \"")), "{r:?}");
+        assert!(r.identical, "{r:?}");
     }
 
     #[test]
