@@ -4,3 +4,5 @@
 // `gen` is a reserved keyword in edition 2024, hence the raw identifier.
 pub mod r#gen;
 pub mod grid;
+pub mod snap;
+pub mod splitter;
