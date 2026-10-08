@@ -70,3 +70,36 @@ All 13 modes from the plan exist as `Mode` consts in 0.2.2; none are skipped.
 Not captured (exist in the crate, outside the fixed list): 47/1047 alt-screen variants, 1005/1015/1016
 mouse encodings, X10 mouse (9), insert (ANSI 4), cursor blinking (12, captured via `cursor_style`
 instead), keypad, left/right margin, etc.
+
+## Experiment (`src/experiment.rs`, `src/report.rs`, `s1 run`)
+
+```sh
+cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
+    --out /data/scratch/s1/results/<id> --cols 120 --rows 40 --scrollback 2000 --seed 1
+```
+
+- Per stream: D = fresh terminal fed the whole stream. For each split point `p` and strategy,
+  Naive snapshots `bytes[..p]`, Aligned snapshots `bytes[..q]` with
+  `q = last_boundary_at_or_before(p)`. Each restores into C and feeds C the rest of the stream.
+  The run compares C with D.
+- `split_points`: 0 and len, 64 random boundaries, 64 random non-boundaries, and ±2 around every
+  `ESC[?1049h`, `ESC[?1049l`, `ESC]8;` and lead byte of a (CJK/emoji-range) wide char. The list is
+  capped at 400 (`--stream-cap name=N` sets a cap per stream).
+- Sizes: recorded streams use their `.meta.json` cols/rows (120x40). Generated streams use 80x24,
+  except `wrap_pending`, which is 120x24 because it assumes 120 columns. `claude` is skipped
+  (`--skip`) because its recording is invalid.
+- Grids are compared after `grid::normalize`, which turns a plain blank `""` or `" "` into one
+  canonical blank. `TermState.pending_wrap` is compared.
+- **Scrollback text** is compared through Formatter `Format::Plain` (`unwrap(false)`). The output
+  covers the whole PageList, history first, with trailing blank rows always trimmed. The first
+  `scrollback_rows` lines (right-trimmed) are the history, compared as `scrollback_text_equal`.
+- **`max_scrollback` is in BYTES** in ghostty (`Screen.zig`: "amount of scrollback to keep in
+  bytes"), even though the Rust doc says "lines". PageList rounds it up to its minimum size. That
+  minimum is still more than every corpus stream needs (gitlog keeps 649 history rows at 2000).
+- Taxonomy: each non-identical case gets the first class that matches, in this priority order:
+  `parser_state_split > alt_screen > trailing_row_drop > scrollback > modes > cursor > title_pwd > kitty_kbd > style_only > text > other`.
+- Outputs: `cases.jsonl` (one record per case, with diagnostics `snap_faithful`,
+  `a_trailing_blank_rows`, `cells_blank_equivalent` and `first_visible_cell_mismatch`),
+  `streams.json`, `summary.md` and `taxonomy.md`.
+- The splitter mirrors ghostty's `parse_table.zig`: BEL ends only OSC, DCS/APC/PM/SOS end only at
+  ST, ESC aborts CSI/nF, and CAN/SUB return to ground.
