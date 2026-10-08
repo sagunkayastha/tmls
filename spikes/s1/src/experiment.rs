@@ -190,7 +190,7 @@ pub fn run_case_with(
         Strategy::Aligned | Strategy::AlignedUnwrap | Strategy::AlignedCarry => splitter::last_boundary_at_or_before(bounds, p),
     };
     let mut a = new_term(cols, rows, scrollback);
-    let mut tracker = Tracker::default();
+    let mut tracker = Tracker::with_scrollback(scrollback as usize);
     if case.strategy == Strategy::AlignedCarry {
         tracker.feed(&mut a, &bytes[..q]);
     } else {

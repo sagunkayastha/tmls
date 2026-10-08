@@ -49,7 +49,7 @@ impl Worker {
         let replies = Rc::new(Cell::new(0));
         let count = replies.clone();
         term.on_pty_write(move |_, _| count.set(count.get() + 1)).expect("reply callback");
-        Self { term, tracker: Tracker::default(), log: Vec::new(), offset: 0, epoch: 0, cols, rows, scrollback, replies }
+        Self { term, tracker: Tracker::with_scrollback(scrollback), log: Vec::new(), offset: 0, epoch: 0, cols, rows, scrollback, replies }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -248,6 +248,16 @@ mod tests {
         client.apply(&worker.log[h.offset as usize..], &[ResizeEvent { offset: at, epoch: worker.epoch, cols: 30, rows: 6 }]);
         assert_eq!(client.epoch, worker.epoch);
         assert!(equal(&mut worker.term, &mut client.term));
+    }
+
+    #[test]
+    fn wrap_pending_resize_handoff_identical() {
+        let bytes = crate::r#gen::adversarial().into_iter()
+            .find(|(name, _)| name == "wrap_pending").unwrap().1;
+        for split in [679, 681, 688] {
+            let result = simulate(&bytes, 120, 24, 2000, split);
+            assert!(result.iter().all(|r| r.identical), "split {split}: {result:?}");
+        }
     }
 
     #[test]

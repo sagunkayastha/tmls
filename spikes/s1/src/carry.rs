@@ -1,16 +1,17 @@
 //! State the Formatter does not emit. The worker owns the PTY byte stream and
 //! calls [`Tracker::feed`] for every chunk; incomplete VT units stay buffered.
 
-use libghostty_vt::screen::Screen;
+use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::style::{Style, StyleColor, Underline};
-use libghostty_vt::terminal::{Mode, Terminal};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate, Terminal};
 
 use crate::grid::{self, Cell};
 use crate::snap::{self, SnapOpts};
 use crate::splitter::{self, CutState};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tracker {
+    pub max_scrollback: usize,
     pub title: Option<String>,
     pub pwd: Option<String>,
     pub kitty_stack: Vec<u32>,
@@ -18,6 +19,19 @@ pub struct Tracker {
     pub alt_entry: Option<AltEntry>,
     pub active_hyperlink: Option<String>,
     pending: Vec<u8>,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self { max_scrollback: 2000, title: None, pwd: None, kitty_stack: Vec::new(),
+            saved_cursor: None, alt_entry: None, active_hyperlink: None, pending: Vec::new() }
+    }
+}
+
+impl Tracker {
+    pub fn with_scrollback(max_scrollback: usize) -> Self {
+        Self { max_scrollback, ..Self::default() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,16 +185,16 @@ fn sgr_from_cell(cell: &Cell) -> Vec<u8> {
 /// Formatter VT plus state the Formatter drops. All overlays use absolute
 /// screen positions; the final sequence restores the live pen and cursor.
 pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u8> {
-    let unwrapped = snapshot_full_with_unwrap(term, tr, opts, true);
-    let restored = snap::restore(term.cols().expect("cols"), term.rows().expect("rows"), 2000, &unwrapped);
+    let unwrapped = snapshot_full_with_unwrap(term, tr, opts, false);
+    let restored = snap::restore(term.cols().expect("cols"), term.rows().expect("rows"), tr.max_scrollback, &unwrapped);
     if grid::row_flags(term).expect("source flags") == grid::row_flags(&restored).expect("restored flags") {
         unwrapped
     } else {
-        snapshot_full_with_unwrap(term, tr, opts, false)
+        snapshot_full_with_unwrap(term, tr, opts, true)
     }
 }
 
-fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, unwrap: bool) -> Vec<u8> {
+fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, per_row: bool) -> Vec<u8> {
     let on_alt = term.active_screen().expect("screen") == Screen::Alternate;
     let mut out = Vec::new();
     if on_alt {
@@ -189,7 +203,7 @@ fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, 
             out.extend_from_slice(format!("\x1b[?{}h", entry.mode).as_bytes());
         }
     }
-    out.extend_from_slice(&snap::snapshot_unwrap(term, opts, unwrap));
+    out.extend_from_slice(&if per_row { per_row_unwrap(term, opts) } else { snap::snapshot_unwrap(term, opts, true) });
     // A primary-screen prefix may enable modes which the active-screen
     // Formatter does not explicitly disable. Reconcile the compared modes.
     for (code, mode) in [
@@ -206,7 +220,7 @@ fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, 
     // row also scrolls a fresh empty terminal. Measure the row deficit before
     // adding only the rows that the reconstruction actually dropped.
     let baseline = snap::restore(
-        term.cols().expect("cols"), term.rows().expect("rows"), 2000, &out,
+        term.cols().expect("cols"), term.rows().expect("rows"), tr.max_scrollback, &out,
     );
     let deficit = term.scrollback_rows().expect("scrollback").saturating_sub(
         baseline.scrollback_rows().expect("restored scrollback"),
@@ -229,15 +243,17 @@ fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, 
         out.extend_from_slice(b"\x1b]8;;");
         out.extend_from_slice(uri.as_bytes());
         out.extend_from_slice(b"\x1b\\");
-        for cell in &grid.cells[i..end] {
-            if cell.wide && cell.text.is_empty() { continue; }
+        for (offset, cell) in grid.cells[i..end].iter().enumerate() {
+            let index = i + offset;
+            if index % grid.cols as usize != 0 && grid.cells[index - 1].wide { continue; }
             out.extend_from_slice(&sgr_from_cell(cell));
             out.extend_from_slice(if cell.text.is_empty() { b" " } else { cell.text.as_bytes() });
         }
         out.extend_from_slice(b"\x1b]8;;\x1b\\");
         i = end;
     }
-    erase_overlay(&mut out, &grid);
+    let erased_rows = erase_overlay(&mut out, &grid);
+    restore_viewport_wraps(&mut out, term, &grid, tr.max_scrollback, &erased_rows);
     if let Some(title) = &tr.title {
         out.extend_from_slice(b"\x1b]0;"); out.extend_from_slice(title.as_bytes()); out.extend_from_slice(b"\x1b\\");
     }
@@ -282,8 +298,86 @@ fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, 
     out
 }
 
-fn erase_overlay(out: &mut Vec<u8>, grid: &grid::Grid) {
+fn per_row_unwrap(term: &Terminal, opts: SnapOpts) -> Vec<u8> {
+    let mut wrapped = snap::snapshot_unwrap(term, opts, false);
+    // Reflow needs autowrap while printing the formatted rows, even if the
+    // source's current DECAWM state is off. The final mode reconciliation
+    // restores that state after the screen has been rebuilt.
+    if let Some(i) = wrapped.windows(5).position(|w| w == b"\x1b[?7l") {
+        wrapped[i + 4] = b'h';
+    }
+    let flags = grid::row_flags(term).expect("row flags");
+    // The pinned Formatter's wide-spacer rows can change row count when joined.
+    // Preserve their CRLF boundaries until the wide reflow path can be encoded
+    // without that ambiguity. Narrow screens still unwrap only flagged rows.
+    let has_wide = (0..flags.len()).any(|row| row_has_wide(term, row));
+    let mut out = Vec::with_capacity(wrapped.len());
+    let mut row = 0usize;
+    let mut i = 0;
+    while i < wrapped.len() {
+        if wrapped[i..].starts_with(b"\r\n") {
+            if !flags.get(row).is_some_and(|f| f.0 && !has_wide && can_unwrap_row(term, row)) { out.extend_from_slice(b"\r\n"); }
+            row += 1;
+            i += 2;
+        } else {
+            out.push(wrapped[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn can_unwrap_row(term: &Terminal, row: usize) -> bool {
+    let history = term.scrollback_rows().expect("history");
+    let cols = term.cols().expect("cols");
+    for x in 0..cols {
+        let point = if row < history { Point::History(PointCoordinate { x, y: row as u32 }) }
+            else { Point::Viewport(PointCoordinate { x, y: (row - history) as u32 }) };
+        let cell = term.grid_ref(point).expect("row cell").cell().expect("row cell value");
+        if cell.wide().expect("wide") != CellWide::Narrow { return false; }
+        if x == cols - 1 { return cell.has_text().expect("text"); }
+    }
+    false
+}
+
+fn row_has_wide(term: &Terminal, row: usize) -> bool {
+    let history = term.scrollback_rows().expect("history");
+    (0..term.cols().expect("cols")).any(|x| {
+        let point = if row < history { Point::History(PointCoordinate { x, y: row as u32 }) }
+            else { Point::Viewport(PointCoordinate { x, y: (row - history) as u32 }) };
+        term.grid_ref(point).expect("row cell").cell().expect("row cell value").wide().expect("wide") != CellWide::Narrow
+    })
+}
+
+
+fn restore_viewport_wraps(out: &mut Vec<u8>, source: &Terminal, grid: &grid::Grid, scrollback: usize, erased_rows: &[bool]) {
+    let source_flags = grid::row_flags(source).expect("source row flags");
+    let restored = snap::restore(grid.cols, grid.rows, scrollback, out);
+    let restored_flags = grid::row_flags(&restored).expect("restored row flags");
+    let source_history = source.scrollback_rows().expect("history");
+    let restored_history = restored.scrollback_rows().expect("history");
     let cols = grid.cols as usize;
+    for y in 0..grid.rows.saturating_sub(1) as usize {
+        if !erased_rows[y] || !source_flags[source_history + y].0 || restored_flags.get(restored_history + y).is_some_and(|f| f.0) { continue; }
+        let last = &grid.cells[y * cols + cols - 1];
+        let x = if last.text.is_empty() && cols > 1 && grid.cells[y * cols + cols - 2].wide { cols - 2 } else { cols - 1 };
+        let head = &grid.cells[y * cols + x];
+        out.extend_from_slice(&snap::cup(x as u16, y as u16));
+        out.extend_from_slice(&sgr_from_cell(head));
+        out.extend_from_slice(head.text.as_bytes());
+        let first = &grid.cells[(y + 1) * cols];
+        out.extend_from_slice(&sgr_from_cell(first));
+        out.extend_from_slice(if first.text.is_empty() { b" " } else { first.text.as_bytes() });
+        if first.text.is_empty() {
+            out.extend_from_slice(&snap::cup(0, (y + 1) as u16));
+            out.extend_from_slice(b"\x1b[X");
+        }
+    }
+}
+
+fn erase_overlay(out: &mut Vec<u8>, grid: &grid::Grid) -> Vec<bool> {
+    let cols = grid.cols as usize;
+    let mut erased_rows = vec![false; grid.rows as usize];
     for row in 0..grid.rows as usize {
         let cells = &grid.cells[row * cols..(row + 1) * cols];
         let erasable = |x: usize| cells[x].text.is_empty() && !cells[x].wide
@@ -297,6 +391,7 @@ fn erase_overlay(out: &mut Vec<u8>, grid: &grid::Grid) {
                 col += 1;
             }
             if bg.is_none() && !cells[col..].iter().any(|c| !c.text.is_empty()) { continue; }
+            erased_rows[row] = true;
             out.extend_from_slice(&snap::cup(start as u16, row as u16));
             out.extend_from_slice(b"\x1b[0m");
             if let Some((r, g, b)) = bg {
@@ -305,6 +400,7 @@ fn erase_overlay(out: &mut Vec<u8>, grid: &grid::Grid) {
             out.extend_from_slice(format!("\x1b[{}X\x1b[0m", col - start).as_bytes());
         }
     }
+    erased_rows
 }
 
 pub fn overlay_run_count(term: &mut Terminal) -> usize {
@@ -394,6 +490,52 @@ mod tests {
         crate::grid::normalize(&mut a.0);
         crate::grid::normalize(&mut b.0);
         assert!(crate::grid::diff(&a, &b).is_identical());
+    }
+
+    fn continue_and_compare(prefix: &[u8], tail: &[u8]) -> (Terminal<'static, 'static>, Terminal<'static, 'static>) {
+        let (mut a, mut b) = roundtrip(prefix, 20, 4);
+        a.vt_write(tail);
+        b.vt_write(tail);
+        let mut aa = grid::capture(&mut a).unwrap();
+        let mut bb = grid::capture(&mut b).unwrap();
+        grid::normalize(&mut aa.0);
+        grid::normalize(&mut bb.0);
+        assert!(grid::diff(&aa, &bb).is_identical(), "{:?}", grid::diff(&aa, &bb));
+        (a, b)
+    }
+
+    #[test]
+    fn alt_1047_clears_on_exit() {
+        let (mut a, mut b) = continue_and_compare(b"primary\x1b[?1047halt text", b"\x1b[?1047l");
+        let ca = grid::capture(&mut a).unwrap();
+        let cb = grid::capture(&mut b).unwrap();
+        assert_eq!(ca.0.cells[0].text, "p");
+        assert_eq!(ca.0, cb.0);
+        let (_, mut reentered) = continue_and_compare(b"primary\x1b[?1047halt text", b"\x1b[?1047l\x1b[?1047h");
+        assert!(grid::capture(&mut reentered).unwrap().0.cells.iter().all(|c| c.text.is_empty()));
+    }
+
+    #[test]
+    fn alt_1049_implicit_save_separate_from_esc7() {
+        let prefix = b"\x1b[3;4H\x1b7\x1b[2;2H\x1b[?1049halt";
+        let (mut a, mut b) = continue_and_compare(prefix, b"\x1b[?1049l");
+        assert_eq!((a.cursor_x().unwrap(), a.cursor_y().unwrap()), (1, 1));
+        assert_eq!((b.cursor_x().unwrap(), b.cursor_y().unwrap()), (1, 1));
+        a.vt_write(b"\x1b8"); b.vt_write(b"\x1b8");
+        // Pinned Ghostty overwrites the primary screen's ESC 7 slot on 1049h.
+        assert_eq!((a.cursor_x().unwrap(), a.cursor_y().unwrap()), (1, 1));
+        assert_eq!((b.cursor_x().unwrap(), b.cursor_y().unwrap()), (1, 1));
+    }
+
+    #[test]
+    fn alt_repeated_and_cross_mode_exit() {
+        for (prefix, tail) in [
+            (b"primary\x1b[?47ha\x1b[?47hb".as_slice(), b"\x1b[?47lc".as_slice()),
+            (b"primary\x1b[?47ha\x1b[?47lb\x1b[?1049hc".as_slice(), b"\x1b[?1049ld".as_slice()),
+            (b"primary\x1b[?1049ha".as_slice(), b"\x1b[?47lb".as_slice()),
+        ] {
+            continue_and_compare(prefix, tail);
+        }
     }
 
     #[test]
@@ -492,9 +634,46 @@ mod tests {
         let mut tr = Tracker::default();
         tr.feed(&mut original, b"short");
         let snapshot = snapshot_full(&mut original, &tr, SnapOpts { palette: true });
-        assert!(!snapshot.windows(2).any(|w| w == b"[X"));
-        assert!(!snapshot.windows(2).any(|w| w == b"1X"));
+        assert!(ech_counts(&snapshot).is_empty());
     }
+
+    fn ech_counts(bytes: &[u8]) -> Vec<usize> {
+        bytes.windows(2).enumerate().filter_map(|(i, w)| {
+            if w != b"\x1b[" { return None; }
+            let tail = &bytes[i + 2..];
+            let end = tail.iter().position(|b| (0x40..=0x7e).contains(b))?;
+            (tail[end] == b'X').then(|| std::str::from_utf8(&tail[..end]).unwrap().parse().unwrap())
+        }).collect()
+    }
+
+    #[test]
+    fn ech_on_wrapped_row_keeps_wrap_flags() {
+        let bytes = b"abcde\x1b[1;2H\x1b[48;2;1;2;3m\x1b[X\x1b[1;5He\x1b[0mf";
+        let (mut a, mut b) = roundtrip(bytes, 5, 4);
+        assert_eq!(grid::row_flags(&a).unwrap(), grid::row_flags(&b).unwrap());
+        assert!(ech_counts(&snapshot_full(&mut a, &Tracker::default(), SnapOpts { palette: true })).len() > 0);
+        assert!(grid::diff(&grid::capture(&mut a).unwrap(), &grid::capture(&mut b).unwrap()).is_identical());
+    }
+
+    #[test]
+    fn wide_wrap_with_scrollback_roundtrips() {
+        let bytes = crate::r#gen::adversarial().into_iter()
+            .find(|(name, _)| name == "utf8_wide_combining").unwrap().1;
+        for split in [3537, 3549, 3557, 3564] {
+            let (mut a, mut b) = roundtrip(&bytes[..split], 80, 24);
+            assert_eq!(a.scrollback_rows().unwrap(), b.scrollback_rows().unwrap(), "split {split}");
+            assert!(grid::diff(&grid::capture(&mut a).unwrap(), &grid::capture(&mut b).unwrap()).is_identical(), "split {split}");
+        }
+    }
+
+
+    #[test]
+    fn hyperlink_wide_glyph_keeps_following_cell() {
+        let bytes = "\x1b]8;;https://x.example\x1b\\界z\x1b]8;;\x1b\\".as_bytes();
+        let (mut a, mut b) = roundtrip(bytes, 8, 3);
+        assert_eq!(grid::capture(&mut a).unwrap().0.cells, grid::capture(&mut b).unwrap().0.cells);
+    }
+
 
     #[test]
     fn unwrap_snapshot_keeps_wrap_flags() {
