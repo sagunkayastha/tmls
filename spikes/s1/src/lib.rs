@@ -3,6 +3,7 @@
 //! is single-threaded.
 // `gen` is a reserved keyword in edition 2024, hence the raw identifier.
 pub mod experiment;
+pub mod carry;
 pub mod r#gen;
 pub mod report;
 pub mod grid;
