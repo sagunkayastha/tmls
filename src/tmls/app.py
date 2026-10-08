@@ -79,6 +79,8 @@ class SessionRow(Static):
             self.app.push_screen(manage.SessionActions(self.session))
         else:
             await self.app.open_session(self.session)
+            if self.session.host != hosts.KITTY:
+                self.app.focus_terminal()  # already the shown tab: no tab switch to move focus
 
 
 class SessionList(VerticalScroll):

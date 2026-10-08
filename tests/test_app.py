@@ -169,6 +169,16 @@ async def test_click_opens_session_in_a_tab(fake_hosts):
         assert name(app.query_one(Tabs).active_tab) == "alpha ×"
 
 
+async def test_clicking_the_shown_session_again_gives_the_terminal_focus(fake_hosts):
+    # no tab switch happens, so nothing else moves focus off the list the click landed on
+    app = tmls_app.Tmls()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for(pilot, lambda: app.query(f"#s-{tmls_app.slug('box', 'alpha')}"))
+        await open_session(app, pilot, "alpha")
+        await open_session(app, pilot, "alpha")
+        assert isinstance(app.focused, Terminal)
+
+
 async def test_row_menu_renames_an_open_session_and_reattaches(fake_hosts, monkeypatch):
     called = []
     async def rename(host, old, new):
