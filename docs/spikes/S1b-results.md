@@ -1,6 +1,6 @@
 # S1b results — carry snapshot and handoff (2026-10-08)
 
-**Verdict: S1b remains open.** On Linux archbox, the final Formatter VT reconstruction plus worker carry is identical under the unchanged S1 comparison on **3271/3344 (97.8%)** original-corpus splits and **3828/3901 (98.1%)** expanded-corpus splits. The four v2 recordings contribute 557/557 identical AlignedCarry splits, including prompt-first alt-screen sessions and a fixed nested tmux recording. The remaining 73 cases are reproduced and drafted as upstream issues in [S1b-residuals.md](S1b-residuals.md); no issue has been filed. The handoff simulation has zero client PTY reply attempts but resized continuation differs in 91/400 cases. §5.2 attach/reconnect is not frozen.
+**Verdict: S1b remains open.** On Linux archbox, the final Formatter VT reconstruction plus worker carry is identical under the unchanged S1 comparison on **3271/3344 (97.8%)** original-corpus splits and **3828/3901 (98.1%)** expanded-corpus splits. The four v2 recordings contribute 557/557 identical AlignedCarry splits, including prompt-first alt-screen sessions and a fixed nested tmux recording. The remaining 73 cases are classified in [S1b-residuals.md](S1b-residuals.md), with two proposed upstream issue drafts; three pass the immediate snapshot comparison and diverge only after continuation, so their cause is still open. No issue has been filed. The measured handoff streams had zero client PTY reply attempts, but resized continuation differs in 91/400 cases. §5.2 attach/reconnect is not frozen.
 
 "Identical" means **identical under the S1 comparison**: normalised viewport cells (including OSC 8 URI), selected `TermState` fields, and right-trimmed history text. It does not prove complete terminal equivalence, graphics, side effects in a real transport, or styles and links in scrollback. This comparison is unchanged from [S1-results.md](S1-results.md).
 
@@ -48,7 +48,7 @@ First-match class counts; the classifier can call an alt-screen tail `alt_screen
 | Style only | 2 | 3 | 3 | 1 |
 | Text | 235 | 436 | 446 | 41 |
 
-All 73 AlignedCarry residuals occur in `alt_screen_cycle` (48) and `erase_insert_delete` (25). The five specific carry paths in PLAN §6 have focused tests: alt exit to primary, OSC 8 URI and continued open link, DECSC/DECRC with pen, kitty stack pop behavior, and pending wrap including a wide final glyph. DECOM cursor handling and trailing blank history rows have focused tests as well. The comparison still sees 47 styled-empty-vs-space cases and 25 erased-cell cases. [Residual analysis and draft upstream issues](S1b-residuals.md) give byte-level reproductions under 200 bytes and expected/actual cells.
+All 73 AlignedCarry residuals occur in `alt_screen_cycle` (48) and `erase_insert_delete` (25). The five specific carry paths in PLAN §6 have focused tests: alt exit to primary, OSC 8 URI and continued open link, DECSC/DECRC with pen, kitty stack pop behavior, and pending wrap including a wide final glyph. DECOM cursor handling, combined private-mode alt entry/exit, and trailing blank history rows have focused tests as well. The comparison still sees 47 styled-empty-vs-space cases and 25 erased-cell cases. Three alt-cycle cases have a faithful immediate snapshot, then diverge after continuation; their cause is not established. [Residual analysis and draft upstream issues](S1b-residuals.md) give byte-level reproductions under 200 bytes and expected/actual cells.
 
 ## Corpus v2
 
@@ -63,7 +63,7 @@ The original seven `.bin` recordings were unchanged. New recordings and hashes a
 
 ## Handoff simulation
 
-`/data/scratch/s1/results/2026-10-08-s1b-run5/handoff/` has `cases.jsonl` and `summary.md`. For each of 20 original-corpus streams, 20 seeded aligned splits were tested twice: plain tail and a tail with an ordered resize epoch to 100×30. The worker consumed the tail while the fixed snapshot was in flight; the client attached at the snapshot size and applied bytes after its offset. `on_pty_write` callbacks counted reply attempts. The client filtered recognized query units before feeding its replica; this is a simulation choice, not a proven generic reply-disable API.
+`/data/scratch/s1/results/2026-10-08-s1b-run5/handoff/` has `cases.jsonl` and `summary.md`. For each of 20 original-corpus streams, 20 seeded aligned splits were tested twice: plain tail and a tail with an ordered resize epoch to 100×30. The worker consumed the tail while the fixed snapshot was in flight; the client attached at the snapshot size and applied bytes after its offset. `on_pty_write` callbacks counted reply attempts. The client filtered a short list of recognized query units before feeding its replica. The current code also buffers queries split across delivery calls; the saved 800-case artifact predates that fix. An inert callback emits no client PTY writes in this simulation, but the zero-attempt measurement covers only the tested streams and query filter. This is not a proven generic reply-disable API.
 
 | Variant | Cases | Identical | Mismatches | Client PTY reply attempts |
 |---|---:|---:|---:|---:|
@@ -71,7 +71,7 @@ The original seven `.bin` recordings were unchanged. New recordings and hashes a
 | Tail with resize epoch | 400 | 309 | 91 (55 scrollback, 34 text, 2 alt) | 0 |
 | Total | 800 | 694 | 106 | **0** |
 
-The plain-tail mismatches match the styled-blank residual classes. The resize mismatches include history row-count changes (`gitlog`, `utf8_wide_combining`, `resize_marker`) and wrap/reflow text changes (`wrap_pending`, Unicode). They are **not** accepted as covered by the Formatter issue drafts; resize continuation needs its own repair or an explicit product limitation. The simulation records 586 suppressed side-effect callbacks (bell/title/clipboard) and does not perform network delivery, replay retention, or atomic subscription races.
+The plain-tail mismatches match the styled-blank residual classes. The resize mismatches include history row-count changes (`gitlog`, `utf8_wide_combining`, `resize_marker`) and wrap/reflow text changes (`wrap_pending`, Unicode). They are **not** accepted as covered by the Formatter issue drafts; resize continuation needs its own repair or an explicit product limitation. The simulation observed 586 bell/title/clipboard callback invocations with inert callbacks; it does not distinguish snapshot replay from live delivery or establish phase-aware side-effect suppression. It does not perform network delivery, replay retention, or atomic subscription races.
 
 ## Gate and remaining work
 

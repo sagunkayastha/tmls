@@ -83,6 +83,7 @@ pub struct Client {
     pub epoch: u32,
     replies: Rc<Cell<usize>>,
     suppressed_side_effects: Rc<Cell<usize>>,
+    pending: Vec<u8>,
 }
 
 impl Client {
@@ -99,7 +100,7 @@ impl Client {
         let clipboard = suppressed_side_effects.clone();
         term.on_clipboard_write(move |_, _| { clipboard.set(clipboard.get() + 1); Ok(()) }).expect("clipboard callback");
         term.vt_write(&h.bytes);
-        Self { term, offset: h.offset, epoch: h.epoch, replies, suppressed_side_effects }
+        Self { term, offset: h.offset, epoch: h.epoch, replies, suppressed_side_effects, pending: Vec::new() }
     }
 
     pub fn apply(&mut self, bytes_after_offset: &[u8], resizes_after_epoch: &[ResizeEvent]) {
@@ -121,10 +122,19 @@ impl Client {
 
     fn apply_bytes(&mut self, bytes: &[u8]) {
         // Queries change no compared terminal state. Removing complete query
-        // units keeps this replica from invoking its reply callback.
-        let bounds = splitter::boundaries(bytes);
+        // units keeps this replica from invoking its reply callback. A query
+        // can cross delivery chunks, so retain the incomplete VT suffix.
+        self.pending.extend_from_slice(bytes);
+        let states = splitter::cut_states(&self.pending);
+        let end = (1..=self.pending.len())
+            .rev()
+            .find(|&p| states[p] == CutState::Ground)
+            .unwrap_or(0);
+        if end == 0 { return; }
+        let ready: Vec<u8> = self.pending.drain(..end).collect();
+        let bounds = splitter::boundaries(&ready);
         for w in bounds.windows(2) {
-            let unit = &bytes[w[0]..w[1]];
+            let unit = &ready[w[0]..w[1]];
             if !is_reply_query(unit) { self.term.vt_write(unit); }
         }
     }
@@ -248,6 +258,18 @@ mod tests {
         assert_eq!(worker.reply_attempts(), 1);
         let mut client = Client::attach(&h);
         client.apply(&worker.log[h.offset as usize..], &[]);
+        assert_eq!(client.reply_attempts(), 0);
+        assert!(equal(&mut worker.term, &mut client.term));
+    }
+
+    #[test]
+    fn client_query_split_across_deliveries() {
+        let mut worker = Worker::new(20, 4, 2000);
+        worker.feed(b"ready");
+        let h = worker.snapshot();
+        let mut client = Client::attach(&h);
+        client.apply(b"\x1b[", &[]);
+        client.apply(b"6n", &[]);
         assert_eq!(client.reply_attempts(), 0);
         assert!(equal(&mut worker.term, &mut client.term));
     }

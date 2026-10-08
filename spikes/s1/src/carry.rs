@@ -64,18 +64,21 @@ impl Tracker {
         }
         if let Some(body) = unit.strip_prefix(b"\x1b[?") {
             if let Some((&final_byte, params)) = body.split_last() {
-                if let Ok(mode) = std::str::from_utf8(params).unwrap_or("").parse::<u16>() {
-                    if [47, 1047, 1049].contains(&mode) {
-                        if final_byte == b'h' && term.active_screen().expect("screen") == Screen::Primary {
-                            self.alt_entry = Some(AltEntry {
-                                mode,
-                                primary_snapshot: snap::snapshot(term, SnapOpts { palette: true }),
-                                primary_cursor: (term.cursor_x().expect("x"), term.cursor_y().expect("y")),
-                            });
-                        } else if final_byte == b'l' {
-                            self.alt_entry = None;
-                        }
+                let alt_modes = params.split(|&b| b == b';')
+                    .filter_map(|p| std::str::from_utf8(p).ok()?.parse::<u16>().ok())
+                    .filter(|mode| [47, 1047, 1049].contains(mode))
+                    .collect::<Vec<_>>();
+                if final_byte == b'h' && term.active_screen().expect("screen") == Screen::Primary {
+                    if let Some(&mode) = alt_modes.first() {
+                        self.alt_entry = Some(AltEntry {
+                            mode,
+                            primary_snapshot: snap::snapshot(term, SnapOpts { palette: true }),
+                            primary_cursor: (term.cursor_x().expect("x"), term.cursor_y().expect("y")),
+                        });
                     }
+                } else if final_byte == b'l' && self.alt_entry.as_ref()
+                    .is_some_and(|entry| alt_modes.contains(&entry.mode)) {
+                    self.alt_entry = None;
                 }
             }
         }
@@ -337,6 +340,24 @@ mod tests {
         let mut restored = crate::snap::restore(20, 4, 2000, &entry.primary_snapshot);
         let (grid, _) = crate::grid::capture(&mut restored).unwrap();
         assert_eq!(grid.cells[0].text, "p");
+    }
+
+    #[test]
+    fn combined_private_modes_preserve_primary_on_alt_exit() {
+        let mut t = term();
+        let mut tr = Tracker::default();
+        tr.feed(&mut t, b"primary\x1b[?1049;25halt");
+        assert_eq!(tr.alt_entry.as_ref().map(|entry| entry.mode), Some(1049));
+        let snapshot = snapshot_full(&mut t, &tr, SnapOpts { palette: true });
+        tr.feed(&mut t, b"\x1b[?1049;25lmore");
+        assert!(tr.alt_entry.is_none());
+        let mut restored = crate::snap::restore(20, 4, 2000, &snapshot);
+        restored.vt_write(b"\x1b[?1049;25lmore");
+        let mut a = crate::grid::capture(&mut t).unwrap();
+        let mut b = crate::grid::capture(&mut restored).unwrap();
+        crate::grid::normalize(&mut a.0);
+        crate::grid::normalize(&mut b.0);
+        assert!(crate::grid::diff(&a, &b).is_identical());
     }
 
     #[test]

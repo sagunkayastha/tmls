@@ -13,11 +13,13 @@ Scope: Linux archbox, `libghostty-vt = 0.2.2`, Ghostty source `a887df42c56f6de86
 
 The carry work fixed active OSC 8 continuation, primary-prefix mode leakage, trailing blank rows, and pending wrap after a wide glyph. Run5 has 73 non-identical AlignedCarry cases: 31 `alt_screen`, 41 `text`, 1 `style_only`. The first-match `alt_screen` class means the snapshot was on alt and the tail left it; in these 31 cases the actual mismatch is a styled blank in primary content. No residual `scrollback`, `title_pwd`, `cursor`, or `kitty_kbd` class remains.
 
+Run6 records `snap_faithful=true` for three `alt_screen_cycle` failures at splits 1394, 1395, and 1400: the restored state passes the immediate S1 comparison, then diverges after continuation. Those three need investigation of state outside that comparison or of 47-mode restoration. The other 70 fail the immediate comparison. The class counts below describe observed mismatches, not proven causes for every split.
+
 | Class | Count | Streams | Observed first mismatch | Decision |
 |---|---:|---|---|---|
-| `alt_screen` | 31 | `alt_screen_cycle` | cell (29,8): D `""`, C `" "` with foreground `(204,102,102)` | Formatter reconstruction of primary styled blank; issue draft below |
-| `text` | 41 | `erase_insert_delete` 24; `alt_screen_cycle` 17 | erased cell: D `""` with background, C `" "` with same background; alt case has D `""`, C styled `" "` | Formatter's text representation of styled empty cells; issue draft below |
-| `style_only` | 1 | `erase_insert_delete` | D empty cell background `(181,189,104)`, C empty cell with no background | Formatter omits erase background; issue draft below |
+| `alt_screen` | 31 | `alt_screen_cycle` | cell (29,8): D `""`, C `" "` with foreground `(204,102,102)` | Proposed primary reconstruction or 47-mode continuation cause; issue draft below |
+| `text` | 41 | `erase_insert_delete` 24; `alt_screen_cycle` 17 | erased cell: D `""` with background, C `" "` with same background; alt case has D `""`, C styled `" "` | Proposed Formatter text representation cause; issue draft below |
+| `style_only` | 1 | `erase_insert_delete` | D empty cell background `(181,189,104)`, C empty cell with no background | Proposed Formatter erase-background cause; issue draft below |
 
 `grid::normalize` intentionally does not erase style on a styled blank or collapse an erased empty cell and a printed space. Changing the S1 comparison here would hide state that later ICH/DCH/ED operations can expose, so it remains unchanged. Some empty-vs-space cells may render alike, but the gate is **identical under the S1 comparison**.
 
@@ -43,4 +45,4 @@ The carry work fixed active OSC 8 continuation, primary-prefix mode leakage, tra
 - **Repro:** 80×24 terminal; feed `\n\n\x1b[?1049h\x1b[?1049l\n\n\n\n\n\nprimary cycle 1 line 5 \x1b[35mcolour\x1b[?1047hs\x1b[?1047lb\x1b[?47h`, snapshot at that point, then feed `\x1b[?47lback` to both terminals. The whole stream is 93 bytes. See ignored `residual_alt_screen_repro`.
 - **Expected:** Primary-screen cell (29,8) remains empty and the continued grid matches uninterrupted parsing.
 - **Actual:** Restored cell (29,8) is a printed space with foreground `(204,102,102)`; uninterrupted cell is empty. Run5 reports 31 `alt_screen` first-match cases and 17 `text` cases with the same first mismatch. This is a proposed Formatter reconstruction cause; it needs upstream confirmation that the primary Formatter VT, rather than the 47 mode itself, creates the space.
-- **Impact:** The five carried state paths pass their focused tests, but this class keeps the S1b all-stream gate open.
+- **Impact:** The five carried state paths pass their focused tests, but this class keeps the S1b all-stream gate open. Three run6 splits match immediately after restoration and diverge only after continuation; isolate 47-mode and hidden primary-screen state before attributing those cases upstream.
