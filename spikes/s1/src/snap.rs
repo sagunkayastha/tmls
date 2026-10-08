@@ -15,6 +15,21 @@ use std::time::{Duration, Instant};
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::terminal::{Mode, Options, Terminal};
 
+pub fn cup(x: u16, y: u16) -> Vec<u8> {
+    format!("\x1b[{};{}H", y + 1, x + 1).into_bytes()
+}
+
+/// Plain blank viewport rows following the last content row.
+pub fn trailing_blank_rows(term: &mut Terminal) -> u16 {
+    let (grid, _) = crate::grid::capture(term).expect("capture");
+    let cols = grid.cols as usize;
+    (0..grid.rows)
+        .rev()
+        .take_while(|&y| grid.cells[y as usize * cols..(y as usize + 1) * cols]
+            .iter().all(crate::grid::is_plain_blank))
+        .count() as u16
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SnapOpts {
     /// Emit the colour palette (OSC 4) in the snapshot.
@@ -34,7 +49,7 @@ pub fn snapshot_unwrap(term: &Terminal, o: SnapOpts, unwrap: bool) -> Vec<u8> {
     let mut s = snapshot_raw_unwrap(term, o, unwrap);
     if !term.mode(Mode::ORIGIN).expect("mode") {
         let (x, y) = (term.cursor_x().expect("cursor_x"), term.cursor_y().expect("cursor_y"));
-        s.extend_from_slice(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
+        s.extend_from_slice(&cup(x, y));
     }
     s
 }

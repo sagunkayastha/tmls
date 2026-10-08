@@ -5,6 +5,7 @@ use libghostty_vt::screen::Screen;
 use libghostty_vt::style::{Style, StyleColor, Underline};
 use libghostty_vt::terminal::{Mode, Terminal};
 
+use crate::grid::{self, Cell};
 use crate::snap::{self, SnapOpts};
 use crate::splitter::{self, CutState};
 
@@ -148,6 +149,103 @@ pub fn sgr_from_style(style: &Style) -> Vec<u8> {
     format!("\x1b[{}m", params.join(";")).into_bytes()
 }
 
+fn sgr_from_cell(cell: &Cell) -> Vec<u8> {
+    let mut p = vec!["0".to_string()];
+    for (on, code) in [
+        (cell.bold, 1), (cell.faint, 2), (cell.italic, 3),
+        (cell.underline, 4), (cell.inverse, 7), (cell.strike, 9),
+    ] { if on { p.push(code.to_string()); } }
+    if let Some((r, g, b)) = cell.fg { p.push(format!("38;2;{r};{g};{b}")); }
+    if let Some((r, g, b)) = cell.bg { p.push(format!("48;2;{r};{g};{b}")); }
+    format!("\x1b[{}m", p.join(";")).into_bytes()
+}
+
+/// Formatter VT plus state the Formatter drops. All overlays use absolute
+/// screen positions; the final sequence restores the live pen and cursor.
+pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u8> {
+    let on_alt = term.active_screen().expect("screen") == Screen::Alternate;
+    let mut out = Vec::new();
+    if on_alt {
+        if let Some(entry) = &tr.alt_entry {
+            out.extend_from_slice(&entry.primary_snapshot);
+            out.extend_from_slice(format!("\x1b[?{}h", entry.mode).as_bytes());
+        }
+    }
+    out.extend_from_slice(&snap::snapshot(term, opts));
+    let pad = snap::trailing_blank_rows(term);
+    for _ in 0..pad { out.extend_from_slice(b"\r\n"); }
+
+    let (grid, _) = grid::capture(term).expect("capture");
+    let origin = term.mode(Mode::ORIGIN).expect("origin mode");
+    if origin { out.extend_from_slice(b"\x1b[?6l"); }
+    let mut i = 0usize;
+    while i < grid.cells.len() {
+        let Some(uri) = grid.cells[i].hyperlink.as_deref() else { i += 1; continue };
+        let row = i / grid.cols as usize;
+        let mut end = i + 1;
+        while end < grid.cells.len()
+            && end / grid.cols as usize == row
+            && grid.cells[end].hyperlink.as_deref() == Some(uri) { end += 1; }
+        out.extend_from_slice(&snap::cup((i % grid.cols as usize) as u16, row as u16));
+        out.extend_from_slice(b"\x1b]8;;");
+        out.extend_from_slice(uri.as_bytes());
+        out.extend_from_slice(b"\x1b\\");
+        for cell in &grid.cells[i..end] {
+            if cell.wide && cell.text.is_empty() { continue; }
+            out.extend_from_slice(&sgr_from_cell(cell));
+            out.extend_from_slice(if cell.text.is_empty() { b" " } else { cell.text.as_bytes() });
+        }
+        out.extend_from_slice(b"\x1b]8;;\x1b\\");
+        i = end;
+    }
+    if let Some(title) = &tr.title {
+        out.extend_from_slice(b"\x1b]0;"); out.extend_from_slice(title.as_bytes()); out.extend_from_slice(b"\x1b\\");
+    }
+    if let Some(pwd) = &tr.pwd {
+        out.extend_from_slice(b"\x1b]7;"); out.extend_from_slice(pwd.as_bytes()); out.extend_from_slice(b"\x1b\\");
+    }
+    if !tr.kitty_stack.is_empty() {
+        // Formatter emits the current flags as a set operation on the base
+        // entry. Reset that base before rebuilding the worker's push stack.
+        out.extend_from_slice(b"\x1b[=0;1u");
+    }
+    for &flags in &tr.kitty_stack { out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes()); }
+    if let Some(saved) = &tr.saved_cursor {
+        out.extend_from_slice(&snap::cup(saved.x, saved.y));
+        out.extend_from_slice(&saved.pen_sgr);
+        out.extend_from_slice(b"\x1b7\x1b[0m");
+    }
+    let x = term.cursor_x().expect("cursor x");
+    let y = term.cursor_y().expect("cursor y");
+    out.extend_from_slice(&snap::cup(x, y));
+    if term.is_cursor_pending_wrap().expect("pending wrap") {
+        let cell = &grid.cells[y as usize * grid.cols as usize + x as usize];
+        out.extend_from_slice(&sgr_from_cell(cell));
+        out.extend_from_slice(cell.text.as_bytes());
+    }
+    out.extend_from_slice(&sgr_from_style(&term.cursor_style().expect("cursor style")));
+    if origin {
+        out.extend_from_slice(b"\x1b[?6h");
+        let top = scroll_top_from_vt(&out);
+        out.extend_from_slice(&snap::cup(x, y.saturating_sub(top)));
+    }
+    out
+}
+
+fn scroll_top_from_vt(bytes: &[u8]) -> u16 {
+    let mut top = 0;
+    for chunk in bytes.split(|&b| b == 0x1b) {
+        if let Some(body) = chunk.strip_prefix(b"[") {
+            if let Some(pos) = body.iter().position(|&b| b == b'r') {
+                let n = std::str::from_utf8(&body[..pos]).ok().and_then(|s| s.split(';').next())
+                    .and_then(|s| s.parse::<u16>().ok()).unwrap_or(1);
+                top = n.saturating_sub(1);
+            }
+        }
+    }
+    top
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +305,65 @@ mod tests {
         let mut ct = term();
         for b in bytes { chopped.feed(&mut ct, std::slice::from_ref(b)); }
         assert_eq!(chopped, whole);
+    }
+
+    fn roundtrip(bytes: &[u8], cols: u16, rows: u16) -> (Terminal<'static, 'static>, Terminal<'static, 'static>) {
+        let mut original = Terminal::new(Options { cols, rows, max_scrollback: 2000 }).unwrap();
+        let mut tr = Tracker::default();
+        tr.feed(&mut original, bytes);
+        let snapshot = snapshot_full(&mut original, &tr, SnapOpts { palette: true });
+        let restored = crate::snap::restore(cols, rows, 2000, &snapshot);
+        (original, restored)
+    }
+
+    #[test]
+    fn trailing_blank_rows_padded() {
+        let mut stream = Vec::new();
+        for i in 0..300 { stream.extend_from_slice(format!("line{i:03}\r\n").as_bytes()); }
+        let (original, restored) = roundtrip(&stream, 20, 24);
+        assert_eq!(restored.scrollback_rows().unwrap(), original.scrollback_rows().unwrap());
+        assert_eq!(crate::experiment::history_text(&restored), crate::experiment::history_text(&original));
+    }
+
+    #[test]
+    fn hyperlink_overlay_restores_uris() {
+        let bytes = b"plain \x1b]8;;https://one.example\x1b\\first\x1b]8;;\x1b\\ gap \x1b]8;;https://two.example\x1b\\second\x1b]8;;\x1b\\";
+        let (mut original, mut restored) = roundtrip(bytes, 40, 4);
+        let (a, _) = crate::grid::capture(&mut original).unwrap();
+        let (b, _) = crate::grid::capture(&mut restored).unwrap();
+        assert_eq!(a.cells.iter().map(|c| &c.hyperlink).collect::<Vec<_>>(), b.cells.iter().map(|c| &c.hyperlink).collect::<Vec<_>>());
+        assert!(a.cells.iter().any(|c| c.hyperlink.as_deref() == Some("https://one.example")));
+    }
+
+    #[test]
+    fn pending_wrap_reemitted() {
+        let (mut original, mut restored) = roundtrip(b"12345", 5, 3);
+        assert!(restored.is_cursor_pending_wrap().unwrap());
+        original.vt_write(b"x");
+        restored.vt_write(b"x");
+        assert!(crate::grid::diff(&crate::grid::capture(&mut original).unwrap(), &crate::grid::capture(&mut restored).unwrap()).is_identical());
+    }
+
+    #[test]
+    fn title_pwd_restored() {
+        let (original, restored) = roundtrip(b"\x1b]0;my title\x07\x1b]7;file:///home/sgkayast\x1b\\", 20, 4);
+        assert_eq!(restored.title().unwrap(), original.title().unwrap());
+        assert_eq!(restored.pwd().unwrap(), original.pwd().unwrap());
+    }
+
+    #[test]
+    fn kitty_stack_restored() {
+        let (mut original, mut restored) = roundtrip(b"\x1b[>1u\x1b[>5u", 20, 4);
+        for step in 0..3 {
+            assert_eq!(restored.kitty_keyboard_flags().unwrap(), original.kitty_keyboard_flags().unwrap(), "after {step} pops");
+            original.vt_write(b"\x1b[<u");
+            restored.vt_write(b"\x1b[<u");
+        }
+    }
+
+    #[test]
+    fn decom_cup_ok() {
+        let (original, restored) = roundtrip(b"\x1b[2;4r\x1b[?6h\x1b[2;5H", 20, 5);
+        assert_eq!((restored.cursor_x().unwrap(), restored.cursor_y().unwrap()), (original.cursor_x().unwrap(), original.cursor_y().unwrap()));
     }
 }
