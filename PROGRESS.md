@@ -2,6 +2,29 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-07 (late) — S1 merged; plans for S1b + S2 written for Codex/DeepSeek ✅
+`spike/s1` merged into main (`7fd556b`), partial `claude.bin`/`claude.meta.json` removed (`d8fca23`, user consent).
+PC clone synced. Reviews: `docs/reviews/2026-10-07-codex-sol-s1.md` + final branch review → one fix wave
+(`f2f3437`, `697ad9f`), re-review clean, 31 tests pass on HEAD.
+- **Plans (hand-off to Codex + DeepSeek; Claude plans/verifies):**
+  - `docs/superpowers/plans/2026-10-08-s1b-snapshot-repair.md` — worker state carry (`carry::Tracker`,
+    `snapshot_full`: trailing-row pad, hyperlink overlay, pending wrap, title/pwd, kitty stack, DECSC, DECOM-safe
+    CUP, primary-at-alt-entry prefix) → `AlignedCarry` strategy in the split matrix; residual analysis + upstream
+    issue drafts; handoff simulation (offset, resize epoch, client never replies); corpus v2 (prompt-first,
+    nested2, claude). Headless → archbox.
+  - `docs/superpowers/plans/2026-10-08-s2-interaction-slice.md` — `s2-core` (PTY + emulator thread + Frame + key
+    encoding + latency log), `s2-wgpu` (winit+wgpu grid, atlas, IME, sidebar, field, menu) vs `s2-gpui`, `s2-bench`
+    (ydotool driver, CPU/RSS/GPU sampler, photon square) → 16-run matrix on the PC with the user present; decision
+    for PLAN §3. Builds in the PC Docker image; runs need the user's yes per PC session.
+- **Gotchas carried forward:** Zig 0.15.2 only; `max_scrollback` = bytes; no `snapshot.h` at a887df42; `57151cb`
+  does not build alone (bisect caveat); ydotool types into whatever is focused (probe first).
+
+### NEXT
+1. Codex/DeepSeek execute S1b (archbox) and S2 (PC Docker builds; user-run measurements) from the two plans;
+   Claude reviews each task + runs the Codex gate.
+2. User: accept Claude Code trust in `~/Others/tmls-rs` once so `record.sh claude` can record the TUI (S1b Task 6).
+3. Later: Windows MSVC build of libghostty-vt (laptop); native snapshot path (newer ghostty + own bindings).
+
 ## 2026-10-07 (night) — S1 emulator spike: partially passed (Linux, Formatter path); snapshot repair → S1b
 Branch `spike/s1` (commits `0813259`..`e23eba0` + this docs commit), run on archbox (Linux only). Results doc
 `docs/spikes/S1-results.md`; PLAN §3 Emulator row, §5.2, §6 S1 row and status line updated. Plan
