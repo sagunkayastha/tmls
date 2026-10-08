@@ -16,6 +16,7 @@ pub struct Tracker {
     pub kitty_stack: Vec<u32>,
     pub saved_cursor: Option<SavedCursor>,
     pub alt_entry: Option<AltEntry>,
+    pub active_hyperlink: Option<String>,
     pending: Vec<u8>,
 }
 
@@ -102,6 +103,10 @@ impl Tracker {
                 match kind {
                     b"0" | b"2" => self.title = Some(value),
                     b"7" => self.pwd = Some(value),
+                    b"8" => {
+                        let uri = value.split_once(';').map(|(_, uri)| uri).unwrap_or("");
+                        self.active_hyperlink = if uri.is_empty() { None } else { Some(uri.to_string()) };
+                    }
                     _ => {}
                 }
             }
@@ -172,6 +177,18 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         }
     }
     out.extend_from_slice(&snap::snapshot(term, opts));
+    // A primary-screen prefix may enable modes which the active-screen
+    // Formatter does not explicitly disable. Reconcile the compared modes.
+    for (code, mode) in [
+        (1, Mode::DECCKM), (7, Mode::WRAPAROUND), (25, Mode::CURSOR_VISIBLE),
+        (1000, Mode::NORMAL_MOUSE), (1002, Mode::BUTTON_MOUSE),
+        (1003, Mode::ANY_MOUSE), (1004, Mode::FOCUS_EVENT),
+        (1006, Mode::SGR_MOUSE), (2004, Mode::BRACKETED_PASTE),
+        (2026, Mode::SYNC_OUTPUT), (2027, Mode::GRAPHEME_CLUSTER),
+    ] {
+        let suffix = if term.mode(mode).expect("mode") { 'h' } else { 'l' };
+        out.extend_from_slice(format!("\x1b[?{code}{suffix}").as_bytes());
+    }
     // The Formatter can omit blank viewport rows, but replaying every blank
     // row also scrolls a fresh empty terminal. Measure the row deficit before
     // adding only the rows that the reconstruction actually dropped.
@@ -228,7 +245,12 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
     let y = term.cursor_y().expect("cursor y");
     out.extend_from_slice(&snap::cup(x, y));
     if term.is_cursor_pending_wrap().expect("pending wrap") {
-        let cell = &grid.cells[y as usize * grid.cols as usize + x as usize];
+        let mut replay_x = x;
+        if x > 0 && grid.cells[y as usize * grid.cols as usize + (x - 1) as usize].wide {
+            replay_x -= 1;
+            out.extend_from_slice(&snap::cup(replay_x, y));
+        }
+        let cell = &grid.cells[y as usize * grid.cols as usize + replay_x as usize];
         out.extend_from_slice(&sgr_from_cell(cell));
         out.extend_from_slice(cell.text.as_bytes());
     }
@@ -237,6 +259,11 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         out.extend_from_slice(b"\x1b[?6h");
         let top = scroll_top_from_vt(&out);
         out.extend_from_slice(&snap::cup(x, y.saturating_sub(top)));
+    }
+    if let Some(uri) = &tr.active_hyperlink {
+        out.extend_from_slice(b"\x1b]8;;");
+        out.extend_from_slice(uri.as_bytes());
+        out.extend_from_slice(b"\x1b\\");
     }
     out
 }

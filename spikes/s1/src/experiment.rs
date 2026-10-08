@@ -656,6 +656,66 @@ mod tests {
     }
 
     #[test]
+    fn active_hyperlink_continues_after_restore() {
+        let b = b"\x1b]8;;https://example.org\x1b\\before after\x1b]8;;\x1b\\";
+        let split = b.windows(6).position(|w| w == b" after").unwrap();
+        let result = run_case(b, &case(split, Strategy::AlignedCarry), 40, 3, 2000);
+        assert!(result.identical, "{result:?}");
+    }
+
+    #[test]
+    fn alt_mouse_mode_reconciled() {
+        let b = b"\x1b[?1000hprimary\x1b[?1049halt\x1b[?1000l\x1b[?1049l";
+        let split = b.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
+        let r = run_case(b, &case(split, Strategy::AlignedCarry), 20, 4, 2000);
+        assert!(r.identical, "{r:?}");
+    }
+
+    #[test]
+    fn wide_pending_wrap_roundtrip() {
+        let b = "00:abcｗxyz\r\n01:abcｗxyz\r\n02:abcｗxyz\r\n03:abcｗxyz\r\n";
+        let r = run_case(b.as_bytes(), &case(9, Strategy::AlignedCarry), 4, 3, 2000);
+        assert!(r.identical, "{r:?}");
+    }
+
+    /// Erased blank at (0,0): D has bg=(181,189,104), restored C has no bg.
+    #[test]
+    #[ignore]
+    fn residual_style_only_repro() {
+        let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[2J\x1b[0m";
+        let mut stream = prefix.to_vec();
+        stream.extend_from_slice(b"X");
+        assert!(stream.len() <= 200);
+        let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
+        assert_eq!(r.class.as_deref(), Some("style_only"), "{r:?}");
+    }
+
+    /// Erased blank at (4,1): D has text="" with bg=(181,189,104), C has text=" " with the same bg.
+    #[test]
+    #[ignore]
+    fn residual_text_repro() {
+        let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[0K\x1b[0m";
+        let mut stream = prefix.to_vec();
+        stream.extend_from_slice(b"X");
+        assert!(stream.len() <= 200);
+        let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
+        assert_eq!(r.class.as_deref(), Some("text"), "{r:?}");
+    }
+
+    /// After the 47 exit, primary cell (29,8): D text="", C text=" " with fg=(204,102,102).
+    #[test]
+    #[ignore]
+    fn residual_alt_screen_repro() {
+        let prefix = b"\n\n\x1b[?1049h\x1b[?1049l\n\n\n\n\n\nprimary cycle 1 line 5 \x1b[35mcolour\x1b[?1047hs\x1b[?1047lb\x1b[?47h";
+        let mut stream = prefix.to_vec();
+        stream.extend_from_slice(b"\x1b[?47lback");
+        assert!(stream.len() <= 200);
+        let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 80, 24, 2000);
+        assert_eq!(r.class.as_deref(), Some("alt_screen"), "{r:?}");
+        assert!(r.first_mismatch.as_deref().is_some_and(|s| s.starts_with("cell (29,8): D=\"\" C=\" \"")), "{r:?}");
+    }
+
+    #[test]
     fn strategy_matrix_includes_carry() {
         let b = b"ab\x1b[31mcd";
         assert_eq!(Strategy::ALL.len(), 4);
