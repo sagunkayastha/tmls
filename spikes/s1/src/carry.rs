@@ -171,6 +171,16 @@ fn sgr_from_cell(cell: &Cell) -> Vec<u8> {
 /// Formatter VT plus state the Formatter drops. All overlays use absolute
 /// screen positions; the final sequence restores the live pen and cursor.
 pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u8> {
+    let unwrapped = snapshot_full_with_unwrap(term, tr, opts, true);
+    let restored = snap::restore(term.cols().expect("cols"), term.rows().expect("rows"), 2000, &unwrapped);
+    if grid::row_flags(term).expect("source flags") == grid::row_flags(&restored).expect("restored flags") {
+        unwrapped
+    } else {
+        snapshot_full_with_unwrap(term, tr, opts, false)
+    }
+}
+
+fn snapshot_full_with_unwrap(term: &mut Terminal, tr: &Tracker, opts: SnapOpts, unwrap: bool) -> Vec<u8> {
     let on_alt = term.active_screen().expect("screen") == Screen::Alternate;
     let mut out = Vec::new();
     if on_alt {
@@ -179,7 +189,7 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
             out.extend_from_slice(format!("\x1b[?{}h", entry.mode).as_bytes());
         }
     }
-    out.extend_from_slice(&snap::snapshot(term, opts));
+    out.extend_from_slice(&snap::snapshot_unwrap(term, opts, unwrap));
     // A primary-screen prefix may enable modes which the active-screen
     // Formatter does not explicitly disable. Reconcile the compared modes.
     for (code, mode) in [
@@ -463,6 +473,7 @@ mod tests {
         let (original, restored) = roundtrip(b"\x1b[2;4r\x1b[?6h\x1b[2;5H", 20, 5);
         assert_eq!((restored.cursor_x().unwrap(), restored.cursor_y().unwrap()), (original.cursor_x().unwrap(), original.cursor_y().unwrap()));
     }
+
     #[test]
     fn ech_overlay_restores_erased_bg_after_ed() {
         let (mut original, mut restored) = roundtrip(b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[2J\x1b[0m", 8, 3);
@@ -485,5 +496,24 @@ mod tests {
         assert!(!snapshot.windows(2).any(|w| w == b"1X"));
     }
 
+    #[test]
+    fn unwrap_snapshot_keeps_wrap_flags() {
+        let line = vec![b'a'; 300];
+        let (original, restored) = roundtrip(&line, 80, 24);
+        assert_eq!(grid::row_flags(&original).unwrap(), grid::row_flags(&restored).unwrap());
+    }
 
+    #[test]
+    fn resize_after_restore_reflows_like_reference() {
+        let line = vec![b'a'; 300];
+        let (mut original, mut restored) = roundtrip(&line, 80, 24);
+        original.resize(100, 30, 8, 16).unwrap();
+        restored.resize(100, 30, 8, 16).unwrap();
+        let mut a = grid::capture(&mut original).unwrap();
+        let mut b = grid::capture(&mut restored).unwrap();
+        grid::normalize(&mut a.0);
+        grid::normalize(&mut b.0);
+        assert!(grid::diff(&a, &b).is_identical());
+        assert_eq!(crate::experiment::history_text(&original), crate::experiment::history_text(&restored));
+    }
 }
