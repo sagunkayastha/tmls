@@ -172,7 +172,16 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         }
     }
     out.extend_from_slice(&snap::snapshot(term, opts));
-    let pad = snap::trailing_blank_rows(term);
+    // The Formatter can omit blank viewport rows, but replaying every blank
+    // row also scrolls a fresh empty terminal. Measure the row deficit before
+    // adding only the rows that the reconstruction actually dropped.
+    let baseline = snap::restore(
+        term.cols().expect("cols"), term.rows().expect("rows"), 2000, &out,
+    );
+    let deficit = term.scrollback_rows().expect("scrollback").saturating_sub(
+        baseline.scrollback_rows().expect("restored scrollback"),
+    );
+    let pad = snap::trailing_blank_rows(term).min(deficit as u16);
     for _ in 0..pad { out.extend_from_slice(b"\r\n"); }
 
     let (grid, _) = grid::capture(term).expect("capture");
@@ -230,6 +239,14 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         out.extend_from_slice(&snap::cup(x, y.saturating_sub(top)));
     }
     out
+}
+
+pub fn overlay_run_count(term: &mut Terminal) -> usize {
+    let (grid, _) = grid::capture(term).expect("capture");
+    grid.cells.iter().enumerate().filter(|(i, c)| {
+        c.hyperlink.is_some() && (*i == 0 || *i % grid.cols as usize == 0
+            || grid.cells[*i - 1].hyperlink != c.hyperlink)
+    }).count()
 }
 
 fn scroll_top_from_vt(bytes: &[u8]) -> u16 {
@@ -323,6 +340,12 @@ mod tests {
         let (original, restored) = roundtrip(&stream, 20, 24);
         assert_eq!(restored.scrollback_rows().unwrap(), original.scrollback_rows().unwrap());
         assert_eq!(crate::experiment::history_text(&restored), crate::experiment::history_text(&original));
+    }
+
+    #[test]
+    fn empty_viewport_does_not_gain_history() {
+        let (original, restored) = roundtrip(b"", 20, 24);
+        assert_eq!(restored.scrollback_rows().unwrap(), original.scrollback_rows().unwrap());
     }
 
     #[test]

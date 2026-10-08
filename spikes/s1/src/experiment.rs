@@ -22,6 +22,7 @@ use rand::SeedableRng;
 use serde::Serialize;
 
 use crate::grid::{self, Cell, Diff, Grid, TermState};
+use crate::carry::{self, Tracker};
 use crate::snap::{self, SnapOpts};
 use crate::splitter;
 
@@ -34,10 +35,11 @@ pub enum Strategy {
     Aligned,
     /// Aligned, but the snapshot uses the Formatter's `unwrap` option (soft wraps preserved).
     AlignedUnwrap,
+    AlignedCarry,
 }
 
 impl Strategy {
-    pub const ALL: [Strategy; 3] = [Strategy::Naive, Strategy::Aligned, Strategy::AlignedUnwrap];
+    pub const ALL: [Strategy; 4] = [Strategy::Naive, Strategy::Aligned, Strategy::AlignedUnwrap, Strategy::AlignedCarry];
 }
 
 impl fmt::Display for Strategy {
@@ -46,6 +48,7 @@ impl fmt::Display for Strategy {
             Strategy::Naive => "Naive",
             Strategy::Aligned => "Aligned",
             Strategy::AlignedUnwrap => "AlignedUnwrap",
+            Strategy::AlignedCarry => "AlignedCarry",
         })
     }
 }
@@ -65,6 +68,10 @@ pub struct CaseResult {
     /// Field names of the state mismatches (`cursor_x`, `mode.origin`, ...).
     pub state_mismatches: Vec<String>,
     pub snapshot_bytes: usize,
+    /// Size of the carry snapshot (zero for baseline strategies).
+    pub carry_bytes: usize,
+    /// Linked viewport runs overlaid by the carry snapshot.
+    pub carry_overlay_runs: usize,
     pub snapshot_us: u128,
     pub restore_us: u128,
     /// Human-readable first mismatch: first state mismatch, else first cell, else scrollback text.
@@ -175,14 +182,23 @@ pub fn run_case_with(
     let split_is_boundary = bounds.binary_search(&p).is_ok();
     let q = match case.strategy {
         Strategy::Naive => p,
-        Strategy::Aligned | Strategy::AlignedUnwrap => splitter::last_boundary_at_or_before(bounds, p),
+        Strategy::Aligned | Strategy::AlignedUnwrap | Strategy::AlignedCarry => splitter::last_boundary_at_or_before(bounds, p),
     };
     let mut a = new_term(cols, rows, scrollback);
-    a.vt_write(&bytes[..q]);
+    let mut tracker = Tracker::default();
+    if case.strategy == Strategy::AlignedCarry {
+        tracker.feed(&mut a, &bytes[..q]);
+    } else {
+        a.vt_write(&bytes[..q]);
+    }
     let a_alt_screen = a.active_screen().expect("active_screen") == Screen::Alternate;
     let (s, snap_d) = {
         let t0 = std::time::Instant::now();
-        let s = snap::snapshot_unwrap(&a, SnapOpts { palette: false }, case.strategy == Strategy::AlignedUnwrap);
+        let s = if case.strategy == Strategy::AlignedCarry {
+            carry::snapshot_full(&mut a, &tracker, SnapOpts { palette: false })
+        } else {
+            snap::snapshot_unwrap(&a, SnapOpts { palette: false }, case.strategy == Strategy::AlignedUnwrap)
+        };
         (s, t0.elapsed())
     };
     let (mut c, rest_d) = snap::timed_restore(cols, rows, scrollback as usize, &s);
@@ -203,6 +219,8 @@ pub fn run_case_with(
         cell_mismatches: diff.cell_mismatches.len(),
         state_mismatches: diff.state_mismatches.iter().map(|(f, _, _)| f.clone()).collect(),
         snapshot_bytes: s.len(),
+        carry_bytes: if case.strategy == Strategy::AlignedCarry { s.len() } else { 0 },
+        carry_overlay_runs: if case.strategy == Strategy::AlignedCarry { carry::overlay_run_count(&mut a) } else { 0 },
         snapshot_us: snap_d.as_micros(),
         restore_us: rest_d.as_micros(),
         first_mismatch: first_mismatch(&diff, &d.history, &c_hist),
@@ -617,6 +635,34 @@ mod tests {
         let mid = b.windows(8).position(|w| w == b"alt text").unwrap() + 8;
         let r2 = run_case(&b[..split], &case(mid, Strategy::Aligned), 20, 5, 100);
         assert!(r2.identical, "{r2:?}");
+    }
+
+    #[test]
+    fn alt_exit_after_restore_identical() {
+        let b = b"primary one\r\nprimary two\x1b[?1049halt text\x1b[?1049lback";
+        let split = b.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
+        let baseline = run_case(b, &case(split, Strategy::Aligned), 20, 5, 2000);
+        assert_eq!(baseline.class.as_deref(), Some("alt_screen"));
+        let carry = run_case(b, &case(split, Strategy::AlignedCarry), 20, 5, 2000);
+        assert!(carry.identical, "{carry:?}");
+    }
+
+    #[test]
+    fn saved_cursor_restored() {
+        let b = b"\x1b[1;31m\x1b[2;5H\x1b7\x1b[0m\x1b[4;2Hmid\x1b8after";
+        let split = b.windows(2).position(|w| w == b"\x1b8").unwrap();
+        let carry = run_case(b, &case(split, Strategy::AlignedCarry), 20, 5, 2000);
+        assert!(carry.identical, "{carry:?}");
+    }
+
+    #[test]
+    fn strategy_matrix_includes_carry() {
+        let b = b"ab\x1b[31mcd";
+        assert_eq!(Strategy::ALL.len(), 4);
+        for st in Strategy::ALL {
+            let result = run_case(b, &case(b.len(), st), 20, 3, 2000);
+            assert!(result.identical, "{st}: {result:?}");
+        }
     }
 
     #[test]

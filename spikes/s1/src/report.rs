@@ -132,24 +132,25 @@ pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     }
     let total = |st: Strategy| recs.iter().filter(|r| r.strategy == st).count();
     let ident = |st: Strategy| recs.iter().filter(|r| r.strategy == st && r.result.identical).count();
-    let _ = writeln!(out, "| class | Naive | Aligned | AlignedUnwrap | example (stream @ split [strategy]: first mismatch) |\n|---|---|---|---|---|");
-    let _ = writeln!(out, "| (identical) | {} | {} | {} | |", ident(Strategy::Naive), ident(Strategy::Aligned), ident(Strategy::AlignedUnwrap));
+    let _ = writeln!(out, "| class | Naive | Aligned | AlignedUnwrap | AlignedCarry | example (stream @ split [strategy]: first mismatch) |\n|---|---|---|---|---|---|");
+    let _ = writeln!(out, "| (identical) | {} | {} | {} | {} | |", ident(Strategy::Naive), ident(Strategy::Aligned), ident(Strategy::AlignedUnwrap), ident(Strategy::AlignedCarry));
     for c in CLASSES {
         let n = counts.get(&(*c, Strategy::Naive)).copied().unwrap_or(0);
         let a = counts.get(&(*c, Strategy::Aligned)).copied().unwrap_or(0);
         let u = counts.get(&(*c, Strategy::AlignedUnwrap)).copied().unwrap_or(0);
+        let k = counts.get(&(*c, Strategy::AlignedCarry)).copied().unwrap_or(0);
         let ex = example.get(&(*c, Strategy::Aligned)).or_else(|| example.get(&(*c, Strategy::Naive))).or_else(|| example.get(&(*c, Strategy::AlignedUnwrap)));
         let ex = ex.map_or(String::new(), |r| format!("{} @ {} [{}]: {}", r.stream, r.split, r.strategy,
             trunc(r.result.class_detail.as_deref().unwrap_or(""), 160)));
-        let _ = writeln!(out, "| {c} | {n} | {a} | {u} | {ex} |");
+        let _ = writeln!(out, "| {c} | {n} | {a} | {u} | {k} | {ex} |");
     }
-    let _ = writeln!(out, "| **total** | {} | {} | {} | |", total(Strategy::Naive), total(Strategy::Aligned), total(Strategy::AlignedUnwrap));
+    let _ = writeln!(out, "| **total** | {} | {} | {} | {} | |", total(Strategy::Naive), total(Strategy::Aligned), total(Strategy::AlignedUnwrap), total(Strategy::AlignedCarry));
 
     let _ = writeln!(out, "\n## All mismatching groups\n\nNon-identical cases with each mismatch group present (`secondary_classes`; a case counts in every group it has, so columns do not sum to the totals).\n");
-    let _ = writeln!(out, "| group | Naive | Aligned | AlignedUnwrap |\n|---|---|---|---|");
+    let _ = writeln!(out, "| group | Naive | Aligned | AlignedUnwrap | AlignedCarry |\n|---|---|---|---|---|");
     for gname in GROUPS {
         let n = |st: Strategy| recs.iter().filter(|r| r.strategy == st && !r.result.identical && r.result.secondary_classes.iter().any(|x| x == gname)).count();
-        let _ = writeln!(out, "| {gname} | {} | {} | {} |", n(Strategy::Naive), n(Strategy::Aligned), n(Strategy::AlignedUnwrap));
+        let _ = writeln!(out, "| {gname} | {} | {} | {} | {} |", n(Strategy::Naive), n(Strategy::Aligned), n(Strategy::AlignedUnwrap), n(Strategy::AlignedCarry));
     }
     let _ = writeln!(out, "\n## Streams per class\n\n| class | strategy | streams (cases) |\n|---|---|---|");
     for c in CLASSES {
