@@ -22,7 +22,7 @@ start() {
   local name=$1 cmd=$2
   : > "$OUT/$name.bin"
   tmux -L "$SOCK" kill-server 2>/dev/null || true
-  T new-session -d -x $COLS -y $ROWS -s rec -c "$REPO" \
+  T new-session -d -x $COLS -y $ROWS -s rec -c "${CWD:-$REPO}" \
     "env TERM=xterm-256color COLORTERM=truecolor TMPDIR=$TMPDIR sh -c 'sleep 1; $cmd'"
   T pipe-pane -o -t rec "cat >> $OUT/$name.bin"
 }
@@ -133,6 +133,7 @@ PY
 }
 rec_claude() {
   local c="claude"
+  CWD=/home/sgkayast   # trusted folder (the repo dir shows a trust dialog)
   start claude "$c"
   local i ok=0
   for ((i=0; i<20; i++)); do
