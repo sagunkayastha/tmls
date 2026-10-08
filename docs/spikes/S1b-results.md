@@ -1,32 +1,38 @@
 # S1b results — round 2 (2026-10-08)
 
-**S1b corpus gate: closed under the unchanged S1 comparison.** AlignedCarry is identical on **3901/3901** expanded-corpus splits. The original 3344 splits and all 557 v2 splits are identical. No S1 residual class remains, and no upstream issue draft needs filing. The simulated attach handoff is **480/480** identical without resize and **477/480** with an ordered resize epoch. Three `wrap_pending` resize cases still differ in viewport text, so production §5.2 attach/reconnect remains provisional pending the remaining reflow repair and a real transport/atomic subscription test.
+**S1b corpus gate: closed under the unchanged S1 comparison.** AlignedCarry is identical on **3901/3901** expanded-corpus splits. The original 3344 splits and all 557 v2 splits are identical. No S1 residual class remains, and no upstream issue draft needs filing. The simulated attach handoff is **480/480** identical both without resize and with an ordered resize epoch. Production §5.2 attach/reconnect remains provisional pending a real transport/atomic subscription test and phase-aware side-effect handling.
 
 "Identical" retains the S1 definition: normalised viewport cells (including OSC 8 URI), selected `TermState` fields, and right-trimmed history text. `wrap_flags_equal` is a separate diagnostic and does not alter that definition.
 
 ## Round 2 measurements
 
-| Strategy | Baseline S1b run6 | Round 2 run5 | Cases |
-|---|---:|---:|---:|
-| Naive | 1840 | 1840 | 3901 |
-| Aligned | 2792 | 2792 | 3901 |
-| AlignedUnwrap | 2782 | 2782 | 3901 |
-| AlignedCarry | 3828 | **3901** | 3901 |
+| Strategy | Baseline S1b run6 identical | Round 2 run5 identical | Final identical | Immediately faithful at restore | Cases |
+|---|---:|---:|---:|---:|---:|
+| Naive | 1840 | 1840 | 1840 | — | 3901 |
+| Aligned | 2792 | 2792 | 2792 | — | 3901 |
+| AlignedUnwrap | 2782 | 2782 | 2782 | — | 3901 |
+| AlignedCarry | 3828 | 3901 | **3901** | **3644** | 3901 |
+
+The 257 AlignedCarry snapshots that need the tail to become faithful cluster in `less_prompt` (94), `alt_screen_cycle` (81), `kitty_kbd` (50), and `unicode` (19), with 13 elsewhere. In the kitty cases the immediate current flags can be D=6/7 versus C=1/2. This is an attach-time diagnostic; the final continuation comparison passes.
 
 ECH overlaid erased empty cells with their background, skipping wide-cell spacers. The same carry snapshot now records the primary screen before alternate-screen entry. This closed the 70 immediate residuals and the three continuation-only `alt_screen_cycle` splits (1394/1395/1400). The latter were faithful on the active alternate screen but had lost empty-cell identity on the hidden primary screen; replaying the ECH-corrected primary snapshot fixed their later divergence. The tracker retains the entry mode (47, 1047, or 1049). `cases.jsonl` now includes `alt_mode_at_split` and `post_tail_first_mismatch`.
 
-The carry path emits Formatter VT with `unwrap(true)` to preserve soft-wrap metadata. If replayed row flags differ from the source, it falls back to the wrapped format, preserving the unchanged S1 identity in the pending-wrap and wide-character cases. Row flags matched on **3873/3901** AlignedCarry snapshots; 28 snapshots still disagree (10 `wrap_pending`, 14 `less`/`less_prompt`, 4 `utf8_wide_combining`) while their S1 state remains identical. The flag check is diagnostic, not part of S1 equality. The simple 300-column reflow test passes after resizing 80×24 to 100×30.
+The carry path first emits Formatter VT with `unwrap(true)` and probes its row flags. If they differ, it builds a per-row variant from wrapped Formatter VT, removing CRLF only after source rows flagged wrapped and safe to join. Wide-spacer screens conservatively retain wrapped row boundaries. The earlier **whole-snapshot wrapped fallback was a reverted plan deviation**. ECH runs are followed by wrap repair on affected viewport rows. Row flags now match on **3883/3901** AlignedCarry snapshots; the remaining 18 are 6 `less`, 8 `less_prompt`, and 4 `utf8_wide_combining`. They remain diagnostic, outside S1 equality. The 300-column reflow test still passes after resizing 80×24 to 100×30.
+
+The 14 `less`/`less_prompt` survivors occur while mode 1049's alternate screen is active. The Formatter reconstruction shifts wrapped rows on immediate restore; the later exit to the carried primary screen makes final S1 state equal. The four `utf8_wide_combining` survivors are splits 3537/3549/3557/3564: Formatter wide-spacer rows do not reconstruct their wrap metadata even when text and history match. Compact (≤200-byte) reproductions of these two survivor mechanisms have not been isolated; the exact corpus prefixes and effective splits are in the final `cases.jsonl`. This leaves that requested diagnostic artifact open.
 
 | Handoff variant | Identical | Cases | Remaining mismatch | Client PTY reply attempts |
 |---|---:|---:|---|---:|
 | Plain tail | **480** | 480 | none | 0 |
-| Tail with resize epoch | **477** | 480 | 3 `wrap_pending` viewport-text cases | 0 |
+| Tail with resize epoch | **480** | 480 | none | 0 |
 
-The remaining splits are 679, 681, and 688, each first differing at cell (20,1): reference `"m"`, client empty. The short query filter was extended to secondary DA (`CSI > c`), which was responsible for two reply attempts in an intermediate run. Zero attempts applies to the final measured streams and does not establish a general emulator reply-disable API. Bell/title/clipboard callbacks remain inert in the simulation; phase-aware suppression, network delivery, and atomic replay-subscription races were not tested.
+The former `wrap_pending` resize failures at splits 679, 681, and 688 now match. The short query filter includes secondary DA (`CSI > c`), which caused two reply attempts in an intermediate run. Zero attempts applies to the measured streams and does not establish a general emulator reply-disable API. Bell/title/clipboard callbacks remain inert in the simulation; phase-aware suppression, network delivery, and atomic replay-subscription races were not tested. The final matrix spent 5.74 s in snapshot-plus-restore calls across AlignedCarry cases, versus 4.50 s after the previous fallback and 3.75 s before it. The prior `snapshot_full` path used two or three temporary restores; this implementation uses three on the primary attempt and up to five when it retries, including at every alternate entry in `Tracker::feed`.
 
-Final artifacts: `/data/scratch/s1/results/2026-10-08-s1b-r2-run5/` (matrix) and `/data/scratch/s1/results/2026-10-08-s1b-r2-handoff-verified/` (handoff). Intermediate run1 revealed ECH touching wide spacers, run2 fixed that, run3 closed the corpus before unwrapped emission, and run4 exposed 14 unwrap regressions that the row-flag fallback resolves.
+Final code-commit artifacts (8eaf614): `/data/scratch/s1/results/2026-10-08-s1b-r2-final/matrix/` and `/data/scratch/s1/results/2026-10-08-s1b-r2-final/handoff/`. Each `summary.md` header records the hash. Intermediate round-2 run1 was **3104/3901**, including 765 scrollback-class failures; run2 fixed ECH touching wide spacers, run3 closed the corpus before unwrapped emission, and run4 exposed 14 unwrap regressions. The final per-row approach retains the unchanged comparison.
 
 ## Round 1 baseline (historical)
+
+The following setup, matrix, and taxonomy describe the 2026-10-07 S1b run6 before the round-2 repair. They are retained for comparison and do not describe the final 8eaf614 artifacts.
 
 ## Setup and method
 
@@ -97,6 +103,6 @@ The original seven `.bin` recordings were unchanged. New recordings and hashes a
 
 The plain-tail mismatches match the styled-blank residual classes. The resize mismatches include history row-count changes (`gitlog`, `utf8_wide_combining`, `resize_marker`) and wrap/reflow text changes (`wrap_pending`, Unicode). They are **not** accepted as covered by the Formatter issue drafts; resize continuation needs its own repair or an explicit product limitation. The simulation observed 586 bell/title/clipboard callback invocations with inert callbacks; it does not distinguish snapshot replay from live delivery or establish phase-aware side-effect suppression. It does not perform network delivery, replay retention, or atomic subscription races.
 
-## Gate and remaining work
+## Historical gate status after round 1
 
-PLAN §6 S1b asks for all-stream equality, or each remaining Formatter limit with an upstream issue **filed**. The original corpus still has 73 residuals, issues are drafted but not filed, and resize handoff has additional gaps. The gate remains **open**. §5.2 worker carry is measured on Linux for the compared text/state fields, while production attach/reconnect remains provisional. Windows MSVC, a real Claude TUI recording, graphics, a 10k-line scrollback performance run, query suppression beyond the simulated filter, and the erased-background upstream investigation remain unmeasured or open.
+At the end of round 1, PLAN §6 S1b asked for all-stream equality or a filed upstream issue for each remaining Formatter limit. The original corpus still had 73 residuals, issue drafts were not filed, and resize handoff had additional gaps; the gate was open then. The round-2 results above supersede that status. Windows MSVC, a real Claude TUI recording, graphics, a 10k-line scrollback performance run, and query suppression beyond the simulated filter remain unmeasured.

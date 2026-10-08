@@ -2,6 +2,12 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-08 — S1b round-2 fix wave at code commit 8eaf614
+
+Branch `spike/s1b-r2`. The focused ECH-on-wrapped-row and resize-epoch regressions now pass, as do wide-glyph hyperlink, alt-mode edge, and CSI-X parsing tests. `Tracker` carries the worker's scrollback setting into temporary restores. The whole-snapshot wrapped fallback was replaced by a row-aware path with conservative wide-spacer handling. `cargo test -p s1`: 73 passed, 2 ignored.
+
+Final matrix: **3901/3901** AlignedCarry cases, **3644/3901** immediately faithful at restore, and **3883/3901** equal row-wrap flags (18 diagnostic survivors). Final handoff: **480/480** plain and **480/480** resized, zero client reply attempts; the three former `wrap_pending` resize failures are gone. Exact artifacts: `/data/scratch/s1/results/2026-10-08-s1b-r2-final/matrix/` and `/data/scratch/s1/results/2026-10-08-s1b-r2-final/handoff/`, both stamped with `8eaf614`. Production attach remains provisional pending transport/atomic subscription, side effects, and broader reply suppression. Compact ≤200-byte repros for the 18 wrap-flag survivors remain open. Phase B waits for Claude re-review and merge.
+
 ## 2026-10-08 — S1b round 2: corpus gate closed
 
 Branch `spike/s1b-r2`, Linux archbox. ECH overlays erased empty cells with their background and skips wide-cell spacers; the same corrected snapshot is carried behind alternate-screen entries. All 73 round-1 residuals closed, including the three continuation-only mode-47 cases. AlignedCarry is **3901/3901** identical under the unchanged S1 comparison; no upstream issue remains to file. `cases.jsonl` adds post-tail mismatch, alt-entry mode, and diagnostic row-wrap flag equality (3873/3901 equal).
