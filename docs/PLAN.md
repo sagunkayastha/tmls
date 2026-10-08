@@ -1,7 +1,7 @@
 # tmls-rs — plan (draft 3, 2026-10-07)
 
 Working name. A native, GPU-drawn terminal + session system in Rust to replace tmls + tmux.
-Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 done (scripted PTY paths, kitty-hosted, real-keyboard plain letters); S1 partially passed (Linux, Formatter path; Windows + Claude recording pending); next S2 (PC) and S1b (snapshot repair). Nothing built yet.**
+Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 done; S1 partially passed (Linux Formatter path); S1b measured on Linux but gate open (73 residual split cases, upstream issues drafted but not filed, resize continuation gaps); S2 (PC) next. Windows and Claude recording pending. No product implementation yet.**
 History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `docs/reviews/2026-10-07-codex-astra.md`).
 
 ## 1. Why — and what we know vs assume
@@ -67,7 +67,7 @@ starvation, network delay. Transport retransmission delays bytes; it doesn't dro
 | Build or reuse? | Build session worker, hostd, desktop client; reuse libraries. **But first measure simpler options** (S0, S4): direct ssh+tmux in a native terminal, native client over a plain persistent connection. | Provisional until S0/S4 |
 | Object model | **Session = one PTY** (one program). Tabs/splits/layouts live in the **client** (per device). Stable `session_id` + `incarnation`; name is a mutable label. tmux sessions appear as bridged sessions. | Decided |
 | Who owns terminal state | **Session worker** (one process per session) owns PTY, the **authoritative emulator**, scrollback, replay log, input dedup. hostd = discovery, auth, routing, status, files; restartable without touching sessions. | Decided (replaces "holder + emulator in hostd") |
-| Emulator core | **libghostty-vt** (crate 0.2.2, MIT/Apache; Zig 0.15.2 build — not 0.16, S1), behind an `emu` crate. **Provisional**: snapshot format has no cross-version guarantee; pinned build + S1 required. `alacritty_terminal` is a **separate design branch** (no snapshot/encoders/graphics), not a drop-in. | Provisional. Gate S1 measured 2026-10-07 (Linux): pinned build parses the corpus; snapshot = Formatter VT reconstruction with gaps; S1b snapshot-repair gate before attach is frozen; see docs/spikes/S1-results.md |
+| Emulator core | **libghostty-vt** (crate 0.2.2, MIT/Apache; Zig 0.15.2 build — not 0.16, S1), behind an `emu` crate. **Provisional**: snapshot format has no cross-version guarantee; pinned build + S1 required. `alacritty_terminal` is a **separate design branch** (no snapshot/encoders/graphics), not a drop-in. | Provisional. S1 and S1b measured on Linux: worker carry reaches 3828/3901 identical split cases in the expanded S1 comparison, but 73 Formatter reconstruction residuals and resize handoff gaps keep S1b open; see docs/spikes/S1-results.md and docs/spikes/S1b-results.md. |
 | Desktop GUI | `winit` 0.30 + `wgpu` 30 + own renderer/UI layer vs `gpui` vs custom grid inside an existing toolkit — **all kept open until S2**, judged on latency **and** the cost of forms, IME, selection, menus. Text: `cosmic-text` + `swash`, own atlas. | Gate S2 |
 | Transport | Compare **QUIC (`quinn`)** vs **persistent TLS/TCP** in S4 on direct and DERP-relayed Tailscale paths. WebSocket for web. **0-RTT off** for input and mutations. | Gate S4 |
 | Typing prediction | Not in v1; revisit after measuring real RTTs (S4), esp. phone/cellular. | Deferred |
@@ -117,14 +117,20 @@ starvation, network delay. Transport retransmission delays bytes; it doesn't dro
   `Format::Vt` escape sequences rebuilding screen, modes, cursor, scrollback; S1 measured its gaps). It is taken at a
   **VT sequence boundary with tail carry** (bytes after the boundary go out as output from S), at the **session's
   size**: the client restores at that size and applies resizes after (resize epoch).
-- **Worker state carry (DESIGN, untested — gate S1b):** beside the Formatter output the worker carries title, pwd,
-  kitty keyboard push stack, pending wrap, DECSC saved cursor + pen, hyperlinks (until the Formatter emits OSC 8),
-  and a primary-screen snapshot taken at alt-screen entry.
+- **Worker state carry (measured in S1b on Linux under the S1 comparison; gate open):** beside the Formatter output
+  the worker carries title, pwd, kitty keyboard push stack, pending wrap, DECSC saved cursor + pen, hyperlinks
+  (until the Formatter emits OSC 8), and a primary-screen snapshot taken at alt-screen entry. The five focused
+  continuation paths pass; four prompt-first/nested v2 streams are 557/557 identical. Across the expanded corpus,
+  3828/3901 split cases are identical, with 73 styled/erased blank residuals. See docs/spikes/S1b-results.md.
 - **Handoff:** snapshot bytes + output offset S + resize epoch + replay subscription from S are one atomic unit;
   output events are retained until delivered; the worker encodes without holding the emulator lock (and never sends
   under it).
 - **Client restore** runs with PTY replies and side effects disabled (the worker is the sole reply authority; bell,
   OSC 52, notifications in the snapshot are not re-fired).
+- **S1b handoff evidence (simulation, not transport proof):** zero client PTY reply attempts across 800 cases;
+  plain-tail continuation 385/400 identical and resized continuation 309/400. The simulation filters recognized
+  query sequences before client parsing and counts suppressed side-effect callbacks. Resize reflow and a general
+  client query-reply disable mechanism remain open (docs/spikes/S1b-results.md).
 - **Portable attach (web / CLI / other versions)** uses the same VT reconstruction; measured only at **text-level
   fidelity** (right-trimmed visible text of end-of-stream snapshots in pyte) — no colour/attribute, history or
   continuation guarantee until measured further. Graphics and some parser state are documented limits.
@@ -173,7 +179,7 @@ answers rejected; hostd down → Claude's own prompt still works in the terminal
 |---|---|---|
 | **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: measured 2026-10-07 (scripted PTY paths + kitty-hosted + real-keyboard plain letters on the PC; see docs/spikes/S0-results.md) — gate closed for key loss: none found; presentation latency and modifier keys via real keyboard remain for S2.** |
 | S1 Emulator | libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. | Identical results; differences explained. **Status: partially passed (Linux, Formatter path) — see docs/spikes/S1-results.md; Windows + Claude recording pending.** Identical under the S1 comparison on 78.6% of Aligned cases (81.5% of distinct snapshot points); each difference assigned a proposed cause; worker state carry → S1b. |
-| **S1b Snapshot repair** | Worker state carry + handoff per §5.2; continuation tests pass for the 5 carried items (primary at alt entry, hyperlinks, DECSC, kitty stack, pending wrap); nested/prompt-first recordings identical under Aligned. | Identical under the S1 comparison on all corpus streams at sequence boundaries, or each residual explained as a Formatter limit with an upstream issue filed. Gates freezing §5.2 attach/reconnect. |
+| **S1b Snapshot repair** | Worker state carry + handoff per §5.2; continuation tests pass for the 5 carried items (primary at alt entry, hyperlinks, DECSC, kitty stack, pending wrap); nested/prompt-first recordings identical under AlignedCarry. | Identical under the S1 comparison on all corpus streams at sequence boundaries, or each residual explained as a Formatter limit with an upstream issue filed. Gates freezing §5.2 attach/reconnect. **Status: open (2026-10-08, Linux).** AlignedCarry 3828/3901 expanded cases; four v2 recordings 557/557; 73 styled/erased blank residuals with issue drafts, no issues filed; resize handoff 309/400 identical. See docs/spikes/S1b-results.md. |
 | S2 Interaction slice | Grid + sidebar + one editable form + selection + clipboard + IME (fcitx5, Windows TSF), in raw wgpu vs gpui; 60 Hz + high refresh, fractional scaling, monitor move. | p50/p95/p99 key-to-present (and camera-checked photon sample), CPU, idle power, text quality; pick on latency **and** coverage. |
 | S3 Worker survival | Kill hostd abruptly 100× incl. during create/adopt, long downtime under flood. | Programs survive; promised state restorable; no duplicate replies/input; memory within limits. |
 | S4 Transport | QUIC vs persistent TLS/TCP; direct vs DERP; loss, low bandwidth, Wi-Fi drop, sleep, address change. | Reconnect p95 < 1 s from restored connectivity; replay + input dedup correct under flood. |

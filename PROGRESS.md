@@ -1,6 +1,14 @@
-# PROGRESS — tmls-rs (2026-10-07)
+# PROGRESS — tmls-rs (2026-10-08)
 
 Quick session log. Newest entry first.
+
+## 2026-10-08 — S1b snapshot repair measured; gate remains open
+
+Branch `spike/s1b-snapshot-repair`, Linux archbox. Results: `docs/spikes/S1b-results.md`; residuals and upstream issue drafts: `docs/spikes/S1b-residuals.md`. The unchanged S1 comparison reports AlignedCarry 3271/3344 (97.8%) on the original corpus, 3828/3901 (98.1%) with four new recordings; all 557 prompt-first/nested2 splits are identical. Naive/Aligned/AlignedUnwrap original-corpus totals remain 1688/2628/2618. The 73 residuals are generated-stream styled/erased blank cells, with three ≤200-byte ignored repro tests and two issue drafts; no issue was filed.
+
+`carry::Tracker` and `snapshot_full` now preserve title/pwd, kitty stack, saved cursor/pen, primary screen behind alt, hyperlinks and active OSC 8, trailing blank history rows, origin-safe cursor, and pending wrap including wide glyphs. `s1 handoff` simulated 20 aligned splits × 20 streams × plain/resize: 385/400 plain and 309/400 resize identical, zero client PTY reply attempts, 586 side-effect callbacks suppressed. Resize reflow is unresolved; the client query filter is a simulation rather than a general Ghostty reply-disable switch. No real network or atomic replay-subscription race was tested.
+
+Corpus v2 (`vim_prompt`, `less_prompt`, `btop_prompt`, `nested2`) preserves the original seven recordings. Claude remains skipped pending repo trust confirmation; Windows MSVC, graphics, and 10k-line scrollback performance remain. PLAN §3/§5.2/§6 marks S1b measured but open; §5.2 attach/reconnect is not frozen. Runs: `/data/scratch/s1/results/2026-10-08-s1b-run5/` (original corpus), `/data/scratch/s1/results/2026-10-08-s1b-run6/` (expanded corpus), and `run5/handoff/`.
 
 ## 2026-10-07 (late) — S1 merged; plans for S1b + S2 written for Codex/DeepSeek ✅
 `spike/s1` merged into main (`7fd556b`), partial `claude.bin`/`claude.meta.json` removed (`d8fca23`, user consent).
