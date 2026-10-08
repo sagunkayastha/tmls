@@ -3,7 +3,7 @@
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::style::{RgbColor, Underline};
-use libghostty_vt::terminal::{Mode, Terminal};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate, Terminal};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -18,6 +18,8 @@ pub struct Cell {
     pub strike: bool,
     pub faint: bool,
     pub wide: bool,
+    /// OSC 8 hyperlink URI (via `GridRef::hyperlink_uri`); `None` = no link.
+    pub hyperlink: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -97,6 +99,7 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
     let blinking = snap.cursor_blinking()?;
 
     let mut cells = Vec::with_capacity(cols as usize * rows as usize);
+    let mut linked: Vec<usize> = Vec::new();
     let mut buf = String::new();
     let mut row_iter = rows_it.update(&snap)?;
     let mut y: u16 = 0;
@@ -115,7 +118,11 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
                 c.graphemes_utf8(&mut buf)?;
             }
             let st = c.style()?;
-            let wide = matches!(c.raw_cell()?.wide()?, CellWide::Wide);
+            let raw = c.raw_cell()?;
+            let wide = matches!(raw.wide()?, CellWide::Wide);
+            if raw.has_hyperlink()? {
+                linked.push(cells.len());
+            }
             cells.push(Cell {
                 text: buf.clone(),
                 fg: c.fg_color()?.map(rgb),
@@ -127,6 +134,7 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
                 strike: st.strikethrough,
                 faint: st.faint,
                 wide,
+                hyperlink: None,
             });
             x += 1;
         }
@@ -143,6 +151,24 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
     }
     drop(row_iter);
     drop(snap);
+    // Hyperlink URIs are not in the render state; resolve them per linked cell via GridRef.
+    let mut ubuf = vec![0u8; 4096];
+    for i in linked {
+        let (x, y) = ((i % cols as usize) as u16, (i / cols as usize) as u32);
+        let gr = term.grid_ref(Point::Viewport(PointCoordinate { x, y }))?;
+        let n = loop {
+            match gr.hyperlink_uri(&mut ubuf) {
+                Ok(n) => break n,
+                Err(libghostty_vt::error::Error::OutOfSpace { required }) => {
+                    ubuf.resize(required.max(ubuf.len() * 2), 0)
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+        if n > 0 {
+            cells[i].hyperlink = Some(String::from_utf8_lossy(&ubuf[..n]).into_owned());
+        }
+    }
 
     let mut modes = Vec::with_capacity(MODES.len());
     for (name, m) in MODES {
@@ -174,6 +200,7 @@ pub fn is_plain_blank(c: &Cell) -> bool {
     (c.text.is_empty() || c.text == " ")
         && c.fg.is_none()
         && c.bg.is_none()
+        && c.hyperlink.is_none()
         && !(c.bold || c.italic || c.underline || c.inverse || c.strike || c.faint || c.wide)
 }
 
@@ -318,6 +345,20 @@ mod tests {
         assert!(!cu.1.pending_wrap);
         let d = diff(&capture(&mut t).unwrap(), &cu);
         assert!(d.state_mismatches.iter().any(|(f, _, _)| f == "pending_wrap"), "{d:?}");
+    }
+
+    #[test]
+    fn hyperlink_uri_captured() {
+        let mut t = term(10, 1);
+        t.vt_write(b"a\x1b]8;;http://x.example/p\x1b\\bc\x1b]8;;\x1b\\d");
+        let (g, _) = capture(&mut t).unwrap();
+        assert_eq!(g.cells[0].hyperlink, None);
+        assert_eq!(g.cells[1].hyperlink.as_deref(), Some("http://x.example/p"));
+        assert_eq!(g.cells[2].hyperlink.as_deref(), Some("http://x.example/p"));
+        assert_eq!(g.cells[3].hyperlink, None);
+        let mut u = term(10, 1);
+        u.vt_write(b"abcd");
+        assert_eq!(diff(&capture(&mut t).unwrap(), &capture(&mut u).unwrap()).cell_mismatches.len(), 2);
     }
 
     #[test]

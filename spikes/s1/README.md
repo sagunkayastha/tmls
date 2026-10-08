@@ -82,14 +82,33 @@ cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
   Naive snapshots `bytes[..p]`, Aligned snapshots `bytes[..q]` with
   `q = last_boundary_at_or_before(p)`. Each restores into C and feeds C the rest of the stream.
   The run compares C with D.
-- `split_points`: 0 and len, 64 random boundaries, 64 random non-boundaries, and ±2 around every
-  `ESC[?1049h`, `ESC[?1049l`, `ESC]8;` and lead byte of a (CJK/emoji-range) wide char. The list is
-  capped at 400 (`--stream-cap name=N` sets a cap per stream).
+- `split_plan`/`split_points`: points are chosen in this order, under a cap of 400
+  (`--stream-cap name=N` sets a cap per stream):
+  1. 0 and len.
+  2. **All** offsets within ±2 of every `ESC[?1049h`, `ESC[?1049l` and `ESC]8;`. These are never
+     dropped by the cap unless they alone exceed it.
+  3. 64 random boundaries, then 64 random non-boundaries.
+  4. Shuffled ±2 windows around (CJK/emoji-range) wide-char lead bytes, filling the remaining slots.
+
+  Anchors kept per kind (kept and candidates), and the non-boundary points broken down by parser
+  state (`splitter::cut_states`: CSI / string / UTF-8 / ESC), are written to `streams.json` and
+  the streams table in `summary.md`.
 - Sizes: recorded streams use their `.meta.json` cols/rows (120x40). Generated streams use 80x24,
   except `wrap_pending`, which is 120x24 because it assumes 120 columns. `claude` is skipped
   (`--skip`) because its recording is invalid.
 - Grids are compared after `grid::normalize`, which turns a plain blank `""` or `" "` into one
   canonical blank. `TermState.pending_wrap` is compared.
+- **Per-cell comparison covers:** text, fg/bg (palette-resolved RGB), bold, italic, underline
+  on/off, inverse, strike, faint, wide, and the **OSC 8 hyperlink URI**. The render state has no
+  hyperlink data, so the URI comes from `Terminal::grid_ref(Point::Viewport)` →
+  `GridRef::hyperlink_uri`, resolved only for cells with `has_hyperlink`.
+- **Not compared:** underline style and colour, blink, invisible, overline, palette index vs an
+  equal RGB, hyperlink *id*, protection, semantic-prompt marks, the DECSC saved cursor, and the
+  kitty keyboard push stack (only the current flags are compared).
+- **Finding: the VT Formatter drops every hyperlink in the content.** ghostty `formatter.zig`:
+  "We currently only emit hyperlinks for HTML". Only the cursor's *active* link is re-emitted, as
+  extra state. `osc_title_pwd_hyperlink` is therefore about 2% identical, and cases with OSC 8 links on
+  screen elsewhere (e.g. cargo) fail too.
 - **Scrollback text** is compared through Formatter `Format::Plain` (`unwrap(false)`). The output
   covers the whole PageList, history first, with trailing blank rows always trimmed. The first
   `scrollback_rows` lines (right-trimmed) are the history, compared as `scrollback_text_equal`.
@@ -98,8 +117,15 @@ cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
   minimum is still more than every corpus stream needs (gitlog keeps 649 history rows at 2000).
 - Taxonomy: each non-identical case gets the first class that matches, in this priority order:
   `parser_state_split > alt_screen > trailing_row_drop > scrollback > modes > cursor > title_pwd > kitty_kbd > style_only > text > other`.
+- `trailing_row_drop` requires three things:
+  - the cells are equal with C shifted by ±1 row;
+  - the D row that falls outside the overlap is blank;
+  - D's `scrollback_rows` minus C's equals the shift.
+- Every case also lists all of its mismatching field groups in `secondary_classes`; `taxonomy.md`
+  has an "All mismatching groups" table.
 - Outputs: `cases.jsonl` (one record per case, with diagnostics `snap_faithful`,
-  `a_trailing_blank_rows`, `cells_blank_equivalent` and `first_visible_cell_mismatch`),
+  `a_trailing_blank_rows`, `cells_blank_equivalent`, `first_visible_cell_mismatch`,
+  `secondary_classes` and `cut_state`),
   `streams.json`, `summary.md` and `taxonomy.md`.
 - The splitter mirrors ghostty's `parse_table.zig`: BEL ends only OSC, DCS/APC/PM/SOS end only at
   ST, ESC aborts CSI/nF, and CAN/SUB return to ground.

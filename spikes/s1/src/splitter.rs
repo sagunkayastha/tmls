@@ -26,13 +26,28 @@ fn utf8_need(b: u8) -> u8 {
     match b { 0xc2..=0xdf => 1, 0xe0..=0xef => 2, 0xf0..=0xf4 => 3, _ => 0 }
 }
 
-/// Offsets `p` (0..=len) such that `bytes[..p]` ends between complete units. `0` and `len` are
-/// always included (a truncated tail still counts as the stream end).
-pub fn boundaries(bytes: &[u8]) -> Vec<usize> {
-    let mut out = vec![0];
+/// Parser state after a prefix `bytes[..p]` (coarse: what a cut at `p` would land inside).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CutState {
+    /// Between complete units (a boundary).
+    Ground,
+    /// Inside a multi-byte UTF-8 character.
+    Utf8,
+    /// After a lone `ESC` or inside an nF escape (`ESC 0x20-0x2f*`).
+    Esc,
+    /// Inside a CSI sequence.
+    Csi,
+    /// Inside an OSC/DCS/APC/PM/SOS string (incl. right after its `ESC` of a pending ST).
+    String,
+}
+
+/// [`CutState`] for every `p` in `0..=len` (`out[p]` = state after `bytes[..p]`).
+pub fn cut_states(bytes: &[u8]) -> Vec<CutState> {
+    let mut out = Vec::with_capacity(bytes.len() + 1);
+    out.push(CutState::Ground);
     let mut esc = Esc::None;
     let mut need = 0u8; // pending UTF-8 continuation bytes
-    for (i, &b) in bytes.iter().enumerate() {
+    for &b in bytes {
         if esc == Esc::None && need > 0 {
             if (0x80..=0xbf).contains(&b) {
                 need -= 1;
@@ -58,11 +73,23 @@ pub fn boundaries(bytes: &[u8]) -> Vec<usize> {
                 Esc::OscEsc | Esc::StrEsc => if b == b'\\' { Esc::None } else { after_esc(b) },
             };
         }
-        let p = i + 1;
-        if esc == Esc::None && need == 0 && p < bytes.len() { out.push(p); }
+        out.push(match esc {
+            Esc::None if need > 0 => CutState::Utf8,
+            Esc::None => CutState::Ground,
+            Esc::Esc | Esc::Nf => CutState::Esc,
+            Esc::Csi => CutState::Csi,
+            Esc::Osc | Esc::OscEsc | Esc::Str | Esc::StrEsc => CutState::String,
+        });
     }
-    if !bytes.is_empty() { out.push(bytes.len()); }
     out
+}
+
+/// Offsets `p` (0..=len) such that `bytes[..p]` ends between complete units. `0` and `len` are
+/// always included (a truncated tail still counts as the stream end).
+pub fn boundaries(bytes: &[u8]) -> Vec<usize> {
+    let st = cut_states(bytes);
+    let len = bytes.len();
+    (0..=len).filter(|&p| p == 0 || p == len || st[p] == CutState::Ground).collect()
 }
 
 /// Largest boundary `<= p` (`bounds` sorted, as returned by [`boundaries`]; 0 if none).
@@ -118,6 +145,19 @@ mod tests {
         }
         // OSC still ends at BEL.
         assert_eq!(boundaries(b"\x1b]0;t\x07c"), vec![0, 6, 7]);
+    }
+
+    #[test]
+    fn cut_states_kinds() {
+        use CutState::*;
+        // a ESC [ 3 m 日(3 bytes) ESC ] 0 ; t BEL ESC ( B
+        let b = b"a\x1b[3m\xe6\x97\xa5\x1b]0;t\x07\x1b(B";
+        let s = cut_states(b);
+        assert_eq!(s.len(), b.len() + 1);
+        assert_eq!(&s[..6], &[Ground, Ground, Esc, Csi, Csi, Ground]);
+        assert_eq!(&s[6..9], &[Utf8, Utf8, Ground]);
+        assert_eq!(&s[9..14], &[Esc, String, String, String, String]);
+        assert_eq!(&s[14..], &[Ground, Esc, Esc, Ground]);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::experiment::{CaseResult, Strategy, CLASSES};
+use crate::experiment::{CaseResult, SplitPlan, Strategy, CLASSES, GROUPS};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Record {
@@ -35,7 +35,16 @@ pub struct StreamInfo {
     /// Reference terminal D after the whole stream.
     pub d_scrollback_rows: usize,
     pub d_alt_screen: bool,
+    /// How the split points were chosen (anchor counts kept/candidates, non-boundary cut states).
+    pub plan: SplitPlan,
 }
+
+/// What `grid::diff` does and does not compare (stated in both reports).
+pub const COMPARED: &str = "Compared per cell: text (grapheme), fg/bg (palette-resolved RGB), bold, italic, \
+underline on/off, inverse, strike, faint, wide, **OSC 8 hyperlink URI** (via `GridRef::hyperlink_uri`). \
+**Not compared:** underline style (curly/double/…) and underline colour, blink, invisible, overline, \
+palette index vs equal RGB, hyperlink *id* (only the URI), protection, semantic-prompt marks; \
+DECSC saved cursor and kitty keyboard push stack (only the current flags) are not state fields either.";
 
 fn pct(v: &mut [u128], p: f64) -> u128 {
     if v.is_empty() { return 0; }
@@ -51,11 +60,21 @@ fn trunc(s: &str, n: usize) -> String {
 
 pub fn summary_md(header: &str, streams: &[StreamInfo], recs: &[Record]) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# S1 snapshot/restore summary\n\n{header}\n");
-    let _ = writeln!(out, "## Streams\n\n| stream | source | size | bytes | splits (cap) | D history rows | D on alt | wall s |\n|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(out, "# S1 snapshot/restore summary\n\n{header}\n\n{COMPARED}\n");
+    let _ = writeln!(out, "## Streams\n\nAnchor columns are kept/candidate offsets in the ±2 windows (alt = `?1049h/l`, osc8 = `ESC]8;`, wide = wide-char lead bytes); alt and osc8 anchors are kept before random points, wide anchors fill the remaining slots. Non-boundary columns count the chosen split points that are not boundaries, by parser state at the cut (inside CSI / inside an OSC-DCS-APC-PM-SOS string / mid-UTF-8 / after ESC or in an nF escape).\n");
+    let _ = writeln!(out, "| stream | source | size | bytes | splits (cap) | anchors alt / osc8 / wide | non-boundary csi / string / utf8 / esc | D history rows | D on alt | wall s |\n|---|---|---|---|---|---|---|---|---|---|");
+    let mut nb = [0usize; 4];
     for s in streams {
-        let _ = writeln!(out, "| {} | {} | {}x{} | {} | {} ({}) | {} | {} | {:.1} |", s.name, s.source, s.cols, s.rows, s.bytes, s.splits, s.split_cap, s.d_scrollback_rows, s.d_alt_screen, s.seconds);
+        let p = &s.plan;
+        nb[0] += p.non_boundary_csi; nb[1] += p.non_boundary_string; nb[2] += p.non_boundary_utf8; nb[3] += p.non_boundary_esc;
+        let _ = writeln!(out, "| {} | {} | {}x{} | {} | {} ({}) | {}/{} / {}/{} / {}/{} | {} / {} / {} / {} | {} | {} | {:.1} |",
+            s.name, s.source, s.cols, s.rows, s.bytes, s.splits, s.split_cap,
+            p.alt_anchor_kept, p.alt_anchor_candidates, p.osc8_anchor_kept, p.osc8_anchor_candidates, p.wide_anchor_kept, p.wide_anchor_candidates,
+            p.non_boundary_csi, p.non_boundary_string, p.non_boundary_utf8, p.non_boundary_esc,
+            s.d_scrollback_rows, s.d_alt_screen, s.seconds);
     }
+    let _ = writeln!(out, "\nNon-boundary split points, all streams: {} inside CSI, {} inside strings, {} mid-UTF-8, {} after ESC / in nF ({} total).",
+        nb[0], nb[1], nb[2], nb[3], nb.iter().sum::<usize>());
     let _ = writeln!(out, "\n## Per stream x strategy\n");
     let _ = writeln!(out, "Identical = normalised grids equal, no state mismatch, history text equal. Mean cells = mean cell mismatches over non-identical cases. State fields = top 3 mismatching state fields (case count).\n");
     let _ = writeln!(out, "| stream | strategy | cases | identical % | mean cells (non-id) | top-3 state fields | snap B p50 | snap B max | snap µs p50/p95 | restore µs p50/p95 |\n|---|---|---|---|---|---|---|---|---|---|");
@@ -99,7 +118,7 @@ pub fn summary_md(header: &str, streams: &[StreamInfo], recs: &[Record]) -> Stri
 
 pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# S1 mismatch taxonomy\n\n{header}\n");
+    let _ = writeln!(out, "# S1 mismatch taxonomy\n\n{header}\n\n{COMPARED}\n");
     let _ = writeln!(out, "Each non-identical case gets the first matching class in this priority order: {}.\n", CLASSES.join(" > "));
     let mut counts: BTreeMap<(&str, Strategy), usize> = BTreeMap::new();
     let mut streams: BTreeMap<(&str, Strategy), BTreeMap<&str, usize>> = BTreeMap::new();
@@ -125,6 +144,12 @@ pub fn taxonomy_md(header: &str, recs: &[Record]) -> String {
     }
     let _ = writeln!(out, "| **total** | {} | {} | |", total(Strategy::Naive), total(Strategy::Aligned));
 
+    let _ = writeln!(out, "\n## All mismatching groups\n\nNon-identical cases with each mismatch group present (`secondary_classes`; a case counts in every group it has, so columns do not sum to the totals).\n");
+    let _ = writeln!(out, "| group | Naive | Aligned |\n|---|---|---|");
+    for gname in GROUPS {
+        let n = |st: Strategy| recs.iter().filter(|r| r.strategy == st && !r.result.identical && r.result.secondary_classes.iter().any(|x| x == gname)).count();
+        let _ = writeln!(out, "| {gname} | {} | {} |", n(Strategy::Naive), n(Strategy::Aligned));
+    }
     let _ = writeln!(out, "\n## Streams per class\n\n| class | strategy | streams (cases) |\n|---|---|---|");
     for c in CLASSES {
         for st in [Strategy::Naive, Strategy::Aligned] {
