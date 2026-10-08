@@ -33,6 +33,8 @@ pub struct TermState {
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_visible: bool,
+    /// `Terminal::is_cursor_pending_wrap` (the next print soft-wraps first).
+    pub pending_wrap: bool,
     pub cursor_style: String,
     pub alt_screen: bool,
     pub modes: Vec<(String, bool)>,
@@ -151,6 +153,7 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
         cursor_x: term.cursor_x()?,
         cursor_y: term.cursor_y()?,
         cursor_visible: term.is_cursor_visible()?,
+        pending_wrap: term.is_cursor_pending_wrap()?,
         // Shape/blink come from the render state (DECSCUSR); `Terminal::cursor_style`
         // is the SGR pen for newly printed chars, so both are folded in.
         cursor_style: format!("{visual:?};blink={blinking};pen={pen:?}"),
@@ -163,6 +166,27 @@ pub fn capture(term: &mut Terminal) -> anyhow::Result<(Grid, TermState)> {
         total_rows: term.total_rows()?,
     };
     Ok((Grid { cols, rows, cells }, state))
+}
+
+/// True for a cell that renders as plain default blank: text `""` or `" "`, default fg/bg, no
+/// attributes, not wide.
+pub fn is_plain_blank(c: &Cell) -> bool {
+    (c.text.is_empty() || c.text == " ")
+        && c.fg.is_none()
+        && c.bg.is_none()
+        && !(c.bold || c.italic || c.underline || c.inverse || c.strike || c.faint || c.wide)
+}
+
+/// Map every plain blank cell ([`is_plain_blank`]) to the canonical blank (`Cell::default()`,
+/// text `""`). The Formatter restores never-written cells as `" "`; visually identical, so the
+/// harness compares normalised grids. Any other difference (incl. a coloured `""` vs `" "`)
+/// stays a mismatch.
+pub fn normalize(g: &mut Grid) {
+    for c in &mut g.cells {
+        if is_plain_blank(c) && !c.text.is_empty() {
+            c.text.clear();
+        }
+    }
 }
 
 /// Structural diff. Cells are compared over the overlapping region; a size
@@ -197,6 +221,7 @@ pub fn diff(a: &(Grid, TermState), b: &(Grid, TermState)) -> Diff {
     field("cursor_x", sa.cursor_x.to_string(), sb.cursor_x.to_string());
     field("cursor_y", sa.cursor_y.to_string(), sb.cursor_y.to_string());
     field("cursor_visible", sa.cursor_visible.to_string(), sb.cursor_visible.to_string());
+    field("pending_wrap", sa.pending_wrap.to_string(), sb.pending_wrap.to_string());
     field("cursor_style", sa.cursor_style.clone(), sb.cursor_style.clone());
     field("alt_screen", sa.alt_screen.to_string(), sb.alt_screen.to_string());
     field("title", sa.title.clone(), sb.title.clone());
@@ -258,6 +283,43 @@ mod tests {
         assert_eq!(d.cell_mismatches.len(), 1);
         assert_eq!(d.cell_mismatches[0].0, 2);
     }
+    #[test]
+    fn normalize_blank_cells() {
+        let blank_empty = Cell::default();
+        let blank_space = Cell { text: " ".into(), ..Cell::default() };
+        let coloured_space = Cell { text: " ".into(), bg: Some((1, 2, 3)), ..Cell::default() };
+        let bold_space = Cell { text: " ".into(), bold: true, ..Cell::default() };
+        let x = Cell { text: "x".into(), ..Cell::default() };
+        let mut a = Grid { cols: 5, rows: 1, cells: vec![blank_empty.clone(), blank_space.clone(), coloured_space.clone(), bold_space.clone(), x.clone()] };
+        let mut b = Grid { cols: 5, rows: 1, cells: vec![blank_space.clone(), blank_empty.clone(), coloured_space.clone(), bold_space.clone(), x.clone()] };
+        let st = TermState::default();
+        assert_eq!(diff(&(a.clone(), st.clone()), &(b.clone(), st.clone())).cell_mismatches.len(), 2);
+        normalize(&mut a);
+        normalize(&mut b);
+        assert!(diff(&(a.clone(), st.clone()), &(b.clone(), st.clone())).is_identical());
+        // Non-plain blanks are untouched.
+        assert_eq!(a.cells[2], coloured_space);
+        assert_eq!(a.cells[3], bold_space);
+        // A coloured "" vs coloured " " still differs.
+        let mut c = Grid { cols: 1, rows: 1, cells: vec![Cell { bg: Some((1, 2, 3)), ..Cell::default() }] };
+        normalize(&mut c);
+        assert_ne!(c.cells[0], coloured_space);
+    }
+
+    #[test]
+    fn pending_wrap_in_state() {
+        let mut t = term(5, 2);
+        t.vt_write(b"abcde");
+        let (_, s) = capture(&mut t).unwrap();
+        assert!(s.pending_wrap);
+        let mut u = term(5, 2);
+        u.vt_write(b"abcde\x1b[1;5H");
+        let cu = capture(&mut u).unwrap();
+        assert!(!cu.1.pending_wrap);
+        let d = diff(&capture(&mut t).unwrap(), &cu);
+        assert!(d.state_mismatches.iter().any(|(f, _, _)| f == "pending_wrap"), "{d:?}");
+    }
+
     #[test]
     fn modes_and_alt_screen_in_state() {
         let mut t = term(5, 2);

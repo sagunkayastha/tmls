@@ -1,16 +1,20 @@
 //! VT sequence boundaries: byte offsets where a stream can be cut without splitting an escape
-//! sequence or a UTF-8 character. The escape state machine mirrors the stripper in
-//! `spikes/s0/src/ack.rs` (CSI incl. intermediates; OSC/DCS/APC/PM/SOS ending at BEL or `ESC \`;
-//! nF escapes `ESC 0x20-0x2f* final`; single-char `ESC x`) plus UTF-8 continuation tracking.
+//! sequence or a UTF-8 character. The escape state machine mirrors libghostty-vt's parser
+//! (`src/terminal/parse_table.zig` at the pinned commit): CSI incl. intermediates; OSC ending at
+//! BEL or `ESC \`; DCS/APC/PM/SOS ending **only** at `ESC \` (BEL is payload there); nF escapes
+//! `ESC 0x20-0x2f* final`; single-char `ESC x`; ESC anywhere aborts the current sequence and
+//! starts a new one; CAN/SUB anywhere return to ground. Plus UTF-8 continuation tracking.
+//! 8-bit C1 controls are not modelled (UTF-8 streams).
 
 #[derive(Default, Clone, Copy, PartialEq)]
-enum Esc { #[default] None, Esc, Csi, Nf, Str, StrEsc }
+enum Esc { #[default] None, Esc, Csi, Nf, Osc, OscEsc, Str, StrEsc }
 
 /// State after `ESC b`.
 fn after_esc(b: u8) -> Esc {
     match b {
         b'[' => Esc::Csi,
-        b']' | b'P' | b'_' | b'^' | b'X' => Esc::Str,
+        b']' => Esc::Osc,
+        b'P' | b'_' | b'^' | b'X' => Esc::Str,
         0x20..=0x2f => Esc::Nf,
         0x1b => Esc::Esc,
         _ => Esc::None,
@@ -40,12 +44,18 @@ pub fn boundaries(bytes: &[u8]) -> Vec<usize> {
         } else {
             esc = match esc {
                 Esc::None => if b == 0x1b { Esc::Esc } else { need = utf8_need(b); Esc::None },
+                // CAN / SUB abort any sequence back to ground.
+                _ if b == 0x18 || b == 0x1a => Esc::None,
                 Esc::Esc => after_esc(b),
+                // ESC anywhere aborts and starts a new escape.
+                Esc::Csi | Esc::Nf if b == 0x1b => Esc::Esc,
                 Esc::Csi => if (0x40..=0x7e).contains(&b) { Esc::None } else { Esc::Csi },
                 Esc::Nf => if (0x20..=0x2f).contains(&b) { Esc::Nf } else { Esc::None },
-                Esc::Str => match b { 0x07 => Esc::None, 0x1b => Esc::StrEsc, _ => Esc::Str },
+                // Only OSC accepts BEL as a terminator.
+                Esc::Osc => match b { 0x07 => Esc::None, 0x1b => Esc::OscEsc, _ => Esc::Osc },
+                Esc::Str => if b == 0x1b { Esc::StrEsc } else { Esc::Str },
                 // ESC \ is ST; any other ESC x ends the string and starts a new escape.
-                Esc::StrEsc => if b == b'\\' { Esc::None } else { after_esc(b) },
+                Esc::OscEsc | Esc::StrEsc => if b == b'\\' { Esc::None } else { after_esc(b) },
             };
         }
         let p = i + 1;
@@ -91,6 +101,23 @@ mod tests {
         assert_eq!(boundaries(b), vec![0, 3, 4, 8, 13, 14]);
         // Unterminated CSI at the end: only 0 and len.
         assert_eq!(boundaries(b"\x1b[1;2"), vec![0, 5]);
+    }
+
+    #[test]
+    fn bel_inside_apc_is_not_a_boundary() {
+        // ESC _ z a BEL b ESC \ c : BEL does not end APC in libghostty-vt, only ST does.
+        let b = b"\x1b_za\x07b\x1b\\c";
+        let v = boundaries(b);
+        assert!(!v.contains(&5), "BEL inside APC is not a boundary: {v:?}");
+        assert!(!v.contains(&6), "still inside APC after BEL: {v:?}");
+        assert_eq!(v, vec![0, 8, 9]);
+        // Same for DCS / PM / SOS.
+        for intro in [b'P', b'^', b'X'] {
+            let b = [0x1b, intro, b'a', 0x07, b'b', 0x1b, b'\\', b'c'];
+            assert_eq!(boundaries(&b), vec![0, 7, 8], "intro {}", intro as char);
+        }
+        // OSC still ends at BEL.
+        assert_eq!(boundaries(b"\x1b]0;t\x07c"), vec![0, 6, 7]);
     }
 
     #[test]
