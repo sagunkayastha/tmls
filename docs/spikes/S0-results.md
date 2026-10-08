@@ -36,11 +36,11 @@ Ack columns are **observed return-output timing** (ack text scanned from the pat
   P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
   1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
   quiet ack percentiles.
-
 - **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
   parent process (10,000 events @ 50 Hz, quiet): 0 missing / 0 dup on all three; tmls row again 1250 corrupt
-  AltLetter (detected K=5). Receiver-observed ack p50 0.0 ms (local), 5.7 ms (ssh to archbox), 16.9 ms (tmls
-  via ssh). Same scripted-PTY bytes, so this does not exercise kitty's keyboard handling.
+  AltLetter (detected K=5). One-way p50 (pcl→archbox cross-host, skew not re-sampled) 0.0 / 5.7 / 16.9 ms and
+  ack (return-output) p50 0.0 / 11.0 / 49.5 ms for local / ssh / tmls-via-ssh. Same scripted-PTY bytes, so this
+  does not exercise kitty's keyboard handling.
 - **Real keyboard events (uinput→KDE Wayland→kitty→PTY→receiver): 2000/2000, no loss/corruption, plain letters
   only.** K1: `ydotool type` (key-delay 20 ms, ~3.4 events/s) into a focused kitty running `s0 recv --plain`;
   receiver-observed, no latency (ydotool has no timestamps). No Alt/Ctrl/F-keys/paste (ydotool types printable text).
