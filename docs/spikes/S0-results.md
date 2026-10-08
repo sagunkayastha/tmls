@@ -1,8 +1,10 @@
 # S0 results — key loss / latency (2026-10-07/08)
 
-Scope: **receiver-observed delivery for scripted PTY input.** A sender (`s0 send`) writes numbered events into a
-PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each event it parses. No real
-keyboard, GUI terminal, IME or Windows laptop is in any row (see [Not measured](#not-measured--next-steps)).
+Scope: **receiver-observed delivery.** Almost every row is scripted PTY input: a sender (`s0 send`) writes
+numbered events into a PTY whose child is the path under test; a receiver (`s0 recv`) at the far end logs each
+event it parses. The P6 rows re-run three of those paths from a kitty window on the PC (same scripted bytes). The
+one real-keyboard row (K1) is plain letters only. No IME, Windows laptop or modifier/Alt/F-keys via a real
+keyboard is in any row (see [Not measured](#not-measured--next-steps)).
 Ack columns are **observed return-output timing** (ack text scanned from the path's output), never one-way latency.
 
 ## Summary
@@ -34,6 +36,14 @@ Ack columns are **observed return-output timing** (ack text scanned from the pat
   P1/P2/P3 unchanged (P1 0.1/0.3 ms, P3-tmux-local 0.4/0.5 ms). tmls flood ack percentiles come from a subsample —
   1855/10000 (P4), 1079 (P5-loop), 1042 (P5-pcl) acks seen, `dropped_acks=0` — and are not comparable with the
   quiet ack percentiles.
+
+- **From a kitty-hosted sender on the PC: same picture.** P6 re-ran P1/P2/P5 from pcl with kitty 0.49.2 as the
+  parent process (10,000 events @ 50 Hz, quiet): 0 missing / 0 dup on all three; tmls row again 1250 corrupt
+  AltLetter (detected K=5). Receiver-observed ack p50 0.0 ms (local), 5.7 ms (ssh to archbox), 16.9 ms (tmls
+  via ssh). Same scripted-PTY bytes, so this does not exercise kitty's keyboard handling.
+- **Real keyboard events (uinput→KDE Wayland→kitty→PTY→receiver): 2000/2000, no loss/corruption, plain letters
+  only.** K1: `ydotool type` (key-delay 20 ms, ~3.4 events/s) into a focused kitty running `s0 recv --plain`;
+  receiver-observed, no latency (ydotool has no timestamps). No Alt/Ctrl/F-keys/paste (ydotool types printable text).
 
 ## Setup
 
@@ -128,6 +138,46 @@ original rule it was the only tmls row with `complete=yes`). Its per-kind
 one-way p50 (computed from the logs, cross-host): AltLetter 151.4, CtrlLetter 87.3, ModArrow 22.4, other kinds
 16.3–17.2 ms. P2-ssh-pcl's max 124.9 ms is one event (seq 5918, then 69.8 ms for seq 5919); every other event
 ≤ 60 ms.
+
+## P6 — kitty-hosted paths on the PC (run `20261007-211414`)
+
+Run `P6-20261007-211414`, 10,000 events @ 50 Hz, quiet, nonce `b06d92954b70e4a4`. `s0 send` ran **inside a kitty
+0.49.2 window on pcl** (CachyOS); summary `/data/scratch/s0/runs/P6-20261007-211414/summary.md`, JSON reports
+beside it. The tmls row detected K=5. All rows: events = 10000, reorder = 0, out_of_range = 0.
+
+| path | arrived | missing | dup | corrupt | acked | dropped_acks | complete | one-way p50/p95/p99/max ms | ack p50/p95/p99/max ms |
+|---|---|---|---|---|---|---|---|---|---|
+| P6-kitty-local | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 0.0/0.0/0.0/0.9 | 0.0/0.0/0.1/2.3 |
+| P6-kitty-ssh (pcl→archbox) ⇄ | 10000 | 0 | 0 | 0 | 10000 | 0 | yes | 5.7/14.6/16.1/26.6 | 11.0/19.9/21.5/31.2 |
+| P6-kitty-tmls (pcl→archbox tmls) ⇄ | 10000 | 0 | 0 | 1250 | 9936 | 0 | yes | 16.9/55.0/62.7/88.8 | 49.5/93.3/108.9/215.2 |
+
+Caveats:
+- P6 = P1/P2/P5 re-run from pcl with kitty as the parent process; the scripted-PTY bytes are the same, so it
+  **does not exercise kitty's keyboard handling**.
+- Cross-host one-way (⇄) carries clock skew that was **not re-sampled**: compare by the ack columns. Direction is
+  pcl→archbox. (The one-way p50 of 5.7 ms for P6-kitty-ssh is below its ack p50 of 11.0 ms, consistent with skew
+  and/or the ~20 ms ssh obfuscation spread; not resolved here.)
+- The tmls row's 1250 corrupt events are the AltLetter defect (#2), as in every earlier 10k tmls row.
+
+## K1 — real keyboard events (run `K1-20261008-035007`)
+
+Logs `/data/scratch/s0/runs/K1-20261008-035007/{recv.jsonl,report.json}`. `ydotool type` (uinput virtual keyboard,
+key-delay 20 ms, ~3.4 events/s) into a **focused kitty window on pcl (KDE Wayland)** running
+`s0 recv --plain --quit-after 2000 --ack false`. Alphabet = **plain mode**: letters + `#dddddd` markers only,
+because ydotool types printable text (no Alt/Ctrl/F-keys/paste). Recv-only report; no sender log, so no latency
+(ydotool has no timestamps) and no ack.
+
+| path | load | events | arrived | missing | dup | corrupt | reorder | acked | dropped_acks | recv_exit | saw_done | out_of_range | one-way | ack | complete |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| K1-kitty-ydotool | quiet | 2000 | 2000 | 0 | 0 | 0 | 0 | – | – | quit_after | – | 0 | – | – | yes |
+
+- Receiver arrivals were 2001 = 2000 + the focus probe `x#999999` (out_of_range 1, `intact=false` by design).
+- Earlier K1 attempts `K1-20261008-023228`, `-025903` and `-033637` were aborted or misfocused by the user and are
+  **not measurements**; `-033637` had 280/280 arrived before the abort.
+- **Operational lesson:** `ydotool` types into whatever window is focused, so a misfocused run types into the wrong
+  program. The K1 script now sends a focus probe first (and the receiver prints a "CLICK THIS WINDOW" banner).
+- What K1 shows: for plain letters, uinput → KDE Wayland → kitty → PTY → receiver lost, duplicated and corrupted
+  nothing in 2000 events at ~3.4 events/s. It says nothing about modifier/Alt keys, higher rates, paste or IME.
 
 ## tmls per-kind breakdown
 
@@ -241,8 +291,9 @@ not from `KEY_NAME_REPLACEMENTS` (`keys.py:205`, which only renames Unicode key 
 ## Not measured / next steps
 
 Not measured (Codex review, `docs/reviews/2026-10-07-codex-sol-s0-harness.md`):
-- Real keyboard, GUI-terminal key encoding, focus, IME, the Windows laptop. Every row is scripted bytes into a PTY.
-  The cause of a missed *physical* key is therefore not inferred.
+- Modifier/Alt/Ctrl/F-keys and paste via a real keyboard (K1 covers plain letters only), IME, the Windows laptop.
+  Every other row is scripted bytes into a PTY (P6 included). The cause of a missed *physical* key is therefore
+  not inferred.
 - Presentation (key-to-photon) latency; the 30 Hz redraw's share of tmls ack time.
 - Esc→next-key interval independently of send rate (the controls varied rate and marker gap only); jittered send
   intervals; `ObscureKeystrokeTiming=no` across the LAN (loopback only).
@@ -251,11 +302,7 @@ Not measured (Codex review, `docs/reviews/2026-10-07-codex-sol-s0-harness.md`):
 - Clock skew after pcl's reboots.
 
 Next steps:
-1. **User, morning — P6 kitty paths** (`spikes/s0/run/README.md` § "Morning run"): `P6-kitty-local`,
-   `P6-kitty-ssh`, `P6-kitty-tmls` are P1 / P2 / P5 re-run **from pcl with kitty as the parent process**, then
-   `s0 report --events $N` on archbox. `s0 send` still writes into its own PTY, so they do **not** exercise kitty's
-   keyboard handling. The real next step for keyboard→app delivery is key injection — `ydotool type` into a focused
-   kitty window running a bare `s0 recv` — or typing by hand (user-run; needs the desktop session).
+1. *(done: P6 kitty-hosted and K1 ydotool plain-letter runs, see above.)*
 2. tmls quick fixes to try (then re-run P4/P5): `ENABLE_COMMAND_PALETTE = False`; Alt-key handling per defect #2.
 3. Re-sample archbox↔pcl skew before any further cross-host one-way comparison.
 4. Presentation timing and the Claude-output workload belong with S2 / §9, not S0.
@@ -268,8 +315,8 @@ Controls not yet run (Codex review `docs/reviews/2026-10-07-codex-sol-s0-results
 - **Esc→next-key interval varied independently** of send rate and marker gap, and with a lower `ESCDELAY`, to
   separate the hold from the next-key merge (and from CtrlLetter's fixed position after AltLetter).
 - **`ObscureKeystrokeTiming` on/off across the LAN** (archbox↔pcl) with fresh clock-skew samples.
-- **Keyboard injection**: `ydotool type` into a focused kitty running a bare `s0 recv` (or manual typing) — the
-  P6 runs do not cover this.
+- **Modifier/Alt keys via a real keyboard**: K1 (ydotool) covered plain letters only; Alt/Ctrl/F-keys need another
+  injector (e.g. `ydotool key` raw codes) or manual typing.
 - **Key-to-photon** (presentation) latency.
 
 ## Run inventory
@@ -291,5 +338,8 @@ logs were fetched back to the same dirs.
 | `c-ssh-rate10` / `c-ssh-rate200` | P2-ssh-loop, 1000 ev @ 10 Hz / 4000 ev @ 200 Hz (174 eff.) | controls |
 | `c-tmls-gap0-r5` / `c-tmls-gap120-r5` | P4-tmls-local, 600 ev @ 5 Hz, marker gap 0 / 120 ms | controls |
 | `c-tmls-gap120-r50` | P4-tmls-local, 2000 ev @ 50 Hz requested (8.2 eff.), gap 120 ms | controls |
+| `P6-20261007-211414` | P6 kitty-hosted P1/P2/P5, 10k @ 50 Hz, kitty 0.49.2 on pcl, nonce `b06d92954b70e4a4` | P6 |
+| `K1-20261008-035007` | K1 ydotool plain letters into kitty, 2000 events (`recv.jsonl`, `report.json`) | K1 |
+| `K1-20261008-023228`, `-025903`, `-033637` | aborted / misfocused K1 attempts (`-033637`: 280/280 before abort) | — (not measurements) |
 | `skew.txt` | NTP status + archbox↔pcl offset (only the pre-A sample succeeded) | clock caveat |
 | `/data/scratch/s0/analysis/tmls-per-kind.md` | per-kind analysis of A and C | per-kind section |

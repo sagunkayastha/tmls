@@ -1,7 +1,7 @@
 # tmls-rs — plan (draft 3, 2026-10-07)
 
 Working name. A native, GPU-drawn terminal + session system in Rust to replace tmls + tmux.
-Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 scripted PTY paths measured (2026-10-07/08); S0 GUI/keyboard paths pending (user). Nothing built yet.**
+Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 done (scripted PTY paths, kitty-hosted, real-keyboard plain letters); next S1/S2. Nothing built yet.**
 History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `docs/reviews/2026-10-07-codex-astra.md`).
 
 ## 1. Why — and what we know vs assume
@@ -33,8 +33,10 @@ next-key interval co-vary in these runs, and Ctrl+letter always follows Alt+lett
 (ack p50 37.2 ms) is far above tmux's (0.8 ms); under flood only tmls's receiver-side timing degrades (tmls flood
 ack percentiles come from a 10–19% subsample of events). On the measured loopback interactive ssh path, OpenSSH
 `ObscureKeystrokeTiming` adds a uniform 0–~21 ms (off → one-way p50 0.4 ms); the pcl ssh rows are consistent with
-the same spread (cross-host one-way carries clock skew; LAN on/off pair not run). Not measured: real keyboard / GUI
-terminal / laptop, key-to-photon.
+the same spread (cross-host one-way carries clock skew; LAN on/off pair not run). Re-running P1/P2/P5 from a
+kitty window on the PC (P6) gave the same picture (0 missing / 0 dup; tmls again 1250 corrupt Alt+letters), and
+2000 real keyboard events (K1: `ydotool` uinput → KDE Wayland → kitty → PTY, plain letters only) arrived 2000/2000
+with no loss or corruption. Not measured: modifier/Alt keys via a real keyboard, IME, laptop, key-to-photon.
 
 **Hypothesis (revised after S0):** for scripted input, key loss/garbling is tmls's (Textual key parsing and
 bindings), not ssh/tmux/PTY; lag comes from tmls (tens of ms for Alt/Ctrl keys — the hold-and-merge mechanism is a
@@ -155,7 +157,7 @@ answers rejected; hostd down → Claude's own prompt still works in the terminal
 
 | Spike | Question | Pass gate |
 |---|---|---|
-| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: partially measured 2026-10-07 (scripted PTY paths; see docs/spikes/S0-results.md); gate not closed — GUI/keyboard paths pending (user).** |
+| **S0 Key loss** (first) | Where do keys go missing or late today? Numbered key stream (letters, Esc/Alt, modifiers, repeats, paste) into a receiver that logs arrivals with timestamps, through: native terminal→local; native terminal→ssh; ssh+tmux; local tmls; tmls over ssh (laptop). Quiet and under a defined output flood. | Each path: missing/duplicate count and p50/p95/p99 delivery time, 10,000 events per path. Cause localised; quick tmls fix identified if one exists. **Status: measured 2026-10-07 (scripted PTY paths + kitty-hosted + real-keyboard plain letters on the PC; see docs/spikes/S0-results.md) — gate closed for key loss: none found; presentation latency and modifier keys via real keyboard remain for S2.** |
 | S1 Emulator | libghostty-vt pinned build on Linux + Windows MSVC; recorded Claude sessions; snapshot/restore at adversarial byte boundaries = uninterrupted run; portable VT reconstruction quality. | Identical results; differences explained. |
 | S2 Interaction slice | Grid + sidebar + one editable form + selection + clipboard + IME (fcitx5, Windows TSF), in raw wgpu vs gpui; 60 Hz + high refresh, fractional scaling, monitor move. | p50/p95/p99 key-to-present (and camera-checked photon sample), CPU, idle power, text quality; pick on latency **and** coverage. |
 | S3 Worker survival | Kill hostd abruptly 100× incl. during create/adopt, long downtime under flood. | Programs survive; promised state restorable; no duplicate replies/input; memory within limits. |

@@ -2,6 +2,37 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-07 (eve) — S0 gate closed: kitty-hosted + real-keyboard runs on the PC ✅
+User-run measurements on the PC (pcl, CachyOS, KDE Wayland, kitty 0.49.2); results folded into
+`docs/spikes/S0-results.md` (new P6 and K1 sections, Summary, Not measured, Run inventory), PLAN §1/§6 updated.
+- **P6 — kitty-hosted P1/P2/P5** (run `20261007-211414`, 10k @ 50 Hz, quiet, nonce `b06d92954b70e4a4`; summary
+  `/data/scratch/s0/runs/P6-20261007-211414/summary.md`, JSON beside it; tmls row detected K=5). Receiver-observed;
+  same scripted-PTY bytes, so kitty's keyboard handling is NOT exercised; cross-host one-way carries unrechecked
+  skew, compare by ack:
+  | path | arrived | missing | dup | corrupt | acked | one-way p50/p95/p99/max | ack p50/p95/p99/max |
+  |---|---|---|---|---|---|---|---|
+  | P6-kitty-local | 10000 | 0 | 0 | 0 | 10000 | 0.0/0.0/0.0/0.9 | 0.0/0.0/0.1/2.3 |
+  | P6-kitty-ssh (pcl→archbox) | 10000 | 0 | 0 | 0 | 10000 | 5.7/14.6/16.1/26.6 | 11.0/19.9/21.5/31.2 |
+  | P6-kitty-tmls (pcl→archbox) | 10000 | 0 | 0 | 1250 | 9936 | 16.9/55.0/62.7/88.8 | 49.5/93.3/108.9/215.2 |
+- **K1 — real keyboard events** (run `K1-20261008-035007`, `/data/scratch/s0/runs/K1-20261008-035007/{recv.jsonl,report.json}`):
+  `ydotool type` (uinput, key-delay 20 ms, ~3.4 events/s) into a focused kitty running
+  `s0 recv --plain --quit-after 2000 --ack false`. Plain letters + markers only (no Alt/Ctrl/F-keys/paste).
+  `K1-kitty-ydotool`: 2000 events, 2000 arrived, 0 missing/dup/corrupt, complete=yes; 2001 arrivals = 2000 + the
+  focus probe `x#999999` (out_of_range 1, intact=false by design). No latency (ydotool has no timestamps).
+  Aborted/misfocused attempts `K1-20261008-023228`, `-025903`, `-033637` are not measurements.
+- **Lesson:** `ydotool` types into whatever window is focused — the K1 script now probes focus first (and the
+  receiver prints a CLICK THIS WINDOW banner).
+- **Gate:** S0 closed for key loss (none found outside tmls); presentation latency and modifier keys via a real
+  keyboard remain for S2.
+
+### NEXT
+1. S1 (emulator) on the PC Docker image (`tmls-rs-build:latest`): snapshot/restore round-trip via libghostty VT
+   Formatter at adversarial byte boundaries.
+2. S2 GUI slice on the PC's live desktop with the user driving (key-to-photon, modifier/Alt keys via real keyboard).
+3. tmls quick fixes: `ENABLE_COMMAND_PALETTE = False`; Alt-key handling per defect #2; then re-run P4/P5.
+4. Open mechanism controls (results doc "Open (from reviews)"): Ctrl+P with palette disabled; Esc→next-key interval
+   independent of rate / `ESCDELAY`; ssh obfuscation on/off across the LAN with fresh skew samples.
+
 ## 2026-10-07 — S0 key-loss spike built, run and reviewed ✅ (gate not closed: GUI/keyboard paths pending)
 Overnight autonomous run on branch `spike/s0` (from `d949858`). Harness + full path matrix + results doc; two Codex
 (gpt-6-sol) reviews and a final whole-branch review folded in. Nothing merged to main yet.
