@@ -678,28 +678,26 @@ mod tests {
         assert!(r.identical, "{r:?}");
     }
 
-    /// Erased blank at (0,0): D has bg=(181,189,104), restored C has no bg.
+    /// ECH restores the erased background at (0,0).
     #[test]
-    #[ignore]
     fn residual_style_only_repro() {
         let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[2J\x1b[0m";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"X");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
-        assert_eq!(r.class.as_deref(), Some("style_only"), "{r:?}");
+        assert!(r.identical, "{r:?}");
     }
 
-    /// Erased blank at (4,1): D has text="" with bg=(181,189,104), C has text=" " with the same bg.
+    /// ECH restores empty-cell identity and background at (4,1).
     #[test]
-    #[ignore]
     fn residual_text_repro() {
         let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[0K\x1b[0m";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"X");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
-        assert_eq!(r.class.as_deref(), Some("text"), "{r:?}");
+        assert!(r.identical, "{r:?}");
     }
 
     /// After the 47 exit, primary cell (29,8): D text="", C text=" " with fg=(204,102,102).

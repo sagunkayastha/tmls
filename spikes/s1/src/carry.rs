@@ -227,6 +227,7 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         out.extend_from_slice(b"\x1b]8;;\x1b\\");
         i = end;
     }
+    erase_overlay(&mut out, &grid);
     if let Some(title) = &tr.title {
         out.extend_from_slice(b"\x1b]0;"); out.extend_from_slice(title.as_bytes()); out.extend_from_slice(b"\x1b\\");
     }
@@ -269,6 +270,31 @@ pub fn snapshot_full(term: &mut Terminal, tr: &Tracker, opts: SnapOpts) -> Vec<u
         out.extend_from_slice(b"\x1b\\");
     }
     out
+}
+
+fn erase_overlay(out: &mut Vec<u8>, grid: &grid::Grid) {
+    let cols = grid.cols as usize;
+    for row in 0..grid.rows as usize {
+        let cells = &grid.cells[row * cols..(row + 1) * cols];
+        let erasable = |x: usize| cells[x].text.is_empty() && !cells[x].wide
+            && (x == 0 || !cells[x - 1].wide);
+        let mut col = 0;
+        while col < cols {
+            if !erasable(col) { col += 1; continue; }
+            let start = col;
+            let bg = cells[col].bg;
+            while col < cols && erasable(col) && cells[col].bg == bg {
+                col += 1;
+            }
+            if bg.is_none() && !cells[col..].iter().any(|c| !c.text.is_empty()) { continue; }
+            out.extend_from_slice(&snap::cup(start as u16, row as u16));
+            out.extend_from_slice(b"\x1b[0m");
+            if let Some((r, g, b)) = bg {
+                out.extend_from_slice(format!("\x1b[48;2;{r};{g};{b}m").as_bytes());
+            }
+            out.extend_from_slice(format!("\x1b[{}X\x1b[0m", col - start).as_bytes());
+        }
+    }
 }
 
 pub fn overlay_run_count(term: &mut Terminal) -> usize {
@@ -437,4 +463,27 @@ mod tests {
         let (original, restored) = roundtrip(b"\x1b[2;4r\x1b[?6h\x1b[2;5H", 20, 5);
         assert_eq!((restored.cursor_x().unwrap(), restored.cursor_y().unwrap()), (original.cursor_x().unwrap(), original.cursor_y().unwrap()));
     }
+    #[test]
+    fn ech_overlay_restores_erased_bg_after_ed() {
+        let (mut original, mut restored) = roundtrip(b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[2J\x1b[0m", 8, 3);
+        assert!(crate::grid::diff(&crate::grid::capture(&mut original).unwrap(), &crate::grid::capture(&mut restored).unwrap()).is_identical());
+    }
+
+    #[test]
+    fn ech_overlay_restores_empty_identity_after_el() {
+        let (mut original, mut restored) = roundtrip(b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[0K\x1b[0m", 8, 3);
+        assert!(crate::grid::diff(&crate::grid::capture(&mut original).unwrap(), &crate::grid::capture(&mut restored).unwrap()).is_identical());
+    }
+
+    #[test]
+    fn ech_overlay_leaves_trailing_default_blanks_alone() {
+        let mut original = term();
+        let mut tr = Tracker::default();
+        tr.feed(&mut original, b"short");
+        let snapshot = snapshot_full(&mut original, &tr, SnapOpts { palette: true });
+        assert!(!snapshot.windows(2).any(|w| w == b"[X"));
+        assert!(!snapshot.windows(2).any(|w| w == b"1X"));
+    }
+
+
 }
