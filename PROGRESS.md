@@ -2,6 +2,46 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-07 (night) — S1 emulator spike: libghostty-vt viable, Formatter snapshot needs worker state carry ✅
+Branch `spike/s1` (commits `0813259`..`e23eba0` + this docs commit), run on archbox (Linux only). Results doc
+`docs/spikes/S1-results.md`; PLAN §3 Emulator row, §5.2, §6 S1 row and status line updated. Plan
+`docs/superpowers/plans/2026-10-07-s1-emulator.md`, ledger `.superpowers/sdd/2026-10-07-s1-emulator/progress.md`.
+- **Harness** `spikes/s1` (`s1 gen|capture|run|portability|resize`): grid/state capture + diff, adversarial
+  generator (13 streams), VT splitter mirroring ghostty `parse_table.zig`, Formatter snapshot/restore,
+  split-matrix runner + taxonomy, pyte portability probe, resize-at-split. Corpus: 7 recordings at 120x40
+  (vim btop less cargo gitlog nested unicode; `spikes/s1/corpus/` = `/data/scratch/s1/corpus/`) + 13 generated.
+- **Snapshot path:** pinned ghostty a887df42 has **no `snapshot.h`** → only `fmt::Formatter` `Format::Vt`
+  replayed into a fresh `Terminal` ("VT-reconstruction snapshot").
+- **Split matrix** (run6, `/data/scratch/s1/results/2026-10-07-s1-run6/{summary,taxonomy}.md`; 20 streams, ≤ 400
+  splits each, 3344 cases/strategy, wall 16.2 s):
+  | strategy | identical | % |
+  |---|---|---|
+  | Naive (split at the byte) | 1688 | 50.5 |
+  | Aligned (last VT boundary + tail carry) | 2628 | 78.6 |
+  | AlignedUnwrap (Aligned + `unwrap(true)`) | 2618 | 78.3 |
+  Aligned removes all 1315 `parser_state_split` cases. Recordings btop/less/nested/vim 100%, cargo 93.6, gitlog
+  86.5, unicode 86.0. The 716 Aligned mismatches: hyperlinks 321 (VT Formatter never emits OSC 8,
+  `formatter.zig:1246-1250`), trailing blank row → history row lost 126, primary screen lost behind alt 109, DECSC
+  saved cursor 69, title 37, erased-cell bg 25, pending wrap 12, invisible-only 17.
+- **Portability** (run3/portability): pyte(snapshot) = libghostty restore(snapshot) on 577/592 rows (97.5%); rest =
+  pyte limits; pyte renders the snapshot better than the raw stream on 7 streams.
+- **Resize** (run3/resize): restore at the snapshot's own size, then resize (restoring into another size breaks);
+  `snapshot_unwrap` needed for reflow after restore, costs 10 wrap_pending cases at same size.
+- **Cost:** snapshot p50 9–390 µs, p95 ≤ 982 µs (gitlog 55 KB); restore p50 31–332 µs incl. `Terminal::new`.
+- **Gate:** S1 partially passed — differences explained; libghostty-vt viable as the authoritative emulator; the
+  Formatter alone is not a sufficient snapshot (worker state carry + boundary alignment); native snapshot = follow-up.
+- **Gotchas:** libghostty-vt 0.2.2 needs **Zig 0.15.2** (README's 0.16 fails); `Options::max_scrollback` is
+  **bytes**, not lines (ghostty `Screen.zig:282`); no `snapshot.h` at the pin; commit **`57151cb` does not build
+  alone** (it swept in Task 4's in-progress hunks; `ddf25e0`+ build); workspace-wide cargo now needs Zig
+  (`source spikes/s1/build-env.sh`).
+
+### NEXT
+1. S2 GUI interaction slice on the PC (live desktop, user driving).
+2. S1 follow-up: native snapshot (newer ghostty with `snapshot.h` + own bindings) or upstream VT fixes (OSC 8,
+   trailing blank rows, erased bg); re-run `s1 run`.
+3. Windows MSVC build of libghostty-vt (S1's Windows half).
+4. Record the Claude TUI stream after accepting folder trust (`spikes/s1/corpus/README.md`).
+
 ## 2026-10-07 (eve) — S0 gate closed: kitty-hosted + real-keyboard runs on the PC ✅
 User-run measurements on the PC (pcl, CachyOS, KDE Wayland, kitty 0.49.2); results folded into
 `docs/spikes/S0-results.md` (new P6 and K1 sections, Summary, Not measured, Run inventory), PLAN §1/§6 updated.
