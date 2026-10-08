@@ -24,7 +24,14 @@ pub struct SnapOpts {
 /// VT snapshot of `term`: [`snapshot_raw`] + a trailing cursor-position fixup (see module docs).
 /// Panics on FFI error (spike code).
 pub fn snapshot(term: &Terminal, o: SnapOpts) -> Vec<u8> {
-    let mut s = snapshot_raw(term, o);
+    snapshot_unwrap(term, o, false)
+}
+
+/// [`snapshot`] with the Formatter's `unwrap` option chosen by the caller. `unwrap = true` joins
+/// soft-wrapped rows into one logical line (no CRLF at the soft wrap), so a restoring terminal
+/// re-wraps them itself and keeps the soft-wrap flag; used by the resize experiment.
+pub fn snapshot_unwrap(term: &Terminal, o: SnapOpts, unwrap: bool) -> Vec<u8> {
+    let mut s = snapshot_raw_unwrap(term, o, unwrap);
     if !term.mode(Mode::ORIGIN).expect("mode") {
         let (x, y) = (term.cursor_x().expect("cursor_x"), term.cursor_y().expect("cursor_y"));
         s.extend_from_slice(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
@@ -34,9 +41,13 @@ pub fn snapshot(term: &Terminal, o: SnapOpts) -> Vec<u8> {
 
 /// The Formatter's VT output with every extra-state option on except unwrap/trim.
 pub fn snapshot_raw(term: &Terminal, o: SnapOpts) -> Vec<u8> {
+    snapshot_raw_unwrap(term, o, false)
+}
+
+fn snapshot_raw_unwrap(term: &Terminal, o: SnapOpts, unwrap: bool) -> Vec<u8> {
     let opts = FormatterOptions::new()
         .with_format(Format::Vt)
-        .with_unwrap(false)
+        .with_unwrap(unwrap)
         .with_trim(false)
         .with_palette(o.palette)
         .with_modes(true)

@@ -103,3 +103,46 @@ cargo run -p s1 --release -- run --corpus-dir /data/scratch/s1/corpus --gen \
   `streams.json`, `summary.md` and `taxonomy.md`.
 - The splitter mirrors ghostty's `parse_table.zig`: BEL ends only OSC, DCS/APC/PM/SOS end only at
   ST, ESC aborts CSI/nF, and CAN/SUB return to ground.
+
+## Portability probe (`src/portability.rs`, `tools/pyte_restore.py`, `s1 portability`)
+
+```sh
+cargo run -p s1 --release -- portability --corpus-dir /data/scratch/s1/corpus --gen --out /data/scratch/s1/results/<id>
+S1_PYTE=1 cargo test -p s1 pyte_renders_snapshot -- --nocapture   # the only test that runs Python
+```
+
+- Per stream, D = libghostty fed the whole stream at the `run` sizes. S = `snap::snapshot(D)` (the
+  Aligned snapshot at `len`), written to `<out>/portability/<stream>.vt`. The original bytes go to
+  `<stream>.orig.bin`.
+- `tools/pyte_restore.py <vt> <cols> <rows>` runs under `~/Others/tmls/.venv/bin/python` (pyte
+  0.8.2, read-only). It prints `screen.display` on stdout and a JSON line on stderr: the cursor, plus
+  a count of the events pyte sent to `Screen.debug` (sequences it does not implement).
+- pyte 0.8.2 crashes (`TypeError: ... unexpected keyword argument 'private'`) on a private CSI whose
+  handler does not take `private`, for example `CSI ? 6 n` or `CSI ? 4 m`. The helper wraps those
+  handlers and counts such a sequence as ignored.
+- Comparisons are line by line, with every line right-trimmed:
+  - pyte(S) vs libghostty restore(S). This is the portability measure.
+  - pyte(S) vs D.
+  - pyte(original) vs D.
+  - libghostty restore(S) vs D, which is the Formatter's own loss. A one-row shift is detected
+    and reported.
+- The pyte cursor is compared with D's `cursor_x/y`. With pending wrap, pyte reports x = cols where
+  ghostty reports cols-1.
+- Outputs: `portability/summary.md` and `portability/portability.jsonl`.
+
+## Resize at split (`src/resize.rs`, `s1 resize`)
+
+```sh
+cargo run -p s1 --release -- resize --corpus-dir /data/scratch/s1/corpus --gen --out /data/scratch/s1/results/<id>
+```
+
+- Streams: `vim`, `less`, `scrollback_200` and `wrap_pending`. The split `q` is the splitter
+  boundary nearest `len/2`. The intermediate size is 100x30.
+- `Terminal::resize(cols, rows, cell_w_px, cell_h_px)` is called with an 8x16 px cell.
+- Variants are listed in the `resize.rs` module docs:
+  - `restore_small`: restore into 100x30.
+  - `restore_orig_resize_before_tail` / `_after_tail`: restore at the original size and resize
+    later.
+  - `*_unwrap`: the same, but the snapshot is taken with the Formatter's `unwrap` option
+    (`snap::snapshot_unwrap`).
+- Outputs: `resize/summary.md` and `resize/resize.jsonl`.

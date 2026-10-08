@@ -6,5 +6,7 @@ pub mod experiment;
 pub mod r#gen;
 pub mod report;
 pub mod grid;
+pub mod portability;
+pub mod resize;
 pub mod snap;
 pub mod splitter;

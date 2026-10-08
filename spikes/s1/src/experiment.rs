@@ -88,6 +88,10 @@ pub struct CaseResult {
     pub cells_blank_equivalent: usize,
     /// First cell mismatch (C vs D) that is not blank-equivalent, i.e. visible.
     pub first_visible_cell_mismatch: Option<String>,
+    /// Every mismatching field group (see [`mismatch_groups`]), not just the first-match class.
+    pub secondary_classes: Vec<String>,
+    /// Parser state at `split` ([`splitter::CutState`]: Ground / Utf8 / Esc / Csi / String).
+    pub cut_state: String,
 }
 
 fn trailing_blank_rows(g: &Grid) -> u16 {
@@ -101,7 +105,7 @@ fn trailing_blank_rows(g: &Grid) -> u16 {
 /// A mismatched cell pair that renders the same.
 pub fn blank_equivalent(a: &Cell, b: &Cell) -> bool {
     let blank = |c: &Cell| (c.text.is_empty() || c.text == " ") && !c.wide && !c.inverse && !c.underline && !c.strike;
-    blank(a) && blank(b) && a.bg == b.bg
+    blank(a) && blank(b) && a.bg == b.bg && a.hyperlink == b.hyperlink
 }
 
 /// The reference side of a stream (D), computed once per stream.
@@ -203,6 +207,8 @@ pub fn run_case_with(
         cells_blank_equivalent: diff.cell_mismatches.iter().filter(|(_, _, a, b)| blank_equivalent(a, b)).count(),
         first_visible_cell_mismatch: diff.cell_mismatches.iter().find(|(_, _, a, b)| !blank_equivalent(a, b))
             .map(|(x, y, a, b)| format!("cell ({x},{y}): D={} C={}", cell_str(a), cell_str(b))),
+        secondary_classes: mismatch_groups(&diff, &d.history, &c_hist),
+        cut_state: format!("{:?}", splitter::cut_states(&bytes[..p]).last().copied().unwrap_or(splitter::CutState::Ground)),
     };
     if !res.identical {
         let tail_leaves_alt = contains_any(&bytes[q..], &[b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"]);
@@ -231,6 +237,7 @@ fn cell_str(c: &Cell) -> String {
     let mut s = format!("{:?}", c.text);
     if let Some(fg) = c.fg { s += &format!(" fg={fg:?}"); }
     if let Some(bg) = c.bg { s += &format!(" bg={bg:?}"); }
+    if let Some(h) = &c.hyperlink { s += &format!(" link={h:?}"); }
     for (on, n) in [(c.bold, "bold"), (c.italic, "italic"), (c.underline, "ul"), (c.inverse, "inv"),
                     (c.strike, "strike"), (c.faint, "faint"), (c.wide, "wide")] {
         if on { s += " "; s += n; }
@@ -284,6 +291,48 @@ fn equal_shifted(d: &Grid, c: &Grid, dy: i32) -> bool {
     })
 }
 
+/// `trailing_row_drop` test: cells equal with C shifted by `dy`, the D row that falls outside the
+/// overlap is plain-blank (the dropped trailing row), and D has exactly `dy` more history rows.
+fn row_drop_shift(d: &(Grid, TermState), c: &(Grid, TermState), dy: i32) -> bool {
+    let (g, cols) = (&d.0, d.0.cols as usize);
+    let excluded_blank = (0..g.rows as i32).filter(|y| y + dy < 0 || y + dy >= c.0.rows as i32).all(|y| {
+        let y = y as usize;
+        g.cells[y * cols..(y + 1) * cols].iter().all(grid::is_plain_blank)
+    });
+    equal_shifted(&d.0, &c.0, dy)
+        && excluded_blank
+        && d.1.scrollback_rows as i64 - c.1.scrollback_rows as i64 == dy as i64
+}
+
+/// Mismatch groups names used for `secondary_classes`, in report order.
+pub const GROUPS: &[&str] = &[
+    "alt_screen", "scrollback", "modes", "cursor", "title_pwd", "kitty_kbd", "grid_size", "text",
+    "style", "hyperlink",
+];
+
+/// Every mismatching field group of a D-vs-C comparison: `alt_screen` (alt_screen /
+/// mode.alt_screen), `scrollback` (scrollback_rows / total_rows / history text), `modes` (other
+/// mode.*), `cursor`, `title_pwd`, `kitty_kbd`, `grid_size`, `text` (a cell's text differs),
+/// `style` (same text, colours/attrs differ), `hyperlink` (same text, hyperlink differs).
+pub fn mismatch_groups(diff: &Diff, d_hist: &[String], c_hist: &[String]) -> Vec<String> {
+    let has = |pred: &dyn Fn(&str) -> bool| diff.state_mismatches.iter().any(|(f, _, _)| pred(f));
+    let mut g: Vec<&str> = Vec::new();
+    if has(&|f| f == "alt_screen" || f == "mode.alt_screen") { g.push("alt_screen"); }
+    if has(&|f| f == "scrollback_rows" || f == "total_rows") || d_hist != c_hist { g.push("scrollback"); }
+    if has(&|f| f.starts_with("mode.") && f != "mode.alt_screen") { g.push("modes"); }
+    if has(&|f| CURSOR_FIELDS.contains(&f)) { g.push("cursor"); }
+    if has(&|f| f == "title" || f == "pwd") { g.push("title_pwd"); }
+    if has(&|f| f == "kitty_flags") { g.push("kitty_kbd"); }
+    if has(&|f| f == "grid_size") { g.push("grid_size"); }
+    let cm = &diff.cell_mismatches;
+    if cm.iter().any(|(_, _, a, b)| a.text != b.text) { g.push("text"); }
+    if cm.iter().any(|(_, _, a, b)| {
+        a.text == b.text && Cell { hyperlink: None, ..a.clone() } != Cell { hyperlink: None, ..b.clone() }
+    }) { g.push("style"); }
+    if cm.iter().any(|(_, _, a, b)| a.text == b.text && a.hyperlink != b.hyperlink) { g.push("hyperlink"); }
+    g.into_iter().map(String::from).collect()
+}
+
 fn state_detail(diff: &Diff, pred: impl Fn(&str) -> bool) -> Option<String> {
     diff.state_mismatches.iter().find(|(f, _, _)| pred(f)).map(|(f, a, b)| format!("{f}: D={a} C={b}"))
 }
@@ -291,7 +340,7 @@ fn state_detail(diff: &Diff, pred: impl Fn(&str) -> bool) -> Option<String> {
 /// Taxonomy, first matching class in priority order:
 /// `parser_state_split` (Naive, split not a boundary), `alt_screen` (alt_screen differs, or A was
 /// on the alt screen and the tail leaves it), `trailing_row_drop` (cells equal after shifting C by
-/// ±1 row), `scrollback` (scrollback_rows/total_rows/history text differ), `modes`, `cursor` (only
+/// ±1 row, the D row left out is blank, and D has exactly that many more history rows), `scrollback` (scrollback_rows/total_rows/history text differ), `modes`, `cursor` (only
 /// cursor fields differ, no cell mismatch), `title_pwd`, `kitty_kbd`, `style_only` (cells differ
 /// but text is equal everywhere), `text`, `other`.
 fn classify(x: &Ctx) -> (&'static str, String) {
@@ -308,7 +357,7 @@ fn classify(x: &Ctx) -> (&'static str, String) {
     }
     if !diff.cell_mismatches.is_empty() {
         for dy in [1, -1] {
-            if equal_shifted(&x.d.0, &x.c.0, dy) {
+            if row_drop_shift(x.d, x.c, dy) {
                 return ("trailing_row_drop", format!("C equals D shifted by {dy:+} row(s); {}", fm()));
             }
         }
@@ -341,6 +390,30 @@ fn classify(x: &Ctx) -> (&'static str, String) {
         return ("style_only", format!("cell ({cx},{cy}): D={} C={}", cell_str(a), cell_str(b)));
     }
     ("other", fm())
+}
+
+/// The taxonomy ([`classify`]) for an Aligned (boundary) comparison of D vs C outside
+/// [`run_case_with`] (used by the resize experiment). `diff` direction: `a` = D, `b` = C.
+pub fn classify_aligned(
+    a_alt_screen: bool,
+    tail: &[u8],
+    diff: &Diff,
+    d: &(Grid, TermState),
+    c: &(Grid, TermState),
+    d_hist: &[String],
+    c_hist: &[String],
+) -> (String, String) {
+    let tail_leaves_alt = contains_any(tail, &[b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"]);
+    let (cl, det) = classify(&Ctx {
+        strategy: Strategy::Aligned, split_is_boundary: true, a_alt_screen, tail_leaves_alt,
+        diff, d, c, d_hist, c_hist,
+    });
+    (cl.to_string(), det)
+}
+
+/// First mismatch text for a D-vs-C diff plus history (see [`run_case_with`]).
+pub fn describe_first_mismatch(diff: &Diff, d_hist: &[String], c_hist: &[String]) -> Option<String> {
+    first_mismatch(diff, d_hist, c_hist)
 }
 
 /// Ordered taxonomy class names (for reports).
@@ -384,55 +457,106 @@ fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
 
 /// Split points with the default cap ([`MAX_SPLITS`]).
 pub fn split_points(bytes: &[u8], boundaries: &[usize], seed: u64) -> Vec<usize> {
-    split_points_capped(bytes, boundaries, seed, MAX_SPLITS)
+    split_plan(bytes, boundaries, seed, MAX_SPLITS).points
 }
 
-/// 64 random boundary offsets + 64 random non-boundary offsets, plus every offset within ±2 of
-/// each `ESC[?1049h`, `ESC[?1049l`, `ESC]8;` and wide-character lead byte; always 0 and len;
-/// sorted, deduplicated, at most `cap` points (the targeted points are subsampled to fit, the
-/// random ones and 0/len are kept).
 pub fn split_points_capped(bytes: &[u8], boundaries: &[usize], seed: u64, cap: usize) -> Vec<usize> {
+    split_plan(bytes, boundaries, seed, cap).points
+}
+
+/// The split points of one stream plus how they were chosen (written to `streams.json`).
+/// Anchor counts are distinct offsets in the ±2 windows: `*_candidates` found, `*_kept` in `points`.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SplitPlan {
+    pub points: Vec<usize>,
+    pub cap: usize,
+    pub alt_anchor_candidates: usize,
+    pub alt_anchor_kept: usize,
+    pub osc8_anchor_candidates: usize,
+    pub osc8_anchor_kept: usize,
+    pub wide_anchor_candidates: usize,
+    pub wide_anchor_kept: usize,
+    pub random_boundary: usize,
+    pub random_non_boundary: usize,
+    /// Non-boundary points in `points` by cut state.
+    pub non_boundary_csi: usize,
+    pub non_boundary_string: usize,
+    pub non_boundary_utf8: usize,
+    pub non_boundary_esc: usize,
+}
+
+fn windows(anchors: &[usize], len: usize) -> Vec<usize> {
+    let mut v: Vec<usize> = anchors.iter().flat_map(|&a| a.saturating_sub(2)..=(a + 2).min(len)).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Selection order, each stage only adding points not yet chosen and never exceeding `cap`:
+/// 1. 0 and len;
+/// 2. ALL offsets within ±2 of every `ESC[?1049h`, `ESC[?1049l` and `ESC]8;` (only subsampled,
+///    seeded, if they alone exceed the cap — then `*_kept < *_candidates` says so);
+/// 3. 64 random boundary offsets, then 64 random non-boundary offsets;
+/// 4. shuffled offsets within ±2 of wide-character lead bytes, filling the remaining slots.
+pub fn split_plan(bytes: &[u8], boundaries: &[usize], seed: u64, cap: usize) -> SplitPlan {
     let len = bytes.len();
+    let cap = cap.max(2);
     let mut rng = StdRng::seed_from_u64(seed);
     let bset: HashSet<usize> = boundaries.iter().copied().collect();
-    let mut base: Vec<usize> = vec![0, len];
+    let mut chosen: Vec<usize> = vec![0];
+    if len > 0 { chosen.push(len); }
+    let mut have: HashSet<usize> = chosen.iter().copied().collect();
+    let take = |cands: Vec<usize>, limit: usize, chosen: &mut Vec<usize>, have: &mut HashSet<usize>| {
+        let mut n = 0;
+        for p in cands {
+            if n >= limit || chosen.len() >= cap { break; }
+            if have.insert(p) { chosen.push(p); n += 1; }
+        }
+        n
+    };
+
+    let mut alt_a = find_all(bytes, b"\x1b[?1049h");
+    alt_a.extend(find_all(bytes, b"\x1b[?1049l"));
+    let alt_w = windows(&alt_a, len);
+    let osc_w = windows(&find_all(bytes, b"\x1b]8;"), len);
+    let wide_w = windows(&wide_char_offsets(bytes), len);
+
+    let mut prio: Vec<usize> = alt_w.iter().chain(osc_w.iter()).copied().collect::<HashSet<_>>().into_iter().collect();
+    prio.sort_unstable();
+    if prio.len() + chosen.len() > cap { prio.shuffle(&mut rng); }
+    take(prio, usize::MAX, &mut chosen, &mut have);
 
     let mut bs: Vec<usize> = boundaries.iter().copied().filter(|&b| b != 0 && b != len).collect();
     bs.shuffle(&mut rng);
-    base.extend(bs.into_iter().take(64));
+    let random_boundary = take(bs, 64, &mut chosen, &mut have);
     let mut nb: Vec<usize> = (1..len).filter(|p| !bset.contains(p)).collect();
     nb.shuffle(&mut rng);
-    base.extend(nb.into_iter().take(64));
-    base.sort_unstable();
-    base.dedup();
-    base.truncate(cap.max(2));
-    if base.last() != Some(&len) {
-        // Keep 0 and len even under a tiny cap.
-        base.pop();
-        base.push(len);
-    }
+    let random_non_boundary = take(nb, 64, &mut chosen, &mut have);
 
-    let mut anchors: Vec<usize> = Vec::new();
-    for pat in [&b"\x1b[?1049h"[..], b"\x1b[?1049l", b"\x1b]8;"] {
-        anchors.extend(find_all(bytes, pat));
-    }
-    anchors.extend(wide_char_offsets(bytes));
-    let have: HashSet<usize> = base.iter().copied().collect();
-    let mut targeted: Vec<usize> = anchors
-        .iter()
-        .flat_map(|&a| a.saturating_sub(2)..=(a + 2).min(len))
-        .filter(|p| !have.contains(p))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    targeted.sort_unstable();
-    targeted.shuffle(&mut rng);
-    targeted.truncate(cap.saturating_sub(base.len()));
+    let mut wide = wide_w.clone();
+    wide.shuffle(&mut rng);
+    take(wide, usize::MAX, &mut chosen, &mut have);
 
-    base.extend(targeted);
-    base.sort_unstable();
-    base.dedup();
-    base
+    chosen.sort_unstable();
+    let kept = |w: &[usize]| w.iter().filter(|p| have.contains(p)).count();
+    let states = splitter::cut_states(bytes);
+    let count = |st: splitter::CutState| chosen.iter().filter(|&&p| !bset.contains(&p) && states[p] == st).count();
+    SplitPlan {
+        cap,
+        alt_anchor_candidates: alt_w.len(),
+        alt_anchor_kept: kept(&alt_w),
+        osc8_anchor_candidates: osc_w.len(),
+        osc8_anchor_kept: kept(&osc_w),
+        wide_anchor_candidates: wide_w.len(),
+        wide_anchor_kept: kept(&wide_w),
+        random_boundary,
+        random_non_boundary,
+        non_boundary_csi: count(splitter::CutState::Csi),
+        non_boundary_string: count(splitter::CutState::String),
+        non_boundary_utf8: count(splitter::CutState::Utf8),
+        non_boundary_esc: count(splitter::CutState::Esc),
+        points: chosen,
+    }
 }
 
 #[cfg(test)]
@@ -461,6 +585,7 @@ mod tests {
         let split = b.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
         let r = run_case(b, &case(split, Strategy::Aligned), 20, 5, 100);
         assert!(r.a_alt_screen);
+        assert!(!r.secondary_classes.is_empty(), "{r:?}");
         // Recorded outcome: the Formatter emits only the active (alt) screen, so the primary
         // content behind it is lost; after 1049l, C's primary screen lacks "primary one/two".
         assert!(!r.identical, "{r:?}");
@@ -484,7 +609,8 @@ mod tests {
         assert!(r.identical, "{r:?}");
 
         // Same with a trailing CRLF (the cursor sits on an empty last row): recorded outcome is the
-        // Formatter dropping that row; history text is still equal and the screen is shifted.
+        // Formatter dropping that row. C has one history row fewer: its history is D's minus the
+        // last line, so history text is NOT equal; the screen is shifted by one row.
         let s2: String = (0..300).map(|i| format!("line {i:03}\r\n")).collect();
         let b2 = s2.as_bytes();
         let r2 = run_case(b2, &case(b2.len(), Strategy::Aligned), 80, 24, 2000);
@@ -492,6 +618,34 @@ mod tests {
         assert!(!r2.identical, "{r2:?}");
         assert!(r2.state_mismatches.iter().any(|f| f == "scrollback_rows"), "{r2:?}");
         assert_eq!(r2.class.as_deref(), Some("trailing_row_drop"), "{r2:?}");
+        assert_eq!(r2.scrollback_text_equal, Some(false), "{r2:?}");
+        let d = reference(b2, 80, 24, 2000);
+        let c = snap::restore(80, 24, 2000, &snap::snapshot(&{
+            let mut a = new_term(80, 24, 2000);
+            a.vt_write(b2);
+            a
+        }, SnapOpts { palette: false }));
+        let ch = history_text(&c);
+        assert_eq!(ch.len() + 1, d.history.len());
+        assert_eq!(&d.history[..ch.len()], &ch[..], "C history = D history minus its last line");
+        assert!(r2.secondary_classes.iter().any(|g| g == "scrollback"), "{r2:?}");
+    }
+
+    #[test]
+    fn trailing_row_drop_is_tight() {
+        let row = |t: &str| (0..4).map(|i| Cell { text: t.chars().nth(i).map(String::from).unwrap_or_default(), ..Cell::default() }).collect::<Vec<_>>();
+        let g = |rows: &[&str]| Grid { cols: 4, rows: rows.len() as u16, cells: rows.iter().flat_map(|r| row(r)).collect() };
+        let st = |sb: usize| TermState { scrollback_rows: sb, ..TermState::default() };
+        // D: a b <blank>, 2 history rows; C: x a b, 1 history row -> C = D shifted down by one.
+        let d = (g(&["aaaa", "bbbb", ""]), st(2));
+        let c = (g(&["xxxx", "aaaa", "bbbb"]), st(1));
+        assert!(row_drop_shift(&d, &c, 1));
+        // D's excluded row not blank -> not a dropped trailing row.
+        let d2 = (g(&["aaaa", "bbbb", "zzzz"]), st(2));
+        assert!(!row_drop_shift(&d2, &c, 1));
+        // History difference must equal the shift.
+        assert!(!row_drop_shift(&(d.0.clone(), st(1)), &c, 1));
+        assert!(!row_drop_shift(&(d.0.clone(), st(4)), &c, 1));
     }
 
     #[test]
@@ -523,5 +677,20 @@ mod tests {
         }
         let bounds = splitter::boundaries(b"");
         assert_eq!(split_points(b"", &bounds, 1), vec![0]);
+
+        // Alt-screen / OSC 8 anchors are never dropped by the cap in favour of wide-char anchors.
+        let mut s = String::from("\x1b[?1049hA\x1b]8;;u\x1b\\L\x1b]8;;\x1b\\\x1b[?1049l");
+        for i in 0..1500 { s += &format!("日{i}"); }
+        s += "\x1b[?1049hB\x1b[?1049l";
+        let b = s.as_bytes();
+        let plan = split_plan(b, &splitter::boundaries(b), 1, MAX_SPLITS);
+        assert!(plan.points.len() <= MAX_SPLITS);
+        assert_eq!(plan.alt_anchor_kept, plan.alt_anchor_candidates, "{plan:?}");
+        assert_eq!(plan.osc8_anchor_kept, plan.osc8_anchor_candidates, "{plan:?}");
+        assert!(plan.wide_anchor_kept < plan.wide_anchor_candidates, "{plan:?}");
+        assert_eq!((plan.random_boundary, plan.random_non_boundary), (64, 64));
+        let nb = plan.non_boundary_csi + plan.non_boundary_string + plan.non_boundary_utf8 + plan.non_boundary_esc;
+        let bset = splitter::boundaries(b);
+        assert_eq!(nb, plan.points.iter().filter(|p| bset.binary_search(p).is_err()).count());
     }
 }
