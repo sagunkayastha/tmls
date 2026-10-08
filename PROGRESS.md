@@ -16,6 +16,35 @@ Branch `spike/s1b-snapshot-repair`, Linux archbox. Results: `docs/spikes/S1b-res
 
 Corpus v2 (`vim_prompt`, `less_prompt`, `btop_prompt`, `nested2`) preserves the original seven recordings. Claude remains skipped pending repo trust confirmation; Windows MSVC, graphics, and 10k-line scrollback performance remain. PLAN §3/§5.2/§6 marks S1b measured but open; §5.2 attach/reconnect is not frozen. Runs: `/data/scratch/s1/results/2026-10-08-s1b-run5/` (original corpus), `/data/scratch/s1/results/2026-10-08-s1b-run6/` (expanded corpus), and `run5/handoff/`.
 
+## 2026-10-08 — S1b round 2 under review; next-step sequence recorded (continue tomorrow)
+Codex implemented `docs/superpowers/plans/2026-10-08-s1b-round2.md` on `spike/s1b-r2` (cf5abc0 ECH overlay, 76ed938
+alt re-entry, 6654a00 soft-wrap carry, 56a63d0 docs; f653028 Codex self-review). Claimed + verified by the opus
+whole-branch review: AlignedCarry **3901/3901** identical under the unchanged S1 comparison; handoff 480/480 plain,
+477/480 resize; 0 client reply attempts; 65 tests. Both reviews: merge-with-fixes. Open: ECH resets ghostty's soft-wrap
+flag (Terminal.zig:3036) and the fallback was whole-snapshot → 28 unequal-row-flag snapshots + the 3 resize failures
+(carry bug, not Formatter limit); PLAN §6 gate text was rewritten (must be restored); 257/3901 snapshots not faithful
+until the tail (report as attach-time fidelity). Fix-wave prompt (Phase A) + S2 Task 1–2 prompt (Phase B) handed to
+Codex in chat; Codex login on archbox expired (`codex login` needed) — user runs Codex reviews from the PC meanwhile.
+
+### NEXT (in order)
+1. Codex: Phase A fix wave on `spike/s1b-r2` (per-row unwrap + wrap restore after ECH; CSI-X test parse; hyperlink
+   wide-spacer skip; scrollback param; alt-mode edge tests 1047/1049/nested; rerun `s1 run` + `s1 handoff` with the
+   commit hash stamped; PLAN §6 S1b text restored; faithful-at-restore column; residuals doc updates).
+2. Claude: scoped re-review (opus), rerun matrix/handoff at HEAD, merge `spike/s1b-r2` → main, sync PC, PROGRESS/memory.
+   Gate S1b closed only if 3901/3901 + 480/480 + row flags equal; else open with named residuals.
+3. Codex: Phase B — `spikes/s2-core` + `spikes/s2-wgpu` on `spike/s2` (compile-only; Dockerfile GUI libs added).
+4. Claude: review B; rebuild the PC Docker image (ssh, Docker only).
+5. User at PC (yes per session): `s2-wgpu` smoke run (`tooling/docker/build.sh build --release -p s2-wgpu`, ldd check,
+   `target-docker/release/s2-wgpu --bench ~/s2-logs/wgpu-smoke`); Claude reads the latency log; iterate.
+6. Codex: S2 Task 3 (sidebar/field/menu/IME) → user checklist (fcitx5 compose, wide-char copy, 125 % scaling,
+   monitor move) → `docs/spikes/S2-checklist-wgpu.md`.
+7. Codex: Task 4 `s2-gpui` → smoke + checklist. 8. Codex: Task 5 `s2-bench`.
+9. User + Claude: 16-run matrix on the PC + photon video (phone 240 fps) → `S2-results.md`, GUI decision in PLAN §3,
+   Codex gate, merge.
+10. Then S3–S7 (worker survival, transport, Claude status, mixed clients, ConPTY) → re-estimate → Phase 1a headless core.
+Side tasks for the user: accept Claude Code trust in `~/Others/tmls-rs` once (enables `record.sh claude`); file the
+upstream ghostty issue drafts left in `S1b-residuals.md` after Phase A; `codex login` on archbox.
+
 ## 2026-10-07 (late) — S1 merged; plans for S1b + S2 written for Codex/DeepSeek ✅
 `spike/s1` merged into main (`7fd556b`), partial `claude.bin`/`claude.meta.json` removed (`d8fca23`, user consent).
 PC clone synced. Reviews: `docs/reviews/2026-10-07-codex-sol-s1.md` + final branch review → one fix wave
