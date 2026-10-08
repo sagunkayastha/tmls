@@ -2,6 +2,18 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-08 — S1b round-2 fix wave at code commit 8eaf614
+
+Branch `spike/s1b-r2`. The focused ECH-on-wrapped-row and resize-epoch regressions now pass, as do wide-glyph hyperlink, alt-mode edge, and CSI-X parsing tests. `Tracker` carries the worker's scrollback setting into temporary restores. The whole-snapshot wrapped fallback was replaced by a row-aware path with conservative wide-spacer handling. `cargo test -p s1`: 73 passed, 2 ignored.
+
+Final matrix: **3901/3901** AlignedCarry cases, **3644/3901** immediately faithful at restore, and **3883/3901** equal row-wrap flags (18 diagnostic survivors). Final handoff: **480/480** plain and **480/480** resized, zero client reply attempts; the three former `wrap_pending` resize failures are gone. Exact artifacts: `/data/scratch/s1/results/2026-10-08-s1b-r2-final/matrix/` and `/data/scratch/s1/results/2026-10-08-s1b-r2-final/handoff/`, both stamped with `8eaf614`. Production attach remains provisional pending transport/atomic subscription, side effects, and broader reply suppression. Compact ≤200-byte repros for the 18 wrap-flag survivors remain open. Phase B waits for Claude re-review and merge.
+
+## 2026-10-08 — S1b round 2: corpus gate closed
+
+Branch `spike/s1b-r2`, Linux archbox. ECH overlays erased empty cells with their background and skips wide-cell spacers; the same corrected snapshot is carried behind alternate-screen entries. All 73 round-1 residuals closed, including the three continuation-only mode-47 cases. AlignedCarry is **3901/3901** identical under the unchanged S1 comparison; no upstream issue remains to file. `cases.jsonl` adds post-tail mismatch, alt-entry mode, and diagnostic row-wrap flag equality (3873/3901 equal).
+
+Unwrapped emission plus row-flag fallback improves simulated handoff to **480/480 plain and 477/480 resized** across 24 streams, 20 seeded splits each. The three remaining resize text mismatches are `wrap_pending` splits 679/681/688. A secondary-DA query was added to the short replica query filter; final client PTY reply attempts are zero. Production §5.2 remains provisional because the three resize cases, real transport/atomic subscription, and phase-aware side-effect suppression remain open. Results: `/data/scratch/s1/results/2026-10-08-s1b-r2-run5/` and `/data/scratch/s1/results/2026-10-08-s1b-r2-handoff-verified/`. See `docs/spikes/S1b-results.md` and `docs/spikes/S1b-residuals.md`.
+
 ## 2026-10-08 — S1b snapshot repair measured; gate remains open
 
 Branch `spike/s1b-snapshot-repair`, Linux archbox. Results: `docs/spikes/S1b-results.md`; residuals and upstream issue drafts: `docs/spikes/S1b-residuals.md`. The unchanged S1 comparison reports AlignedCarry 3271/3344 (97.8%) on the original corpus, 3828/3901 (98.1%) with four new recordings; all 557 prompt-first/nested2 splits are identical. Naive/Aligned/AlignedUnwrap original-corpus totals remain 1688/2628/2618. The 73 residuals are generated-stream styled/erased blank cells; three pass the immediate snapshot comparison and diverge after continuation, so their cause remains open. There are three ≤200-byte ignored repro tests and two proposed issue drafts; no issue was filed.
@@ -9,6 +21,35 @@ Branch `spike/s1b-snapshot-repair`, Linux archbox. Results: `docs/spikes/S1b-res
 `carry::Tracker` and `snapshot_full` now preserve title/pwd, kitty stack, saved cursor/pen, primary screen behind alt (including combined private-mode sequences), hyperlinks and active OSC 8, trailing blank history rows, origin-safe cursor, and pending wrap including wide glyphs. `s1 handoff` simulated 20 aligned splits × 20 streams × plain/resize: 385/400 plain and 309/400 resize identical, zero client PTY reply attempts on those streams, 586 observed side-effect callback invocations with inert handlers. Resize reflow is unresolved; the short client query filter and inert callback are a simulation rather than a general Ghostty reply-disable switch or phase-aware side-effect suppression. No real network or atomic replay-subscription race was tested.
 
 Corpus v2 (`vim_prompt`, `less_prompt`, `btop_prompt`, `nested2`) preserves the original seven recordings. Claude remains skipped pending repo trust confirmation; Windows MSVC, graphics, and 10k-line scrollback performance remain. PLAN §3/§5.2/§6 marks S1b measured but open; §5.2 attach/reconnect is not frozen. Runs: `/data/scratch/s1/results/2026-10-08-s1b-run5/` (original corpus), `/data/scratch/s1/results/2026-10-08-s1b-run6/` (expanded corpus), and `run5/handoff/`.
+
+## 2026-10-08 — S1b round 2 under review; next-step sequence recorded (continue tomorrow)
+Codex implemented `docs/superpowers/plans/2026-10-08-s1b-round2.md` on `spike/s1b-r2` (cf5abc0 ECH overlay, 76ed938
+alt re-entry, 6654a00 soft-wrap carry, 56a63d0 docs; f653028 Codex self-review). Claimed + verified by the opus
+whole-branch review: AlignedCarry **3901/3901** identical under the unchanged S1 comparison; handoff 480/480 plain,
+477/480 resize; 0 client reply attempts; 65 tests. Both reviews: merge-with-fixes. Open: ECH resets ghostty's soft-wrap
+flag (Terminal.zig:3036) and the fallback was whole-snapshot → 28 unequal-row-flag snapshots + the 3 resize failures
+(carry bug, not Formatter limit); PLAN §6 gate text was rewritten (must be restored); 257/3901 snapshots not faithful
+until the tail (report as attach-time fidelity). Fix-wave prompt (Phase A) + S2 Task 1–2 prompt (Phase B) handed to
+Codex in chat; Codex login on archbox expired (`codex login` needed) — user runs Codex reviews from the PC meanwhile.
+
+### NEXT (in order)
+1. Codex: Phase A fix wave on `spike/s1b-r2` (per-row unwrap + wrap restore after ECH; CSI-X test parse; hyperlink
+   wide-spacer skip; scrollback param; alt-mode edge tests 1047/1049/nested; rerun `s1 run` + `s1 handoff` with the
+   commit hash stamped; PLAN §6 S1b text restored; faithful-at-restore column; residuals doc updates).
+2. Claude: scoped re-review (opus), rerun matrix/handoff at HEAD, merge `spike/s1b-r2` → main, sync PC, PROGRESS/memory.
+   Gate S1b closed only if 3901/3901 + 480/480 + row flags equal; else open with named residuals.
+3. Codex: Phase B — `spikes/s2-core` + `spikes/s2-wgpu` on `spike/s2` (compile-only; Dockerfile GUI libs added).
+4. Claude: review B; rebuild the PC Docker image (ssh, Docker only).
+5. User at PC (yes per session): `s2-wgpu` smoke run (`tooling/docker/build.sh build --release -p s2-wgpu`, ldd check,
+   `target-docker/release/s2-wgpu --bench ~/s2-logs/wgpu-smoke`); Claude reads the latency log; iterate.
+6. Codex: S2 Task 3 (sidebar/field/menu/IME) → user checklist (fcitx5 compose, wide-char copy, 125 % scaling,
+   monitor move) → `docs/spikes/S2-checklist-wgpu.md`.
+7. Codex: Task 4 `s2-gpui` → smoke + checklist. 8. Codex: Task 5 `s2-bench`.
+9. User + Claude: 16-run matrix on the PC + photon video (phone 240 fps) → `S2-results.md`, GUI decision in PLAN §3,
+   Codex gate, merge.
+10. Then S3–S7 (worker survival, transport, Claude status, mixed clients, ConPTY) → re-estimate → Phase 1a headless core.
+Side tasks for the user: accept Claude Code trust in `~/Others/tmls-rs` once (enables `record.sh claude`); file the
+upstream ghostty issue drafts left in `S1b-residuals.md` after Phase A; `codex login` on archbox.
 
 ## 2026-10-07 (late) — S1 merged; plans for S1b + S2 written for Codex/DeepSeek ✅
 `spike/s1` merged into main (`7fd556b`), partial `claude.bin`/`claude.meta.json` removed (`d8fca23`, user consent).

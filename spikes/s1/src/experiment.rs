@@ -96,6 +96,11 @@ pub struct CaseResult {
     pub snap_faithful: bool,
     /// First A-vs-restore(S) mismatch when `!snap_faithful`.
     pub snap_first_mismatch: Option<String>,
+    /// Mismatch introduced only by continuation after a faithful snapshot.
+    pub post_tail_first_mismatch: Option<String>,
+    pub alt_mode_at_split: Option<u16>,
+    /// Snapshot row wrap metadata agrees before continuation; not S1 identity.
+    pub wrap_flags_equal: bool,
     pub a_scrollback_rows: usize,
     /// Fully plain-blank rows at the bottom of A's viewport when snapshotted.
     pub a_trailing_blank_rows: u16,
@@ -185,7 +190,7 @@ pub fn run_case_with(
         Strategy::Aligned | Strategy::AlignedUnwrap | Strategy::AlignedCarry => splitter::last_boundary_at_or_before(bounds, p),
     };
     let mut a = new_term(cols, rows, scrollback);
-    let mut tracker = Tracker::default();
+    let mut tracker = Tracker::with_scrollback(scrollback as usize);
     if case.strategy == Strategy::AlignedCarry {
         tracker.feed(&mut a, &bytes[..q]);
     } else {
@@ -202,6 +207,7 @@ pub fn run_case_with(
         (s, t0.elapsed())
     };
     let (mut c, rest_d) = snap::timed_restore(cols, rows, scrollback as usize, &s);
+    let wrap_flags_equal = grid::row_flags(&a).expect("source row flags") == grid::row_flags(&c).expect("restored row flags");
     let ca = capture_norm(&mut a);
     let a_hist = history_text(&a);
     let c0 = capture_norm(&mut c);
@@ -234,6 +240,9 @@ pub fn run_case_with(
         class_detail: None,
         snap_faithful,
         snap_first_mismatch: if snap_faithful { None } else { first_mismatch(&d0, &a_hist, &c0_hist) },
+        post_tail_first_mismatch: if snap_faithful { first_mismatch(&diff, &d.history, &c_hist) } else { None },
+        alt_mode_at_split: tracker.alt_entry.as_ref().map(|entry| entry.mode),
+        wrap_flags_equal,
         a_scrollback_rows: ca.1.scrollback_rows,
         a_trailing_blank_rows: trailing_blank_rows(&ca.0),
         cells_blank_equivalent: diff.cell_mismatches.iter().filter(|(_, _, a, b)| blank_equivalent(a, b)).count(),
@@ -678,41 +687,50 @@ mod tests {
         assert!(r.identical, "{r:?}");
     }
 
-    /// Erased blank at (0,0): D has bg=(181,189,104), restored C has no bg.
+    /// ECH restores the erased background at (0,0).
     #[test]
-    #[ignore]
     fn residual_style_only_repro() {
         let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[2J\x1b[0m";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"X");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
-        assert_eq!(r.class.as_deref(), Some("style_only"), "{r:?}");
+        assert!(r.identical, "{r:?}");
     }
 
-    /// Erased blank at (4,1): D has text="" with bg=(181,189,104), C has text=" " with the same bg.
+    /// ECH restores empty-cell identity and background at (4,1).
     #[test]
-    #[ignore]
     fn residual_text_repro() {
         let prefix = b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop\x1b[48;2;181;189;104m\x1b[2;4H\x1b[0K\x1b[0m";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"X");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 8, 3, 2000);
-        assert_eq!(r.class.as_deref(), Some("text"), "{r:?}");
+        assert!(r.identical, "{r:?}");
     }
 
-    /// After the 47 exit, primary cell (29,8): D text="", C text=" " with fg=(204,102,102).
+    /// The carried primary snapshot preserves empty-cell identity through a 47-mode exit.
     #[test]
-    #[ignore]
     fn residual_alt_screen_repro() {
         let prefix = b"\n\n\x1b[?1049h\x1b[?1049l\n\n\n\n\n\nprimary cycle 1 line 5 \x1b[35mcolour\x1b[?1047hs\x1b[?1047lb\x1b[?47h";
         let mut stream = prefix.to_vec();
         stream.extend_from_slice(b"\x1b[?47lback");
         assert!(stream.len() <= 200);
         let r = run_case(&stream, &case(prefix.len(), Strategy::AlignedCarry), 80, 24, 2000);
-        assert_eq!(r.class.as_deref(), Some("alt_screen"), "{r:?}");
-        assert!(r.first_mismatch.as_deref().is_some_and(|s| s.starts_with("cell (29,8): D=\"\" C=\" \"")), "{r:?}");
+        assert!(r.identical, "{r:?}");
+    }
+
+    #[test]
+    fn wrap_pending_no_regression() {
+        let bytes = crate::r#gen::adversarial().into_iter()
+            .find(|(name, _)| name == "wrap_pending").unwrap().1;
+        let bounds = splitter::boundaries(&bytes);
+        let reference = reference(&bytes, 120, 24, 2000);
+        for split in split_points_capped(&bytes, &bounds, 1, MAX_SPLITS) {
+            let r = run_case_with(&bytes, &bounds, &reference,
+                &case(split, Strategy::AlignedCarry), 120, 24, 2000);
+            assert!(r.identical, "split {split}: {r:?}");
+        }
     }
 
     #[test]

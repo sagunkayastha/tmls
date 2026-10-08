@@ -49,7 +49,7 @@ impl Worker {
         let replies = Rc::new(Cell::new(0));
         let count = replies.clone();
         term.on_pty_write(move |_, _| count.set(count.get() + 1)).expect("reply callback");
-        Self { term, tracker: Tracker::default(), log: Vec::new(), offset: 0, epoch: 0, cols, rows, scrollback, replies }
+        Self { term, tracker: Tracker::with_scrollback(scrollback), log: Vec::new(), offset: 0, epoch: 0, cols, rows, scrollback, replies }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -99,8 +99,9 @@ impl Client {
         term.on_title_changed(move |_| title.set(title.get() + 1)).expect("title callback");
         let clipboard = suppressed_side_effects.clone();
         term.on_clipboard_write(move |_, _| { clipboard.set(clipboard.get() + 1); Ok(()) }).expect("clipboard callback");
-        term.vt_write(&h.bytes);
-        Self { term, offset: h.offset, epoch: h.epoch, replies, suppressed_side_effects, pending: Vec::new() }
+        let mut client = Self { term, offset: h.offset, epoch: h.epoch, replies, suppressed_side_effects, pending: Vec::new() };
+        client.apply_bytes(&h.bytes);
+        client
     }
 
     pub fn apply(&mut self, bytes_after_offset: &[u8], resizes_after_epoch: &[ResizeEvent]) {
@@ -145,7 +146,7 @@ impl Client {
 
 fn is_reply_query(unit: &[u8]) -> bool {
     unit == b"\x1b[6n" || unit == b"\x1b[5n"
-        || unit == b"\x1b[c" || unit == b"\x1b[0c"
+        || unit == b"\x1b[c" || unit == b"\x1b[0c" || unit == b"\x1b[>c"
         || (unit.starts_with(b"\x1b[?") && unit.ends_with(b"$p"))
         || unit == b"\x1b[>q"
 }
@@ -250,6 +251,16 @@ mod tests {
     }
 
     #[test]
+    fn wrap_pending_resize_handoff_identical() {
+        let bytes = crate::r#gen::adversarial().into_iter()
+            .find(|(name, _)| name == "wrap_pending").unwrap().1;
+        for split in [679, 681, 688] {
+            let result = simulate(&bytes, 120, 24, 2000, split);
+            assert!(result.iter().all(|r| r.identical), "split {split}: {result:?}");
+        }
+    }
+
+    #[test]
     fn client_never_replies() {
         let mut worker = Worker::new(20, 4, 2000);
         worker.feed(b"ready");
@@ -260,6 +271,13 @@ mod tests {
         client.apply(&worker.log[h.offset as usize..], &[]);
         assert_eq!(client.reply_attempts(), 0);
         assert!(equal(&mut worker.term, &mut client.term));
+    }
+
+    #[test]
+    fn vim_prompt_snapshot_does_not_reply() {
+        let bytes = std::fs::read("corpus/vim_prompt.bin").unwrap();
+        let results = simulate(&bytes, 120, 40, 2000, 352);
+        assert!(results.iter().all(|r| r.client_reply_attempts == 0), "{results:?}");
     }
 
     #[test]

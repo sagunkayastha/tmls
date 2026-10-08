@@ -79,6 +79,25 @@ pub const MODES: &[(&str, Mode)] = &[
     ("grapheme_cluster", Mode::GRAPHEME_CLUSTER), // DEC 2027
 ];
 
+/// Row wrap metadata in history-first order, followed by viewport rows.
+/// This is diagnostic state and is not part of the S1 identity comparison.
+pub fn row_flags(term: &Terminal) -> anyhow::Result<Vec<(bool, bool)>> {
+    let history = term.scrollback_rows()?;
+    let rows = term.rows()? as usize;
+    let mut flags = Vec::with_capacity(history + rows);
+    for y in 0..history {
+        let row = term.grid_ref(Point::History(PointCoordinate { x: 0, y: y as u32 }))?;
+        let row = row.row()?;
+        flags.push((row.is_wrapped()?, row.is_wrap_continuation()?));
+    }
+    for y in 0..rows {
+        let row = term.grid_ref(Point::Viewport(PointCoordinate { x: 0, y: y as u32 }))?;
+        let row = row.row()?;
+        flags.push((row.is_wrapped()?, row.is_wrap_continuation()?));
+    }
+    Ok(flags)
+}
+
 fn rgb(c: RgbColor) -> (u8, u8, u8) {
     (c.r, c.g, c.b)
 }
