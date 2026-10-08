@@ -6,6 +6,7 @@
 //! `s1 portability --corpus-dir DIR [--gen] --out DIR` feeds the end-of-stream snapshot (and the
 //! original stream) to pyte and compares with libghostty (`<out>/portability/`).
 //! `s1 resize --corpus-dir DIR [--gen] --out DIR` runs the resize-at-split variants (`<out>/resize/`).
+//! `s1 handoff --corpus-dir DIR [--gen] --out DIR` simulates snapshot delivery with offset and resize epoch.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -94,6 +95,17 @@ enum Cmd {
         /// Streams to run (comma-separated).
         #[arg(long, value_delimiter = ',', default_value = "vim,less,scrollback_200,wrap_pending")]
         streams: Vec<String>,
+    },
+    /// Simulate snapshot delivery while the worker continues parsing output.
+    Handoff {
+        #[command(flatten)]
+        src: StreamArgs,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, default_value_t = 20)]
+        splits: usize,
     },
 }
 
@@ -296,6 +308,46 @@ fn main() -> anyhow::Result<()> {
                 t0.elapsed().as_secs_f64());
             std::fs::write(dir.join("summary.md"), s1::resize::summary_md(&header, &recs))?;
             eprintln!("wrote {}", dir.display());
+        }
+        Cmd::Handoff { src, out, seed, splits } => {
+            use rand::rngs::StdRng;
+            use rand::seq::SliceRandom;
+            use rand::SeedableRng;
+            let streams = load_streams(&src.corpus_dir, src.r#gen, src.cols, src.rows, src.gen_cols, src.gen_rows, &src.skip)?;
+            std::fs::create_dir_all(&out)?;
+            let mut jsonl = std::io::BufWriter::new(std::fs::File::create_new(out.join("cases.jsonl"))?);
+            let mut summary = String::from("# S1b handoff simulation\n\nOne fixed snapshot at an aligned offset; worker consumes tail before client attaches. Resize variant inserts a 100×30 event at a tail boundary and delivers it in epoch order. Compared using unchanged S1 grid, state, and history text. `max_scrollback` is bytes.\n\n| stream | splits | plain identical | resize identical | classed residuals | other residuals | client reply attempts |\n|---|---:|---:|---:|---:|---:|---:|\n");
+            for (index, (name, _source, cols, rows, bytes)) in streams.iter().enumerate() {
+                let mut bounds = s1::splitter::boundaries(bytes);
+                let mut rng = StdRng::seed_from_u64(seed.wrapping_add(index as u64));
+                bounds.shuffle(&mut rng);
+                bounds.truncate(splits.min(bounds.len()));
+                bounds.sort_unstable();
+                let mut plain = 0usize;
+                let mut resized = 0usize;
+                let mut known = 0usize;
+                let mut other = 0usize;
+                let mut replies = 0usize;
+                for &q in &bounds {
+                    for result in s1::handoff::simulate(bytes, *cols, *rows, src.scrollback as usize, q) {
+                        if result.identical {
+                            if result.resize { resized += 1; } else { plain += 1; }
+                        } else if matches!(result.class.as_deref(), Some("alt_screen" | "text" | "style_only")) {
+                            known += 1;
+                        } else { other += 1; }
+                        replies += result.client_reply_attempts;
+                        let record = serde_json::json!({"stream": name, "result": result});
+                        serde_json::to_writer(&mut jsonl, &record)?;
+                        jsonl.write_all(b"\n")?;
+                    }
+                }
+                use std::fmt::Write as _;
+                writeln!(summary, "| {name} | {} | {plain} | {resized} | {known} | {other} | {replies} |", bounds.len())?;
+                eprintln!("handoff {name}: {plain}/{}, resize {resized}/{}, classed {known}, other {other}, replies {replies}", bounds.len(), bounds.len());
+            }
+            jsonl.flush()?;
+            std::fs::write(out.join("summary.md"), summary)?;
+            eprintln!("wrote {}", out.display());
         }
     }
     Ok(())
