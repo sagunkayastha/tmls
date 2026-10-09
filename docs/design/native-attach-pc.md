@@ -129,15 +129,18 @@ All runs on laanta-chy, with you present for anything with a window. The PC-job 
 
 ## Phases and who does what
 
-Codex implements from a written brief. Claude writes the briefs, reviews, merges, and runs the gates with you. Agent-time estimates:
+**Claude implements the hard parts** (process/pty control, switch paths, push agent): bugs there are subtle
+and only show at the gates. **Codex implements well-bounded tasks** from a written brief that Claude writes;
+Claude reviews every Codex diff, merges, and runs the gates with you. DeepSeek is not used on tmls.
+Agent-time estimates:
 
-| Phase | What | Estimate |
-|---|---|---|
-| **B1** | kitty pane host, `tmls-view` supervisor, launch/fallback, same-host and cross-host switch, focus keys, ControlMaster | ~3–4 h + one PC test session |
-| **B2** | `tmls open-link` (icat overlay, less overlay, system app), hints kitten mapping, `tmls paste-image`, `tmls.conf` installer/uninstaller | ~2–3 h + checklist session |
-| **C** | Hooks installer, events file, status line wrapper, per-host agent with push, backstop poll | ~3–4 h + one session with live Claude sessions |
-| **D** | Sidebar UX (unread, pulse, subtitle, jump key, confirmed switch, sign-in row), game mode | ~2 h |
-| Later | Laptop edition (tmux pane host in WSL); web/Android get the push feed | after the PC is the daily driver |
+| Phase | Claude | Codex | Estimate |
+|---|---|---|---|
+| **B1** | `tmls-view` supervisor (child on same pty, clean detach-then-kill, terminal-state reset, disconnected/retry state); same-host and cross-host switch incl. no-client fallback; focus handoff; launch + fixed-width sidebar (relative resize + re-apply on OS-window resize) | ControlMaster config/warmup per host; tab-mode fallback wiring | ~3–4 h + one PC test session |
+| **B2** | review only | `tmls open-link` (icat overlay, less overlay, system app), hints kitten mapping, `tmls paste-image`, `tmls.conf` installer/uninstaller | ~2–3 h + checklist session |
+| **C** | per-host agent (stdin-shipped, tail from offset, tmux subscriptions, 50 ms coalesce, heartbeat/snapshot, poll fallback) | hooks installer (append into existing matcher arrays, backup, uninstall), events file writer, `tmls statusline` wrapper | ~3–4 h + one session with live Claude sessions |
+| **D** | review only | sidebar UX (unread, pulse, subtitle, jump key, confirmed switch, sign-in row), game mode | ~2 h |
+| Later | Laptop edition (tmux pane host in WSL); web/Android get the push feed | | after the PC is the daily driver |
 
 Each phase works on its own branch. Claude merges only after its gate passes. The tab mode stays until the PC edition has been the daily driver for a week.
 
@@ -148,6 +151,21 @@ Each phase works on its own branch. Claude merges only after its gate passes. Th
 - **Image pane.** The current one, drawn with textual-image inside the sidebar, is replaced by the kitty overlay in the PC edition. The tab-mode fallback keeps the old one.
 - **Hooks in settings.json.** Claude Code reloads settings live. The installer is idempotent, keeps a backup, and has an uninstall command.
 - **Status line wrapper.** It must pass through exactly what `cs` expects. Gate: the bar shows identical output before and after.
+- **Terminal state on cross-host switch.** Killing `ssh -t … tmux attach` skips tmux's exit sequences, leaving
+  alt screen, mouse tracking, bracketed paste, kitty keyboard protocol or cursor shape set. tmls-view first
+  detaches the client (`tmux detach-client` over ControlMaster) and waits for ssh to exit; kill is the fallback,
+  followed by a targeted mode-reset write (no full `reset`, which flickers).
+- **Sidebar width.** `kitten @ resize-window` is relative. tmls reads the current width from `kitten @ ls`, sends the
+  difference, and re-applies it when the OS window resizes.
+- **Lost view.** If ssh dies (network, host reboot), tmls-view shows "disconnected — Enter to retry" in the pane
+  instead of an empty window.
+- **No client on the target host yet** (first launch, client died): same-host switch falls back to the cross-host path.
+- **Existing hooks.** `settings.json` already has SessionStart/UserPromptSubmit hooks (caveman, superpowers). The
+  installer appends inside existing matcher arrays; gate: those hooks still fire after install.
+- **`cs` under the wrapper.** `cs` carries local source patches and has daemon/fast modes; the identical-bar gate is
+  run with both modes.
+- **Key-echo gate** proves the design (data path is identical by construction); keep it short. Switch and focus
+  latency are the gates that matter.
 
 ## Why not tmls-rs
 
