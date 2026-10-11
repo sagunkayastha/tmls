@@ -21,7 +21,7 @@
 
 use s2_core::{Key, KeyEvent, Mods, Named};
 
-use crate::tabs::TabState;
+use crate::tabs::{TabState, Tabs};
 
 /// What has the keyboard focus inside the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +155,27 @@ pub fn route(ev: &KeyEvent, focus: Focus, tab: Option<TabState>) -> Route {
             }
         }
         (Focus::Terminal, None) => Route::Drop,
+    }
+}
+
+/// Routes one key event and, when it is the terminal's, sends it to the session of the tab in
+/// front. No key reaches a session any other way: one for the list or a form is neither sent
+/// nor given a `key` line in the latency log. Returns where the key went and, unless it was
+/// sent, the event; a repeat that `gate` holds back comes back as `Route::Drop`.
+pub fn dispatch(
+    t_key_ns: u128,
+    ev: KeyEvent,
+    focus: Focus,
+    gate: &mut RepeatGate,
+    tabs: &mut Tabs,
+) -> (Route, Option<KeyEvent>) {
+    match route(&ev, focus, tabs.active_state()) {
+        Route::Terminal if gate.passes(&ev) => {
+            tabs.send_key(t_key_ns, ev);
+            (Route::Terminal, None)
+        }
+        Route::Terminal => (Route::Drop, Some(ev)),
+        other => (other, Some(ev)),
     }
 }
 

@@ -547,20 +547,17 @@ impl Running {
             }
             Action::Ignore => return After::Stay,
         };
-        match keys::route(&ev, self.focus, self.tabs.active_state()) {
+        // A key for the terminal is sent in there, and nowhere else.
+        let (route, ev) = keys::dispatch(t_key_ns, ev, self.focus, &mut self.gate, &mut self.tabs);
+        match route {
             Route::Global(Global::Quit) => return After::Quit,
             Route::Global(global) => self.global(global),
-            Route::Terminal => {
-                if self.gate.passes(&ev) {
-                    self.tabs.send_key(t_key_ns, ev);
-                }
-            }
             Route::Sidebar => {
-                if let Some(key) = keys::list_key(&ev) {
+                if let Some(key) = ev.as_ref().and_then(keys::list_key) {
                     self.list_key(key);
                 }
             }
-            Route::Form | Route::Drop => {}
+            Route::Terminal | Route::Form | Route::Drop => {}
         }
         After::Stay
     }
