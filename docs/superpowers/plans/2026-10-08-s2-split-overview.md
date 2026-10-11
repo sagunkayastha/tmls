@@ -130,6 +130,39 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   "the next frame with output after the key was written", not "the frame in which the echo is visible": any PTY output
   read after the write began counts. Quiet runs measure echo-visible latency. State this next to flood results.
 
+**Contract notes from A2 (2026-10-10, `s2-wgpu` as built; for `s2-gpui` and `analyze.py`):**
+- **`t_key_ns` is when the app dequeued the event, not when the key arrived.** It is taken at `window_event` entry. A key
+  that arrives while the main thread is inside a redraw (quad build, texture acquire, submit, present) is stamped only
+  when the redraw returns, so key→present is **under-reported** by the time it waited. Negligible for quiet runs under
+  paced fifo on Wayland; not negligible for flood with `--present mailbox|immediate`, for X11 (fifo can block in
+  acquire/present for up to a refresh) and for the first frame (submit→present ≈ 52 ms in the smoke logs). State this
+  next to flood and X11 results.
+- **`t_redraw_ns` (redraw entry) is NOT in the log yet.** `s2-wgpu` takes it as the first statement of each redraw
+  and carries it per presented frame (`spikes/s2-wgpu/src/marks.rs`, `FrameLine::t_redraw_ns`, `t_redraw_ns ≤
+  t_submit_ns`), so analysis could flag keys whose `t_key_ns` falls just after a frame's redraw..present window. It
+  cannot be written: `latency::Log` builds the `frame` line itself and `Event::Frame` has no such field. Needed in
+  `s2-core` (Track A): an optional `t_redraw_ns` on `Event::Frame` and on `Log::frame_with_work_done`, like
+  `t_work_done_ns`. Until then `analyze.py` must not expect the field.
+- **Re-presents:** presenting an already logged frame again (selection, preedit, resize repaint) writes a `frame` line
+  with the same `seq`, `t_output_ns: 0` and no keys. Per-frame analysis must skip lines with `t_output_ns == 0`.
+- **`meta.hz` is `0.0` when the window system reports no refresh rate.** Treat it as unknown; never divide by it.
+- **`t_work_done_ns` is an upper bound.** The callback runs inside `device.poll`, which the app calls on the main thread
+  after `present()` has returned (then every 500 µs while a line waits), so it is never earlier than `t_present_ns` and
+  is later when the main thread is busy. The line is written without the field if the callback has not run within
+  100 ms or by exit.
+- **Key ids are not dense.** Every key event sent to the core takes an id; only presses and repeats get a `key` line
+  (releases do not). An IME commit is one press with the whole text and counts as a key.
+- **Pacing:** under fifo `s2-wgpu` calls `Window::pre_present_notify` before each present, so on Wayland redraws
+  follow the compositor's frame callbacks; mailbox and immediate are unpaced. A mode the surface does not offer falls
+  back to fifo and `meta.present_mode` names the mode in use. State the pacing next to results.
+- **`Emu::exited()` can turn true before the child's last output is in a frame** (the PTY reader sets it at end of
+  file; the emulator thread may still hold the last bytes). A front-end must not exit on it alone: after seeing
+  `exited()`, send `InputMsg::ScrollToBottom` and keep taking frames until one built after it arrives
+  (`t_output_ns` ≥ the send time; if a frame with an earlier time arrives, send the marker again), bounded by a
+  deadline, and exit only once that frame has been presented. Reference: `spikes/s2-wgpu/src/session.rs`,
+  `Session::begin_exit` / `Session::output_drained` (re-send in `Session::take_frames`); the exit decision is
+  `spikes/s2-wgpu/src/surface.rs`, `may_exit`, with the 2 s deadline `EXIT_WAIT` in `spikes/s2-wgpu/src/app.rs`.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:
