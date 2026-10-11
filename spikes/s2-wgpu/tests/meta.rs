@@ -167,3 +167,34 @@ fn the_meta_line_says_whether_the_ui_was_on_and_where_hz_came_from() {
         );
     }
 }
+
+#[test]
+fn meta_git_is_the_hash_with_dirty_appended_for_a_changed_tracked_file() {
+    use s2_wgpu::provenance::{git_label, is_dirty};
+    // Clean tree → the hash alone; a tracked file changed → `<hash>-dirty`.
+    assert_eq!(git_label(Some("79e7e97\n"), Some(false)), "79e7e97");
+    assert_eq!(git_label(Some("79e7e97\n"), Some(true)), "79e7e97-dirty");
+    // `git status` failed although `rev-parse` worked: the hash alone, as before.
+    assert_eq!(git_label(Some("79e7e97"), None), "79e7e97");
+    // No git, no repository, or an empty answer: as before.
+    assert_eq!(git_label(None, None), "unknown");
+    assert_eq!(git_label(None, Some(true)), "unknown");
+    assert_eq!(git_label(Some(" \n"), Some(true)), "unknown");
+
+    // `git status --porcelain --untracked-files=no`: one line per changed tracked file.
+    assert!(!is_dirty(""));
+    assert!(!is_dirty("\n"));
+    assert!(is_dirty(" M PROGRESS.md\n"));
+    assert!(is_dirty("M  spikes/s2-wgpu/src/app.rs\n D docs/x.md\n"));
+}
+
+#[test]
+fn the_binary_carries_a_git_label() {
+    // What `build.rs` baked in for this build: a short hash, with or without `-dirty`.
+    let label = env!("S2_GIT");
+    let hash = label.strip_suffix("-dirty").unwrap_or(label);
+    assert!(
+        label == "unknown" || (hash.len() >= 7 && hash.chars().all(|c| c.is_ascii_hexdigit())),
+        "S2_GIT is {label:?}"
+    );
+}
