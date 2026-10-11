@@ -95,6 +95,12 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   `sorted[ceil(p/100 · n) − 1]`. Golden pair: `spikes/s2-core/tests/data/golden-latency.jsonl` + `golden-report.json`
   (generator `make-golden.py` beside them computes the report independently of the Rust code).
 
+**Contract changes from the A1 fix wave (2026-10-10, review `docs/reviews/2026-10-10-opus-s2-core.md`):**
+- **Keys:** with Ctrl held, pass `text: None` or the control character the toolkit reports (winit's `"\x03"`); control
+  characters in `text` are ignored and key + modifiers decide. Ctrl+`[ \ ] / _ @ ^ ?` and Ctrl+`i`/`m` send their C0
+  byte in legacy mode. *Printable* text with Ctrl (`text: Some("[")`) is passed to libghostty-vt as is, which then uses
+  its fixterms CSI-u form for a few chords (`ESC[91;5u` for Ctrl+`[`) — so do not pass it.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:

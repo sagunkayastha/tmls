@@ -112,6 +112,89 @@ fn keys_encode_letter_and_ctrl() {
     assert_eq!(enc.encode(&press(Key::Named(Named::Enter), Mods::default(), None), &term).unwrap(), b"\r");
 }
 
+/// B4: in legacy mode Ctrl + punctuation sends its C0 byte (it used to send nothing).
+#[test]
+fn keys_ctrl_punctuation_sends_control_bytes() {
+    let term = Terminal::new(Options { cols: 80, rows: 24, max_scrollback: 0 }).unwrap();
+    let mut enc = Encoder::new().unwrap();
+    let ctrl = Mods { ctrl: true, ..Mods::default() };
+    let ctrl_shift = Mods { ctrl: true, shift: true, ..Mods::default() };
+    let cases: [(char, Mods, &[u8]); 12] = [
+        ('[', ctrl, b"\x1b"),
+        ('\\', ctrl, b"\x1c"),
+        (']', ctrl, b"\x1d"),
+        ('/', ctrl, b"\x1f"),
+        ('_', ctrl_shift, b"\x1f"),
+        ('@', ctrl_shift, b"\x00"),
+        ('^', ctrl_shift, b"\x1e"),
+        ('?', ctrl_shift, b"\x7f"),
+        (' ', ctrl, b"\x00"),
+        // The letters libghostty-vt leaves out of its control table.
+        ('i', ctrl, b"\t"),
+        ('m', ctrl, b"\r"),
+        ('C', ctrl_shift, b"\x03"),
+    ];
+    for (c, mods, want) in cases {
+        let got = enc.encode(&press(Key::Char(c), mods, None), &term).unwrap();
+        assert_eq!(got.escape_ascii().to_string(), want.escape_ascii().to_string(), "Ctrl+{c:?}");
+    }
+    // Alt adds the ESC prefix; a release and a key with no control meaning still send nothing.
+    let ctrl_alt = Mods { ctrl: true, alt: true, ..Mods::default() };
+    assert_eq!(enc.encode(&press(Key::Char('c'), ctrl_alt, None), &term).unwrap(), b"\x1b\x03");
+    assert_eq!(enc.encode(&press(Key::Char('\\'), ctrl_alt, None), &term).unwrap(), b"\x1b\x1c");
+    let release = KeyEvent { pressed: false, ..press(Key::Char('['), ctrl, None) };
+    assert_eq!(enc.encode(&release, &term).unwrap(), b"");
+    assert_eq!(enc.encode(&press(Key::Char('-'), ctrl, None), &term).unwrap(), b"");
+    // Without Ctrl the punctuation is still plain text.
+    for c in ['[', '\\', '/', '_', '@', ';'] {
+        let got = enc.encode(&press(Key::Char(c), Mods::default(), Some(&c.to_string())), &term).unwrap();
+        assert_eq!(got, c.to_string().as_bytes(), "plain {c:?}");
+    }
+}
+
+/// B5: a front-end may pass the control character as `text` (winit does for Ctrl chords and
+/// for Enter, Tab, Backspace, Escape). It must not be encoded as if it were printable.
+#[test]
+fn keys_control_text_is_not_text() {
+    let term = Terminal::new(Options { cols: 80, rows: 24, max_scrollback: 0 }).unwrap();
+    let mut enc = Encoder::new().unwrap();
+    let ctrl = Mods { ctrl: true, ..Mods::default() };
+    let none = Mods::default();
+    assert_eq!(enc.encode(&press(Key::Char('c'), ctrl, Some("\x03")), &term).unwrap(), b"\x03");
+    assert_eq!(enc.encode(&press(Key::Char('['), ctrl, Some("\x1b")), &term).unwrap(), b"\x1b");
+    assert_eq!(enc.encode(&press(Key::Char('i'), ctrl, Some("\t")), &term).unwrap(), b"\t");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Enter), none, Some("\r")), &term).unwrap(), b"\r");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Tab), none, Some("\t")), &term).unwrap(), b"\t");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Backspace), none, Some("\x08")), &term).unwrap(), b"\x7f");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Escape), none, Some("\x1b")), &term).unwrap(), b"\x1b");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Delete), none, Some("\x7f")), &term).unwrap(), b"\x1b[3~");
+    // Printable text is untouched, multi-byte too.
+    assert_eq!(enc.encode(&press(Key::Char('é'), none, Some("é")), &term).unwrap(), "é".as_bytes());
+}
+
+/// With the kitty keyboard protocol on, the same keys take their CSI-u form.
+#[test]
+fn keys_encode_kitty_protocol() {
+    let mut term = Terminal::new(Options { cols: 80, rows: 24, max_scrollback: 0 }).unwrap();
+    let mut enc = Encoder::new().unwrap();
+    let ctrl = Mods { ctrl: true, ..Mods::default() };
+    let none = Mods::default();
+    assert_eq!(enc.encode(&press(Key::Named(Named::Escape), none, None), &term).unwrap(), b"\x1b");
+    term.vt_write(b"\x1b[>1u"); // disambiguate escape codes
+    assert_eq!(enc.encode(&press(Key::Char('a'), none, Some("a")), &term).unwrap(), b"a");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Escape), none, None), &term).unwrap(), b"\x1b[27u");
+    assert_eq!(enc.encode(&press(Key::Char('c'), ctrl, None), &term).unwrap(), b"\x1b[99;5u");
+    assert_eq!(enc.encode(&press(Key::Char('c'), ctrl, Some("\x03")), &term).unwrap(), b"\x1b[99;5u");
+    assert_eq!(enc.encode(&press(Key::Char('['), ctrl, None), &term).unwrap(), b"\x1b[91;5u");
+    assert_eq!(enc.encode(&press(Key::Char('/'), ctrl, None), &term).unwrap(), b"\x1b[47;5u");
+    assert_eq!(enc.encode(&press(Key::Char('i'), ctrl, None), &term).unwrap(), b"\x1b[105;5u");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Enter), none, Some("\r")), &term).unwrap(), b"\r");
+    let release = KeyEvent { pressed: false, ..press(Key::Char('a'), none, Some("a")) };
+    assert_eq!(enc.encode(&release, &term).unwrap(), b"");
+    term.vt_write(b"\x1b[>3u"); // … and report event types
+    assert_eq!(enc.encode(&release, &term).unwrap(), b"\x1b[97;1:3u");
+}
+
 #[test]
 fn key_reaches_pty_and_is_attributed_to_a_frame() {
     let dir = scratch("key_attribution");
