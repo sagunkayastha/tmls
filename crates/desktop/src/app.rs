@@ -619,9 +619,7 @@ impl Running {
                     self.act(action);
                 }
             }
-            ListKey::Pin => {
-                self.sidebar.toggle_pin();
-            }
+            ListKey::Pin => self.toggle_pin(),
             ListKey::NextWaiting => self.next_waiting(),
         }
         self.invalidate();
@@ -651,7 +649,7 @@ impl Running {
             MouseButton::Middle => {
                 if let Some(key) = self.sidebar.key_at(row).cloned() {
                     self.sidebar.select_key(&key);
-                    self.sidebar.toggle_pin();
+                    self.toggle_pin();
                 }
                 None
             }
@@ -695,6 +693,14 @@ impl Running {
         if opened {
             self.tab_changed();
         }
+    }
+
+    /// Pins or unpins the selected session; a `pins` file that cannot be written shows in the
+    /// status line.
+    fn toggle_pin(&mut self) {
+        self.sidebar.toggle_pin();
+        let saved = self.sidebar.take_pin_error();
+        self.report(saved);
     }
 
     /// Keeps what went wrong for the status line, or clears it.
