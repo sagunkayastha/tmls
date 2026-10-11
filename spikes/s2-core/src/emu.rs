@@ -12,7 +12,7 @@ use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 
 use crate::frame::{Cell, CellFlags, Cursor, CursorShape, Frame, FrameSlot, Wide};
-use crate::keys::{self, KeyEvent};
+use crate::keys::{self, KeyEvent, Mods, MouseButton, MouseKind};
 use crate::latency::Log;
 use crate::now_ns;
 use crate::pty::{Pty, PtyReader, PtyWriter, Wake};
@@ -41,6 +41,14 @@ pub enum InputMsg {
     Scroll(i32),
     /// Returns the viewport to the live screen. A frame follows.
     ScrollToBottom,
+    /// One mouse event at a 0-based viewport cell, for the program: written to the PTY as the
+    /// report the terminal's mouse modes ask for (tracking 1000 / 1002 / 1003, format SGR 1006
+    /// or X10), and not at all when the program did not ask for it — see
+    /// `keys::MouseEncoder::encode`. `button`: the one pressed or released; for `Motion` the one
+    /// held (`None`: none). The wheel is `Press` of `WheelUp` / `WheelDown`. Unlike a key it
+    /// does not move a scrolled viewport, gets no key id and no latency line.
+    /// Whether to send it at all is the front-end's choice: `Emu::mouse_reporting`.
+    Mouse { kind: MouseKind, button: Option<MouseButton>, col: u16, row: u16, mods: Mods },
     Shutdown,
 }
 
@@ -83,6 +91,12 @@ impl Emu {
     /// True once the PTY reached end of file (the child exited). The waker fires when it does.
     pub fn exited(&self) -> bool {
         self.frames.exited()
+    }
+
+    /// The program asked for mouse reports (any tracking mode), as of the newest frame
+    /// published. Never blocks: see `FrameSlot::mouse_reporting`.
+    pub fn mouse_reporting(&self) -> bool {
+        self.frames.mouse_reporting()
     }
 }
 
@@ -203,6 +217,7 @@ struct State {
     row_iter: RowIterator<'static>,
     cell_iter: CellIterator<'static>,
     encoder: keys::Encoder,
+    mouse_encoder: keys::MouseEncoder,
     pty: Pty,
     writer: PtyWriter,
     log: Option<Log>,
@@ -242,6 +257,7 @@ impl State {
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
             encoder: keys::Encoder::new()?,
+            mouse_encoder: keys::MouseEncoder::new()?,
             pty,
             writer,
             log,
@@ -274,6 +290,7 @@ impl State {
                     InputMsg::Resize(cols, rows) => self.redraw |= self.resize(cols, rows),
                     InputMsg::Scroll(rows) => self.scroll(ScrollViewport::Delta(rows as isize)),
                     InputMsg::ScrollToBottom => self.scroll(ScrollViewport::Bottom),
+                    InputMsg::Mouse { kind, button, col, row, mods } => self.mouse(kind, button, (col, row), mods),
                     InputMsg::Shutdown => return,
                 }
             }
@@ -332,6 +349,15 @@ impl State {
         }
     }
 
+    fn mouse(&mut self, kind: MouseKind, button: Option<MouseButton>, at: (u16, u16), mods: Mods) {
+        let grid = (self.term.cols().unwrap_or(0), self.term.rows().unwrap_or(0));
+        if let Ok(bytes) = self.mouse_encoder.encode(kind, button, at, mods, grid, &self.term)
+            && !bytes.is_empty()
+        {
+            let _ = self.writer.write_then(bytes, None);
+        }
+    }
+
     fn focus(&mut self, focused: bool) {
         if self.term.mode(Mode::FOCUS_EVENT).unwrap_or(false) {
             let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
@@ -369,6 +395,7 @@ impl State {
             });
         }
         self.seq += 1;
+        self.frames.set_mouse_reporting(self.term.is_mouse_tracking().unwrap_or(false));
         self.frames.publish(Frame {
             cols: self.size.0,
             rows: self.size.1,

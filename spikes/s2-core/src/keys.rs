@@ -1,8 +1,9 @@
 //! Toolkit-neutral key events and their encoding to PTY bytes via libghostty-vt's key encoder.
-//! Front-ends map winit/gpui events into `KeyEvent`.
+//! Front-ends map winit/gpui events into `KeyEvent`. Mouse events (`MouseKind`, `MouseButton`)
+//! are encoded by libghostty-vt's mouse encoder the same way.
 
 use libghostty_vt::terminal::Terminal;
-use libghostty_vt::{key, paste};
+use libghostty_vt::{key, mouse, paste};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyEvent {
@@ -141,11 +142,7 @@ impl Encoder {
             (true, true) => key::Action::Repeat,
             (true, false) => key::Action::Press,
         };
-        let mut mods = key::Mods::empty();
-        mods.set(key::Mods::SHIFT, ev.mods.shift);
-        mods.set(key::Mods::CTRL, ev.mods.ctrl);
-        mods.set(key::Mods::ALT, ev.mods.alt);
-        mods.set(key::Mods::SUPER, ev.mods.logo);
+        let mods = key_mods(ev.mods);
         let (code, unshifted) = match ev.key {
             Key::Char(c) => (physical(c), c.to_lowercase().next().unwrap_or(c)),
             Key::Named(n) => (named(n), '\0'),
@@ -164,6 +161,102 @@ impl Encoder {
         if out.is_empty() && ev.pressed {
             out.extend(classic_ctrl(ev));
         }
+        Ok(out)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Release,
+    /// The pointer moved to another cell.
+    Motion,
+}
+
+/// The wheel is a button, as in the wire formats: one `Press` per notch, never a `Release`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+fn key_mods(mods: Mods) -> key::Mods {
+    let mut out = key::Mods::empty();
+    out.set(key::Mods::SHIFT, mods.shift);
+    out.set(key::Mods::CTRL, mods.ctrl);
+    out.set(key::Mods::ALT, mods.alt);
+    out.set(key::Mods::SUPER, mods.logo);
+    out
+}
+
+/// Pixels per cell handed to libghostty-vt's mouse encoder, which takes pixel positions; the
+/// reports this crate asks for are in cells, so any size will do.
+const MOUSE_CELL: u32 = 10;
+
+/// Owns libghostty-vt's mouse encoder; not `Send`, so it lives on the emulator thread.
+pub struct MouseEncoder {
+    enc: mouse::Encoder<'static>,
+    ev: mouse::Event<'static>,
+}
+
+impl MouseEncoder {
+    pub fn new() -> anyhow::Result<MouseEncoder> {
+        let mut enc = mouse::Encoder::new()?;
+        // Motion inside one cell is reported once.
+        enc.set_track_last_cell(true);
+        Ok(MouseEncoder { enc, ev: mouse::Event::new()? })
+    }
+
+    /// The report for one mouse event at the 0-based cell (`col`, `row`) of a `cols` × `rows`
+    /// viewport, under the terminal's current tracking mode (1000 / 1002 / 1003, X10 mode 9)
+    /// and format (SGR 1006, X10, …). Empty when the program did not ask for this event: no
+    /// tracking mode set, motion under 1000, a release under mode 9. `button` is the button the
+    /// event is about; for `Motion` the one held down, `None` when none is.
+    pub fn encode(
+        &mut self,
+        kind: MouseKind,
+        button: Option<MouseButton>,
+        (col, row): (u16, u16),
+        mods: Mods,
+        (cols, rows): (u16, u16),
+        term: &Terminal,
+    ) -> anyhow::Result<Vec<u8>> {
+        let action = match kind {
+            MouseKind::Press => mouse::Action::Press,
+            MouseKind::Release => mouse::Action::Release,
+            MouseKind::Motion => mouse::Action::Motion,
+        };
+        let button = button.map(|button| match button {
+            MouseButton::Left => mouse::Button::Left,
+            MouseButton::Middle => mouse::Button::Middle,
+            MouseButton::Right => mouse::Button::Right,
+            MouseButton::WheelUp => mouse::Button::Four,
+            MouseButton::WheelDown => mouse::Button::Five,
+        });
+        let centre = |cell: u16| (u32::from(cell) * MOUSE_CELL + MOUSE_CELL / 2) as f32;
+        self.ev
+            .set_action(action)
+            .set_button(button)
+            .set_mods(key_mods(mods))
+            .set_position(mouse::Position { x: centre(col), y: centre(row) });
+        self.enc
+            .set_options_from_terminal(term)
+            .set_size(mouse::EncoderSize {
+                screen_width: u32::from(cols) * MOUSE_CELL,
+                screen_height: u32::from(rows) * MOUSE_CELL,
+                cell_width: MOUSE_CELL,
+                cell_height: MOUSE_CELL,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_right: 0,
+                padding_left: 0,
+            })
+            .set_any_button_pressed(kind == MouseKind::Motion && button.is_some());
+        let mut out = Vec::with_capacity(16);
+        self.enc.encode_to_vec(&self.ev, &mut out)?;
         Ok(out)
     }
 }

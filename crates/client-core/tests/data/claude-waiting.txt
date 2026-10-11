@@ -1,0 +1,5 @@
+1000
+ask:1:0:990
+tool ask:claude
+---
+{"status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":900000,"tmux":"ask:@1.%1"}

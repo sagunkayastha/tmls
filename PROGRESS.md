@@ -2,6 +2,56 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-11 (overnight) — `tmls-rs` desktop v0 built, reviewed, merged to main; waiting on the user's morning test ✅
+
+One night, plan `docs/superpowers/plans/2026-10-11-tmls-rs-desktop-v0.md`, all tasks 0–10 done (02:36 → 05:45 MDT, before
+the 06:30 cutoff). `tmls-rs` = a native wgpu window over **ssh + tmux**: tmls-style sidebar (hosts, marks, Claude title +
+context %, pins), sessions attached in tabs, new / rename / kill, mouse to tmux, links, alerts. Branch `feat/desktop-v0`
+(36 commits) merged `--no-ff`. **Start here: `docs/MORNING-TEST.md`** (15-minute test sheet + every decision taken).
+
+- **Crates:** `crates/client-core` (no UI: `config`, `listing`, `poll`, `tmux`, `seen`; example `list`) and `crates/desktop`
+  (binary `tmls-rs`: `app`, `tabs`, `sidebar`, `draw`, `keys`, `forms`, `mouse`, `links`, `alerts`, `theme`). Additive in
+  the spikes: `s2-core` `InputMsg::Mouse` + mouse-mode flag on `FrameSlot`; `s2-wgpu` `Session::take_frames_with`,
+  `meta::write_as`, `meta::GIT`, stderr line `s2-wgpu: focus true|false` (contract overview updated in the same commits).
+- **Tests at the merged head (`0839d97` + docs):** `cargo test -p client-core -p s2-core -p s2-wgpu` 227 passed / 1
+  ignored (archbox); `desktop` 93 passed (Docker); clippy on all four crates 0 warnings; headless end-to-end
+  `tooling/smoke/run.sh` **117 / 117 three times in a row** (sway headless + lavapipe, own tmux server, `wtype` keys,
+  virtual pointer `tooling/smoke/vptr.py`). Logs: `/data/scratch/tmls-rs-v0/t9final/`.
+- **Real data, read-only:** `cargo run -p client-core --example list` gives the same session names as `ag ls` on both
+  hosts (archbox 3, laanta-chy 4); marks consistent. No real session was attached, renamed or killed by any test.
+- **PC (RTX 5070 Ti, KDE Wayland, scale 1.15):** Docker release build ok, `ldd` clean. Apps started without any typed
+  input: `meta` hz 164.958, `hz_source current_monitor`, scale 1.15 in `s2-wgpu` (UI on / off) and `tmls-rs`. Screenshot
+  `/data/scratch/tmls-rs-v0/pc/tmls-rs-sidebar.png` shows `tmls-rs` beside tmls with the same hosts, sessions and pins.
+  **Finding:** emoji is drawn as a one-colour outline on the PC (`/data/scratch/tmls-rs-v0/pc/s2-wgpu-ui-crop.png`); CJK is right.
+- **Reviews:** every task had an opus spec + quality review; fix rounds on tasks 1, 2, 4, 8 (one each). Final
+  whole-branch review: 0 critical, 1 important — a kill / rename started from the list moved the keys into the
+  neighbouring tab's terminal when the result arrived; fixed (`afca8f6`), with: result-while-a-form-is-open keeps its tab,
+  stderr writes cannot panic (app no longer dies when started with `&` and its terminal is closed), pointer state reset
+  on tab change. All four latency invariants hold in `crates/desktop/src/app.rs`.
+- **Rulings that changed the plan** (full list with costs in `docs/MORNING-TEST.md`): pins are tmls slugs only (shared
+  both ways with tmls); alerts survive a host's offline spell (tmls drops them); `--bench` logs the first tab opened;
+  no `⋯` on rows (right-click or `m`); new list keys `c` `m` `a` and Alt+Shift+W; **no script typed keys into the live
+  KDE session** (risk of typing into a running Claude session) → no unattended latency numbers, the bench rows in
+  `docs/spikes/S2-checklist-wgpu.md` are filled only for hash / `ldd` / `meta` / emoji.
+- **Never run for real** (headless or unit tests only): click / drag / Ctrl+click in the terminal, Ctrl+C copy, "Open in
+  new terminal", clipboard, real `notify-send`, fcitx5.
+- **Gotchas:** `cargo-clippy` is not in the Docker build image (clippy runs on archbox). 5 `s2-wgpu` GPU tests fail in
+  the build image for lack of an adapter and pass on archbox. `tmux capture-pane -t '=NAME'` fails in tmux 3.3a — use
+  `'=NAME:'`. `wtype` loses its first key on a headless seat without a short sleep. tmls and tmls-rs share
+  `~/.config/tmls/pins` — tmls-rs writes the set it read at start.
+- **Left on disk, nothing deleted:** `/data/scratch/tmls-rs-v0/` (archbox), `~/offload/tmls-rs-v0/` (PC), image
+  `tmls-rs-smoke:latest` (3.45 GB, 0.32 GB new), `.superpowers/sdd/2026-10-11-tmls-rs-desktop-v0/` (ledger, briefs,
+  reports), untracked `crates/desktop/tests/tabs.rs.new`, ignored `tooling/smoke/__pycache__/`, branch `feat/desktop-v0`.
+
+### NEXT
+1. **User:** `docs/MORNING-TEST.md` on the PC (build line inside). Blocks everything below.
+2. From its answers: fix what fails; decide the look (colours / spacing vs tmls) and the vetoes in its decision list.
+3. Latency with the sidebar on a real GPU (step 10 of the sheet, 2 minutes of typing) → the 115 % rows of the checklist.
+4. Open minors, ranked: ssh keepalive on attach (frozen tab after a silent network drop); emoji colour on the PC;
+   a session renamed outside the app keeps its old tab label; no "in progress" note for a running request; forms take
+   no IME; the ~300 lines copied from `s2-wgpu/src/app.rs`. Full list: the ledger's `minor (deferred)` lines.
+5. Still deferred by plan: gpui comparison (Track B), PLAN phases 1a–7 (workers / hostd / transport).
+
 ## 2026-10-11 (later) — Track A merged to main at `bd09e33`; waiting on the user's A3 checklist run ✅
 
 `main` = `spike/s2-wgpu` = `bd09e33` (merge, `--no-ff`). On the merged tree `cargo test -p s2-core -p s2-wgpu`: 155 passed,

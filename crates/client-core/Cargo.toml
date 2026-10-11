@@ -1,0 +1,16 @@
+[package]
+name = "client-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "tmls-rs desktop v0: hosts, session listing, status marks, tmux commands, config (no UI)"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# tests/tmux_real.rs runs the attach command on a PTY
+s2-core = { path = "../../spikes/s2-core" }

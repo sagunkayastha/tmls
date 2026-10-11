@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["spikes/s0", "spikes/s1", "spikes/s2-core", "spikes/s2-wgpu", "spikes/s2-gpui"]
+members = ["spikes/s0", "spikes/s1", "spikes/s2-core", "spikes/s2-wgpu", "spikes/s2-gpui",
+           "crates/client-core", "crates/desktop"]
 # GUI crates are built with -p in Docker; a bare cargo build/test on archbox stays headless.
-default-members = ["spikes/s0", "spikes/s1", "spikes/s2-core"]
+default-members = ["spikes/s0", "spikes/s1", "spikes/s2-core", "crates/client-core"]
 
 [workspace.package]
 edition = "2024"

@@ -1,0 +1,6 @@
+Welcome to the box
+42
+1700000000
+work:1:0:1699999990
+motd line
+---

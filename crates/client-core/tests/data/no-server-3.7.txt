@@ -1,0 +1,2 @@
+1000
+tmux-error error connecting to /tmp/tmux-1000/default (No such file or directory)

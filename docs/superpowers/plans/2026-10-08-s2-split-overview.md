@@ -217,6 +217,46 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
 - **`meta.git` may end in `-dirty`** (`<short hash>-dirty`): the binary was built from a tree in which a tracked file
   differed from that commit. Results for the record come from a build without it.
 
+**Contract notes from desktop v0, Task 3 (2026-10-11; `s2-wgpu` used as a library by `crates/desktop`; all additive):**
+- `Session::take_frames_with(each: impl FnMut(&Frame)) -> bool` — `take_frames` with the scene left to the caller
+  (`take_frames` now calls it; its signature and behaviour are unchanged). `each` gets every frame taken, in order, and
+  must pass it to `Scene::update_cells` of the scene the session is drawn with; only a caller that never draws the
+  session (a test without fonts) may do nothing in it.
+- `meta::write_as(log, app, fixed, refresh, ui)` — `meta::write` for another front-end built on the crate; `app` is
+  its `meta.app` (`write` is `write_as(…, "wgpu", …)`). `tmls-rs` writes `"app":"tmls-rs"`.
+- `meta::GIT: &str` — the `S2_GIT` string `build.rs` bakes in, for `meta::Fixed::git` of such a front-end. It is
+  computed when `s2-wgpu` is built: an uncommitted edit outside `spikes/s2-core` and `spikes/s2-wgpu` (in
+  `crates/desktop`, say) is seen only at the next run of that build script, so `-dirty` can be missing for it.
+- **A latency log belongs to one session.** Key ids and frame `seq` are per `Session` / `Emu`, so `tmls-rs --bench`
+  gives the log to the first tab opened and to no other, and writes `frame` lines only for frames presented while that
+  tab is in front (`crates/desktop/src/tabs.rs`, `Tabs::set_log`).
+
+**Contract notes from desktop v0, Task 7 (2026-10-11; mouse reports; all additive):**
+- `s2-core`: new variant `InputMsg::Mouse { kind: MouseKind, button: Option<MouseButton>, col, row, mods: Mods }` —
+  one mouse event at a **0-based viewport cell**. The emulator thread encodes it with libghostty-vt's mouse encoder
+  under the terminal's current modes (tracking 9 / 1000 / 1002 / 1003; format SGR 1006, X10, …) and writes the report
+  to the PTY; it writes **nothing** when the program did not ask for that event (no tracking mode, motion under 1000).
+  `button` is the one pressed or released, for `Motion` the one held (`None` = none); the wheel is a `Press` of
+  `MouseButton::WheelUp` / `WheelDown` (64 / 65 on the wire), never a `Release`. A mouse event has no key id, no
+  latency line, and does not move a scrolled viewport. New exports: `s2_core::{MouseKind, MouseButton}`,
+  `keys::MouseEncoder`. No code outside `s2-core` matches `InputMsg` (checked: `s2-wgpu`, `crates/desktop` only
+  construct values; `s2-gpui` does not name the type), so the new variant breaks no build.
+- `s2-core`: `Emu::mouse_reporting() -> bool` / `FrameSlot::mouse_reporting()` — the program has a mouse tracking mode
+  set, as of the newest frame **published** (an atomic, stored just before that frame is published; never blocks the
+  caller or the emulator thread). `Frame` itself is unchanged. The front-end reads it on each mouse event to choose
+  between "send to the program" and "act locally"; the core does not choose.
+- `s2-wgpu` (`session::Session`, new methods; nothing existing changed): `mouse_reporting() -> bool`
+  (`Emu::mouse_reporting`), `mouse(kind, button, at: CellPos, mods)` (sends `InputMsg::Mouse`; not a key: no id, no
+  `key` line, the photon square does not flip for it), `select_clear() -> bool` (ends the selection; returns whether
+  a redraw is due). `s2-wgpu`'s own app is unchanged: its wheel still scrolls the viewport and its drag still selects,
+  whatever the program asked for. The rules for who gets a mouse event are `crates/desktop/src/mouse.rs`.
+
+**Contract note from desktop v0, Task 8 fix round (2026-10-11; additive):**
+- `s2-wgpu` (binary) and `tmls-rs` print one stderr line per `WindowEvent::Focused`: `s2-wgpu: focus true` /
+  `s2-wgpu: focus false` (`tmls-rs: focus true` / `false`). A test driver reads the last such line and injects keys
+  only while it says `true`. Nothing else changed: no signature, no behaviour, and the line is written inside the
+  `Focused` arm, after the event's time stamp was taken.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:

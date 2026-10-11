@@ -1,0 +1,2 @@
+1000
+tmux-error no server running on /tmp/tmux-1000/default

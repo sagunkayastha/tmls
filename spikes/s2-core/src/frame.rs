@@ -88,6 +88,7 @@ struct SlotInner {
     frame: Mutex<Option<Frame>>,
     waker: Mutex<Option<Waker>>,
     exited: AtomicBool,
+    mouse_reporting: AtomicBool,
     log: Option<Log>,
 }
 
@@ -99,7 +100,7 @@ pub struct FrameSlot {
 
 impl FrameSlot {
     pub(crate) fn new(log: Option<Log>) -> FrameSlot {
-        let inner = SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), exited: AtomicBool::new(false), log };
+        let inner = SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), exited: AtomicBool::new(false), mouse_reporting: AtomicBool::new(false), log };
         FrameSlot { inner: Arc::new(inner) }
     }
 
@@ -139,6 +140,17 @@ impl FrameSlot {
 
     pub(crate) fn exited(&self) -> bool {
         self.inner.exited.load(Ordering::SeqCst)
+    }
+
+    /// Stored before the frame that follows a mode change is published.
+    pub(crate) fn set_mouse_reporting(&self, on: bool) {
+        self.inner.mouse_reporting.store(on, Ordering::SeqCst);
+    }
+
+    /// The program has a mouse tracking mode set (9, 1000, 1002 or 1003), as of the newest frame
+    /// published — taken or not. An atomic read: the front-end asks on every mouse event.
+    pub fn mouse_reporting(&self) -> bool {
+        self.inner.mouse_reporting.load(Ordering::SeqCst)
     }
 
     pub fn take(&self) -> Option<Frame> {
