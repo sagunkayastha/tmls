@@ -444,6 +444,51 @@ fn a_pin_that_cannot_be_saved_is_not_shown() {
 }
 
 #[test]
+fn pin_step_walks_the_pinned_sessions() {
+    let dir = scratch("pin-step");
+    let mut cfg = config(&[LOCAL, "nas"]);
+    cfg.pins.insert("gone-session-0a0b0c0d".to_string());
+    let mut s = Sidebar::new(&cfg, dir.clone());
+    s.apply(idle(LOCAL, &["a", "b", "c"]));
+    s.apply(idle("nas", &["x", "y"]));
+    // Nothing listed is pinned: the keys are the tabs'.
+    assert_eq!(s.pin_step(None, 1), None);
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "a")), 1), None);
+    for pinned in [key(LOCAL, "c"), key(LOCAL, "a"), key("nas", "y")] {
+        s.select_key(&pinned);
+        assert!(s.toggle_pin());
+    }
+    // The ring is the list's order (a, c, y), not the order of pinning.
+    let ring = [key(LOCAL, "a"), key(LOCAL, "c"), key("nas", "y")];
+    for (at, from) in ring.iter().enumerate() {
+        assert_eq!(
+            s.pin_step(Some(from), 1).as_ref(),
+            Some(&ring[(at + 1) % 3])
+        );
+        assert_eq!(
+            s.pin_step(Some(from), -1).as_ref(),
+            Some(&ring[(at + 2) % 3])
+        );
+    }
+    // From a session that is not pinned, or from no tab: the first pinned one, either way.
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "b")), 1), Some(key(LOCAL, "a")));
+    assert_eq!(
+        s.pin_step(Some(&key(LOCAL, "b")), -1),
+        Some(key(LOCAL, "a"))
+    );
+    assert_eq!(s.pin_step(None, -1), Some(key(LOCAL, "a")));
+    // A pinned session whose host went away is not in the ring.
+    s.apply(HostSnapshot {
+        host: "nas".to_string(),
+        online: false,
+        error: None,
+        sessions: Vec::new(),
+    });
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "c")), 1), Some(key(LOCAL, "a")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn next_waiting_order() {
     let mut s = sidebar(&[LOCAL, "nas"]);
     assert_eq!(s.next_waiting(None), None);

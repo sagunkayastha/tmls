@@ -80,7 +80,7 @@ Everywhere:
 | Ctrl+Q | quit (sessions keep running) |
 | Ctrl+= or Ctrl++ | larger font |
 | Ctrl+- | smaller font |
-| Alt+Shift+Right / Left | next / previous tab |
+| Alt+Shift+Right / Left | next / previous pinned (★) session, opening its tab if needed; with nothing pinned, next / previous tab |
 | Alt+Shift+Up | focus to the session list |
 | Alt+Shift+N | open the next session that waits for you |
 | Alt+Shift+W | close the front tab (the session lives on) |

@@ -992,14 +992,8 @@ impl Running {
     /// One of the window's own bindings (`Quit` is the event loop's).
     fn global(&mut self, global: Global) {
         match global {
-            Global::NextTab => {
-                self.tabs.next();
-                self.tab_changed();
-            }
-            Global::PrevTab => {
-                self.tabs.prev();
-                self.tab_changed();
-            }
+            Global::NextTab => self.switch_tab(1),
+            Global::PrevTab => self.switch_tab(-1),
             Global::FocusSidebar => self.set_focus(Focus::Sidebar),
             Global::FocusTerminal => {
                 // With no tab open there is no terminal to give the keys to.
@@ -1027,6 +1021,22 @@ impl Running {
     }
 
     /// Opens the next session after the front tab's that needs the user.
+    /// Alt+Shift+Right / Left, as in tmls: among the pinned (★) sessions when any is listed —
+    /// one without a tab gets one — else among the open tabs.
+    fn switch_tab(&mut self, step: i32) {
+        let front = self.tabs.active().map(|index| self.tabs.key(index));
+        if let Some(key) = self.sidebar.pin_step(front, step) {
+            self.open(&key);
+            return;
+        }
+        if step > 0 {
+            self.tabs.next();
+        } else {
+            self.tabs.prev();
+        }
+        self.tab_changed();
+    }
+
     fn next_waiting(&mut self) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         if let Some(key) = self.sidebar.next_waiting(front) {

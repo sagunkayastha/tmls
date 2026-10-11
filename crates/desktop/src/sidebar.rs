@@ -366,6 +366,24 @@ impl Sidebar {
         next(Status::Waiting).or_else(|| next(Status::Unseen))
     }
 
+    /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places
+    /// on in the pinned (★) sessions listed now, in the list's order, wrapping round; the first
+    /// of them when `from` is not pinned. `None` when no listed session is pinned — then the
+    /// keys walk the open tabs.
+    pub fn pin_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
+        let ring: Vec<&SessionKey> = self
+            .rows
+            .iter()
+            .filter_map(Row::key)
+            .filter(|key| self.is_pinned(key))
+            .collect();
+        let at = match from.and_then(|key| ring.iter().position(|pinned| *pinned == key)) {
+            Some(at) => (at as i64 + step as i64).rem_euclid(ring.len() as i64) as usize,
+            None => 0,
+        };
+        ring.get(at).map(|key| (*key).clone())
+    }
+
     /// The wheel: moves the view `rows` rows down (up when negative), not the cursor.
     pub fn scroll(&mut self, rows: i32) {
         let last = self.rows.len().saturating_sub(1) as i64;
