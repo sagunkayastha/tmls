@@ -99,17 +99,17 @@ S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale100-quiet-noui --photon --pre
 S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale125-quiet-noui --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-noui.stderr
 ```
 
-(Create `~/s2-logs` first. Which variant a log came from is in its directory name and in the stderr line
-below — the `meta` line itself cannot say yet, see the task report.)
+(Create `~/s2-logs` first. Which variant a log came from is in its `meta` line: `"ui":true|false`.
+`grep '"ev":"meta"' ~/s2-logs/<run>/latency.jsonl` shows it; it is not always the first line.)
 
 - [ ] **`hz` in `meta` is the monitor's real refresh rate, not `0.0`**: ________
       It was `0.0` on the first PC runs: the rate was asked for before the window was on a monitor. The
-      app now waits for it (up to 1 s after the first frame). Each stderr file has one line
-      `s2-wgpu: meta hz <rate> hz_source <current_monitor|only_monitor|unknown> ui <true|false> (after <n> ms)`.
-      Write down that line for one run: ________
-      `current_monitor` = the monitor the window is on (what is wanted). `only_monitor` = one monitor is
-      connected and it was used. `unknown` with `hz 0` = still not found — please report it.
-- [ ] `ui false` on the `S2_WGPU_NO_UI=1` runs and no sidebar on screen; `ui true` on the others: ________
+      app now waits for it (up to 1 s after the first frame) and the `meta` line says where it came from:
+      `"hz_source":"current_monitor"` = the monitor the window is on (what is wanted); `"only_monitor"` =
+      one monitor is connected and it was used; `"unknown"` with `"hz":0.0` = still not found — please
+      report it. Paste the `meta` line of one run: ________
+- [ ] `"ui":false` in `meta` on the `S2_WGPU_NO_UI=1` runs and no sidebar on screen; `"ui":true` on the
+      others: ________
 
 Numbers: Track B's `spikes/s2-bench/analyze.py <dir>/latency.jsonl` once it is merged. Until then this
 prints key → present (the time `present()` returned — not photons) from one log:
@@ -126,7 +126,7 @@ print(f"keys {len(key)} attributed {len(d)} key->present ms p50 {p(50):.2f} p95 
 EOF
 ```
 
-| Run | scale in `meta` | hz in `meta` | hz_source (stderr) | keys | p50 ms | p95 ms | p99 ms | max ms |
+| Run | scale in `meta` | hz in `meta` | hz_source in `meta` | keys | p50 ms | p95 ms | p99 ms | max ms |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 100 % quiet, UI | | | | | | | | |
 | 100 % quiet, `S2_WGPU_NO_UI=1` | | | | | | | | |
