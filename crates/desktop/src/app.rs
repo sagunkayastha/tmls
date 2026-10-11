@@ -229,7 +229,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => running.ime(t_event_ns, &ime),
             WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
-            WindowEvent::MouseInput { state, button, .. } => running.button(state, button),
+            WindowEvent::MouseInput { state, button, .. } => {
+                running.button(state, button);
+                if running.quit {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => running.wheel(&delta),
             _ => {}
         }
@@ -359,6 +364,8 @@ struct Running {
     ime_allowed: bool,
     /// A redraw got no texture and is to be tried again at this time.
     retry_at: Option<Instant>,
+    /// The ✕ at the foot of the list was clicked: the event loop is to stop.
+    quit: bool,
 }
 
 impl Running {
@@ -512,6 +519,7 @@ impl Running {
             window_focused: false,
             ime_allowed: false,
             retry_at: None,
+            quit: false,
         })
     }
 
@@ -1112,6 +1120,7 @@ impl Running {
         let selected = self.sidebar.selected().cloned();
         match (button, selected) {
             (Button::Alerts, _) => self.open_alerts(),
+            (Button::Quit, _) => self.quit = true,
             (Button::Open, Some(key)) => self.open(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {

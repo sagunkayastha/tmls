@@ -199,6 +199,7 @@ sends a key to a session.
 | middle-click a session | pin or unpin it |
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |
+| click the red `✕` at the foot of the list | quit (sessions keep running) |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
 | `+` on a host's header | new-session form for that host |

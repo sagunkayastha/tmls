@@ -9,7 +9,7 @@
 //! |                       |a|                                        |
 //! | ● running  ? waiting  |t|                                        |
 //! | ◆ done     ✕ error    |o+----------------------------------------+
-//! | New  Open  Copy  ?    |r| status line (1 row)                    |
+//! | New Open Copy ? ! ✕   |r| status line (1 row)                    |
 //! +-----------------------+-+----------------------------------------+
 //! ```
 //!
@@ -85,18 +85,21 @@ pub enum Button {
     Help,
     /// The bell: the list of alerts. Its label is followed by how many are new.
     Alerts,
+    /// Quit (tmls's red ✕). The sessions keep running.
+    Quit,
 }
 
 /// The bell. tmls draws 🔔, which the terminal's font need not have; this is in every font.
 pub const BELL: &str = "!";
 
 /// The buttons from left to right with their labels, two columns apart.
-pub const BUTTONS: [(Button, &str); 5] = [
+pub const BUTTONS: [(Button, &str); 6] = [
     (Button::New, "New"),
     (Button::Open, "Open"),
     (Button::Copy, "Copy"),
     (Button::Help, "?"),
     (Button::Alerts, BELL),
+    (Button::Quit, "✕"),
 ];
 
 /// Each button with its label, the column the label starts at and how many columns are the
@@ -104,7 +107,7 @@ pub const BUTTONS: [(Button, &str); 5] = [
 fn button_columns() -> impl Iterator<Item = (Button, &'static str, usize, usize)> {
     BUTTONS.iter().scan(1, |col, (button, label)| {
         let start = *col;
-        let cols = label.len() + if *button == Button::Alerts { 2 } else { 0 };
+        let cols = label.chars().count() + if *button == Button::Alerts { 2 } else { 0 };
         *col += cols + 2;
         Some((*button, *label, start, cols))
     })
@@ -800,6 +803,7 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             // tmls's accent while something is new.
             Button::Alerts if view.unread > 0 => CURSOR_RGB,
             Button::Alerts => theme.muted_fg,
+            Button::Quit => DANGER_RGB,
         };
         let fits = col + cols < l.list_cols;
         let label = match button {
