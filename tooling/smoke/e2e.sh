@@ -433,6 +433,40 @@ if click 300 11; then
   tmux set -g mouse off
   sleep 0.5
   check_typed "after the wheel typing still arrives" "$ONE" wheeled
+
+  # --- the file panel: Ctrl+click on a path in the terminal ---------------------------------------
+  # The pane is filled with the path, so the click lands on it whatever the row. Ctrl is held by
+  # a wtype of its own for as long as the click takes.
+  VIEWED="$HOME/viewme.txt"
+  seq -f 'line %g of the viewed file' 1 60 >"$VIEWED"
+  pane_cols() { tmux display -p -t "=$ONE:" '#{window_width}' 2>/dev/null; }
+  narrower_than() { [ "$(pane_cols)" -lt "$1" ]; }
+  as_wide_as() { [ "$(pane_cols)" -eq "$1" ]; }
+  tmux send-keys -t "=$ONE:" "clear; for i in \$(seq 1 40); do echo $VIEWED; done" Enter
+  wait_for 5 pane_has_line "$ONE" "$VIEWED"
+  COLS_BEFORE=$(pane_cols)
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  click 300 300
+  if wait_for 8 narrower_than "$COLS_BEFORE"; then
+    pass "Ctrl+click on a file's path opens the panel: the pane is narrower ($COLS_BEFORE -> $(pane_cols) columns)"
+  else
+    fail "Ctrl+click on a file's path opens the panel: the pane is narrower" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot 12b-file-panel" shot 12b-file-panel
+  click 1100 400 wheel-down 3
+  check "screenshot 12c-file-panel-scrolled" shot 12c-file-panel-scrolled
+  keys -M alt -M shift -k x -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "Alt+Shift+X closes the panel: the pane has its $COLS_BEFORE columns again"
+  else
+    fail "Alt+Shift+X closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  tmux send-keys -t "=$ONE:" 'clear' Enter
+  sleep 0.5
+  check_typed "after the panel typing still arrives" "$ONE" viewed
 else
   fail "the headless seat takes a pointer (vptr.py)" "$(tail -2 "$OUT/vptr.log" | tr '\n' ' ')"
   # The later checks need $ONE in front.
