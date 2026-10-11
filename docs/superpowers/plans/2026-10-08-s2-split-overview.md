@@ -207,6 +207,13 @@ Key attribution is the `keys` array of the `frame` line (the emulator fills it; 
 
 ### App CLI (identical for `s2-wgpu` and `s2-gpui`, so `run.sh` is shared)
 
-`--bench <dir>` · `--photon` (64×64 top-left square toggles per key, same frame as the echo) · `--cmd <program> [args…]`
+`--bench <dir>` · `--photon` (64×64 top-left square, black at start; rule below) · `--cmd <program> [args…]`
 (default `$SHELL`) · `--present fifo|mailbox|immediate` (wgpu only; gpui ignores + logs) · `--load-label quiet|flood`
 (written to meta). Exit cleanly on window close, flushing the log.
+
+**`--photon` rule** *(contract change, final fix wave 2026-10-11; was "toggles per key")*: **one flip per presented
+frame that carries at least one key press** — press or repeat; a release never counts, although it has a key id and
+can be on a frame's `keys` (kitty protocol). The flip is in the same presented frame as the echo. Two keys echoed in
+one frame flip the square once, so every frame that shows an echo changes the square; a camera counts frames with an
+echo, not keys. Frames taken but not presented (surface not ready) and the next frame are one presented frame: one
+flip. `s2-gpui` must implement the same rule. Reference: `spikes/s2-wgpu/src/session.rs`, `Photon`.

@@ -741,6 +741,7 @@ impl Running {
                 path.present();
             }
         }
+        self.session.presented();
         self.dirty = false;
         self.shown_seq = Some(seq);
         self.settle_marks();

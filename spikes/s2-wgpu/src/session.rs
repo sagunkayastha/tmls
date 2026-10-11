@@ -8,8 +8,9 @@
 //! - `take_frames` takes every frame from the slot; the core's log remembers the keys of each
 //!   taken frame until a `frame` line with that seq or a later one is written (`marks`), so a
 //!   frame that is taken but not presented loses no key.
-//! - The photon square flips once per key in the frame that carries the key (`Frame::keys`),
-//!   i.e. in the same rendered frame as the key's echo.
+//! - The photon square flips once per presented frame that carries at least one key press
+//!   (`Frame::keys`; press or repeat, never a release), i.e. in the same rendered frame as
+//!   the key's echo. See `Photon`.
 
 use s2_core::latency::Log;
 use s2_core::{Emu, Frame, InputMsg, KeyEvent, Pty};
@@ -18,6 +19,54 @@ use crate::gfx::atlas::Atlas;
 use crate::gfx::grid::{Overlays, Preedit, Scene, Theme};
 use crate::input;
 use crate::select::{CellPos, Selection};
+
+/// The `--photon` square. Contract rule: **one flip per presented frame that carries at least
+/// one key press** (press or repeat; releases never count). So the square changes colour on
+/// every frame that shows a key's echo, however many keys that frame carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Photon {
+    /// White (`true`) or black.
+    on: bool,
+    /// Ids of the presses and repeats sent to the core that no frame has carried yet. A
+    /// release takes an id too and can be on a frame (kitty protocol), but is never in here.
+    presses: Vec<u64>,
+    /// The square has flipped for frames taken since the last present. Frames taken before a
+    /// present that did not happen (surface not ready) are shown by the next one, together
+    /// with whatever comes in between: that is one presented frame, so one flip.
+    flipped: bool,
+}
+
+impl Photon {
+    pub fn on(&self) -> bool {
+        self.on
+    }
+
+    /// A press or repeat with this key id was sent to the core.
+    pub fn press(&mut self, id: u64) {
+        self.presses.push(id);
+    }
+
+    /// A frame carrying these key ids was taken; it is on screen after the next present.
+    pub fn frame(&mut self, keys: &[u64]) {
+        let Some(&newest) = keys.iter().max() else {
+            return;
+        };
+        let press = keys.iter().any(|id| self.presses.contains(id));
+        // The core hands keys to frames in the order they were written, so nothing at or
+        // below the newest id on this frame is still to come (a press that sent no bytes is
+        // on no frame at all).
+        self.presses.retain(|&id| id > newest);
+        if press && !self.flipped {
+            self.on = !self.on;
+            self.flipped = true;
+        }
+    }
+
+    /// The frames taken so far have been presented.
+    pub fn presented(&mut self) {
+        self.flipped = false;
+    }
+}
 
 pub struct Session {
     emu: Emu,
@@ -30,8 +79,8 @@ pub struct Session {
     selection: Option<Selection>,
     /// The mouse button is down and the pointer extends `selection`.
     dragging: bool,
-    /// `--photon`: the square's colour, `None` without the flag.
-    photon: Option<bool>,
+    /// `--photon`: the square, `None` without the flag.
+    photon: Option<Photon>,
     /// When `begin_exit` sent its marker.
     exit_asked_ns: Option<u128>,
 }
@@ -54,7 +103,7 @@ impl Session {
             preedit: None,
             selection: None,
             dragging: false,
-            photon: photon.then_some(false),
+            photon: photon.then(Photon::default),
             exit_asked_ns: None,
         })
     }
@@ -109,10 +158,13 @@ impl Session {
     pub fn key(&mut self, t_key_ns: u128, ev: KeyEvent) -> u64 {
         let id = self.next_key;
         self.next_key += 1;
-        if ev.pressed
-            && let Some(log) = &self.log
-        {
-            log.key(id, t_key_ns);
+        if ev.pressed {
+            if let Some(log) = &self.log {
+                log.key(id, t_key_ns);
+            }
+            if let Some(photon) = &mut self.photon {
+                photon.press(id);
+            }
         }
         self.send(InputMsg::Key(ev, id));
         id
@@ -174,10 +226,8 @@ impl Session {
         let mut any = false;
         while let Some(frame) = self.emu.frames.take() {
             scene.update_cells(&frame, atlas, theme);
-            if let Some(on) = &mut self.photon
-                && frame.keys.len() % 2 == 1
-            {
-                *on = !*on;
+            if let Some(photon) = &mut self.photon {
+                photon.frame(&frame.keys);
             }
             if self.selection_is_stale(&frame) {
                 self.clear_selection();
@@ -212,6 +262,13 @@ impl Session {
         })
     }
 
+    /// Call after each present: the frames taken so far are on screen (`Photon::presented`).
+    pub fn presented(&mut self) {
+        if let Some(photon) = &mut self.photon {
+            photon.presented();
+        }
+    }
+
     /// The newest frame taken.
     pub fn frame(&self) -> Option<&Frame> {
         self.frame.as_ref()
@@ -225,7 +282,7 @@ impl Session {
         };
         Overlays {
             preedit: self.preedit.clone().map(|text| Preedit { text }),
-            photon: self.photon,
+            photon: self.photon.as_ref().map(Photon::on),
             selection,
         }
     }

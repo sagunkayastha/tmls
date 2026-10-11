@@ -11,7 +11,7 @@ use s2_wgpu::gfx::atlas::{Atlas, FontSpec};
 use s2_wgpu::gfx::grid::{CellSpan, Preedit, Scene, Theme};
 use s2_wgpu::input::{Action, key_action};
 use s2_wgpu::marks::{Marks, PresentPath, WorkDone};
-use s2_wgpu::session::Session;
+use s2_wgpu::session::{Photon, Session};
 use s2_wgpu::ui::focus::Focus;
 use s2_wgpu::ui::layout::layout;
 use s2_wgpu::ui::{self, Effect, Ui};
@@ -221,6 +221,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     }
     let seq = rig.session.frame().unwrap().seq;
     marks.present_frame(seq, &mut gpu);
+    rig.session.presented();
     assert_eq!((gpu.submits, gpu.presents), (2, 2));
     let t_presented = now_ns();
     for done in &gpu.done {
@@ -229,7 +230,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     assert_eq!(marks.settle(), 0);
     let t_after = now_ns();
 
-    // A second key flips it back; a release does not count as a key.
+    // A second key, in a later presented frame, flips it back.
     let second = rig.letter("y", false);
     assert_eq!(second, 2);
     rig.until("the second echo", |s| row(s, 0) == "readyxy");
@@ -324,6 +325,109 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     // Every key counts in the report: none was lost between take and present.
     let report = report(&dir.join("latency.jsonl")).unwrap();
     assert_eq!(report.key_to_present.n, 2);
+}
+
+/// The contract's `--photon` rule: one flip per presented frame that carries at least one key
+/// press (press or repeat; releases never count).
+#[test]
+fn the_photon_square_flips_once_per_presented_frame_with_a_key_press() {
+    let mut photon = Photon::default();
+    assert!(!photon.on(), "starts black");
+
+    // Two presses echoed in one frame: one flip, not two (which would leave it unchanged).
+    photon.press(1);
+    photon.press(2);
+    photon.frame(&[1, 2]);
+    assert!(
+        photon.on(),
+        "two key presses in one frame flip the square once"
+    );
+    photon.presented();
+
+    // A frame without keys (output only, a resize, a re-present) changes nothing.
+    photon.frame(&[]);
+    assert!(photon.on());
+    photon.presented();
+
+    // Key 3 is a press, key 4 its release (a release has an id and, under the kitty protocol,
+    // bytes, so it can be on a frame). Alone on a frame it does not flip the square.
+    photon.press(3);
+    photon.frame(&[3]);
+    assert!(!photon.on(), "a press flips it back");
+    photon.presented();
+    photon.frame(&[4]);
+    assert!(!photon.on(), "a release alone is not a key press");
+    photon.presented();
+
+    // A press and a release on the same frame: the press counts, once.
+    photon.press(5);
+    photon.frame(&[5, 6]);
+    assert!(photon.on(), "press + release in one frame flip once");
+    photon.presented();
+
+    // A repeat is registered like a press (the session registers every `pressed` event).
+    photon.press(7);
+    photon.press(8);
+    photon.press(9);
+    photon.frame(&[7, 8, 9]);
+    assert!(!photon.on(), "three presses in one frame flip once");
+    photon.presented();
+
+    // Two frames with a press each are taken before one present (the first present did not
+    // happen: surface not ready). Both are shown by the same presented frame: one flip.
+    photon.press(10);
+    photon.frame(&[10]);
+    assert!(photon.on());
+    photon.press(11);
+    photon.frame(&[11]);
+    assert!(
+        photon.on(),
+        "still one flip: nothing was presented in between"
+    );
+    photon.presented();
+    photon.press(12);
+    photon.frame(&[12]);
+    assert!(
+        !photon.on(),
+        "the next presented frame with a press flips again"
+    );
+    photon.presented();
+
+    // A key id is counted on one frame only, and ids the square was never told about
+    // (releases) are not remembered.
+    photon.frame(&[12]);
+    assert!(!photon.on(), "a press already shown does not flip again");
+}
+
+/// The same rule through a real session: two keys whose echoes are shown by one presented
+/// frame flip the square once.
+#[test]
+fn two_keys_shown_by_one_presented_frame_flip_the_photon_square_once() {
+    let mut rig = Rig::new("printf ready; exec cat", None, true);
+    rig.until("the child is ready", |s| row(s, 0).starts_with("ready"));
+    rig.session.presented();
+    assert_eq!(rig.session.overlays().photon, Some(false), "starts black");
+    rig.letter("a", false);
+    rig.letter("b", false);
+    // However the two echoes are spread over frames, nothing is presented until both are in.
+    rig.until("both echoes", |s| row(s, 0) == "readyab");
+    assert_eq!(rig.session.overlays().photon, Some(true));
+    rig.session.presented();
+    // The releases (ids 3 and 4 here) send nothing and flip nothing.
+    for c in ["a", "b"] {
+        if let Action::Send(release) = key_action(
+            &WKey::Character(c.into()),
+            None,
+            ModifiersState::empty(),
+            false,
+            false,
+        ) {
+            rig.session.key(now_ns(), release);
+        }
+    }
+    rig.letter("c", false);
+    rig.until("the third echo", |s| row(s, 0) == "readyabc");
+    assert_eq!(rig.session.overlays().photon, Some(false));
 }
 
 #[test]

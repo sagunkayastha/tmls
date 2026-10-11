@@ -28,7 +28,8 @@ pub enum Load {
 pub struct Args {
     /// `--bench <dir>`: write `<dir>/latency.jsonl` and run the sampler.
     pub bench: Option<PathBuf>,
-    /// `--photon`: the 64x64 square in the top-left corner that toggles per key.
+    /// `--photon`: the 64x64 square in the top-left corner; it flips once per presented frame
+    /// that carries at least one key press (`session::Photon`).
     pub photon: bool,
     /// `--cmd <program> [args…]`: what runs in the PTY; never empty.
     pub cmd: Vec<String>,
