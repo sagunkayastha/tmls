@@ -13,8 +13,8 @@
 //! - `Scene::update(..)` does both.
 //! - `Scene::layers()` → `[background, glyphs, overlay]` in draw order, for
 //!   `Renderer::prepare`. A front-end can append layers of its own (sidebar, menus).
-//! - `Scene::set_origin(x, y)` moves the grid inside the window; `Scene::cell_at(x, y)` maps a
-//!   pixel back to `(col, row)` for the mouse.
+//! - `Scene::set_origin(x, y)` moves the grid inside the window (snapped to whole pixels);
+//!   `Scene::cell_at(x, y)` maps a pixel back to `(col, row)` for the mouse.
 //!
 //! Positions and sizes are physical pixels, y down, origin at the window's top-left corner.
 //! Layout rules: a `Wide::Lead` cell followed by its `Wide::Spacer` is one quad two columns
@@ -128,9 +128,12 @@ impl Scene {
         Scene::default()
     }
 
-    /// Top-left corner of the grid in the window. Takes effect at the next `update_cells`.
+    /// Top-left corner of the grid in the window, rounded to whole pixels: atlas texels are
+    /// copied 1:1, so a glyph quad between pixels would be resampled. Takes effect at the next
+    /// `update_cells`.
     pub fn set_origin(&mut self, x: f32, y: f32) {
-        self.origin = [x, y];
+        let snap = |v: f32| if v.is_finite() { v.round() } else { 0.0 };
+        self.origin = [snap(x), snap(y)];
     }
 
     /// `update_cells` followed by `update_overlays`; returns the number of rows rebuilt.

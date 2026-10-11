@@ -631,3 +631,44 @@ fn atlas_restart_during_an_update_leaves_no_stale_quads() {
     assert_eq!(atlas.generation(), generation, "all cache hits");
     assert_eq!(scene.glyphs(), fresh.glyphs());
 }
+
+#[test]
+fn origin_is_snapped_to_whole_pixels() {
+    // A fractional origin would put every glyph quad between pixels: the atlas texels are copied
+    // 1:1 (no filtering), so the glyphs would be resampled and lose their hinting.
+    let mut atlas = atlas();
+    let theme = Theme::default();
+    let m = atlas.metrics();
+    let mut f = text_frame(&["ab", "cd"], 4);
+    f.cells[1].bg = Some(RED);
+    f.cursor = cursor(1, 1, CursorShape::Block);
+    let mut scene = Scene::new();
+    scene.set_origin(80.4, 8.6);
+    let overlays = Overlays {
+        selection: vec![CellSpan {
+            row: 0,
+            col_start: 0,
+            col_end: 2,
+        }],
+        ..Overlays::default()
+    };
+    scene.update(&f, &mut atlas, &theme, &overlays);
+    assert!(!scene.glyphs().is_empty() && !scene.overlay().is_empty());
+    for layer in scene.layers() {
+        for quad in layer {
+            assert_eq!(
+                [quad.pos[0].fract(), quad.pos[1].fract()],
+                [0.0, 0.0],
+                "{quad:?}"
+            );
+        }
+    }
+    // The grid starts at the rounded origin, and hit-testing agrees with what is drawn.
+    assert_eq!(
+        solids(scene.bg(), rgba([200, 0, 0]))[0].pos,
+        [80.0 + m.width, 9.0]
+    );
+    assert_eq!(scene.cell_at(80.0, 9.0), Some((0, 0)));
+    assert_eq!(scene.cell_at(79.5, 9.0), None);
+    assert_eq!(scene.cell_at(80.0, 8.5), None);
+}
