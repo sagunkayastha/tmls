@@ -213,7 +213,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Occluded(false) => running.invalidate(),
             WindowEvent::Focused(focused) => {
                 // For a test driver: it sends keys only to the window that has the focus.
-                eprintln!("tmls-rs: focus {focused}");
+                crate::errln(format_args!("tmls-rs: focus {focused}"));
                 running.window_focused = focused;
                 running.sync_focus();
             }
@@ -462,10 +462,10 @@ impl Running {
         );
 
         let (cols, rows) = layout.grid;
-        eprintln!(
+        crate::errln(format_args!(
             "tmls-rs: adapter {:?} / {} / {} {}; format {:?}; present fifo; grid {cols}x{rows}; hosts {:?}",
             info.backend, info.name, info.driver, info.driver_info, config.format, cfg.hosts,
-        );
+        ));
         Ok(Running {
             marks: log.clone().map(Marks::new),
             sampler: log.clone().map(Sampler::start),
@@ -534,7 +534,7 @@ impl Running {
     /// new size and the layout is made for it.
     fn rescaled(&mut self, scale: f64) {
         if self.atlas.set_scale(scale as f32) {
-            eprintln!("tmls-rs: scale factor {scale}");
+            crate::errln(format_args!("tmls-rs: scale factor {scale}"));
             self.relayout();
         }
     }
@@ -916,7 +916,7 @@ impl Running {
         match said {
             Ok(note) => (self.note, self.problem) = (Some(note), None),
             Err(problem) => {
-                eprintln!("tmls-rs: {problem}");
+                crate::errln(format_args!("tmls-rs: {problem}"));
                 (self.note, self.problem) = (None, Some(problem));
             }
         }
@@ -1136,7 +1136,7 @@ impl Running {
     /// Keeps what went wrong for the status line, or clears it.
     fn report(&mut self, result: anyhow::Result<()>) {
         self.problem = result.err().map(|e| {
-            eprintln!("tmls-rs: {e:#}");
+            crate::errln(format_args!("tmls-rs: {e:#}"));
             format!("{e:#}")
         });
         self.invalidate();
@@ -1241,7 +1241,7 @@ impl Running {
         if self.clipboard.is_none() {
             match arboard::Clipboard::new() {
                 Ok(clipboard) => self.clipboard = Some(clipboard),
-                Err(e) => eprintln!("tmls-rs: no clipboard: {e}"),
+                Err(e) => crate::errln(format_args!("tmls-rs: no clipboard: {e}")),
             }
         }
         self.clipboard.as_mut()
@@ -1263,7 +1263,7 @@ impl Running {
         if let Some(clipboard) = self.clipboard()
             && let Err(e) = clipboard.set_text(text)
         {
-            eprintln!("tmls-rs: copy failed: {e}");
+            crate::errln(format_args!("tmls-rs: copy failed: {e}"));
         }
     }
 
@@ -1305,7 +1305,7 @@ impl Running {
     fn paste(&mut self) {
         let text = match self.clipboard().map(|clipboard| clipboard.get_text()) {
             Some(Ok(text)) => text,
-            Some(Err(e)) => return eprintln!("tmls-rs: paste failed: {e}"),
+            Some(Err(e)) => return crate::errln(format_args!("tmls-rs: paste failed: {e}")),
             None => return,
         };
         if let Some(session) = self.tabs.live_mut() {

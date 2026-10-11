@@ -20,6 +20,7 @@
 //! inside `present()`. With `mailbox` and `immediate` it does not, and redraws are as fast as
 //! frames arrive.
 
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -146,7 +147,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Occluded(false) => running.invalidate(),
             WindowEvent::Focused(focused) => {
                 // For a test driver: it sends keys only to the window that has the focus.
-                eprintln!("s2-wgpu: focus {focused}");
+                // Not `eprintln!`, which panics when stderr is a terminal that was closed.
+                let _ = writeln!(std::io::stderr(), "s2-wgpu: focus {focused}");
                 running.window_focused = focused;
                 running.sync_focus();
             }

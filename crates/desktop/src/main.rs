@@ -43,14 +43,14 @@ fn main() -> ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("tmls-rs: {e}\n{USAGE}");
+            desktop::errln(format_args!("tmls-rs: {e}\n{USAGE}"));
             return ExitCode::from(2);
         }
     };
     match app::run(args, config_dir()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("tmls-rs: {e:#}");
+            desktop::errln(format_args!("tmls-rs: {e:#}"));
             ExitCode::FAILURE
         }
     }

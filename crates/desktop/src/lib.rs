@@ -25,3 +25,10 @@ pub mod mouse;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme;
+
+/// Writes one line to stderr. Unlike `eprintln!` it cannot panic: the terminal the app was
+/// started from (`tmls-rs &`) may be closed, and a line nobody reads must not end the app.
+pub fn errln(line: std::fmt::Arguments) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
