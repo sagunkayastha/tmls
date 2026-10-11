@@ -4,6 +4,7 @@
 pub mod config;
 pub mod listing;
 pub mod poll;
+pub mod seen;
 pub mod tmux;
 
 pub use config::{Config, HostColor, default_color};
@@ -12,4 +13,5 @@ pub use listing::{
     parse_listing,
 };
 pub use poll::Poller;
+pub use seen::Seen;
 pub use tmux::{NewSession, Start};
