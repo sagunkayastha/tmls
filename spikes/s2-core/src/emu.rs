@@ -2,11 +2,9 @@
 //! state and the key encoder are created on this thread and never leave it.
 
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
@@ -17,12 +15,14 @@ use crate::frame::{Cell, CellFlags, Cursor, CursorShape, Frame, FrameSlot, Wide}
 use crate::keys::{self, KeyEvent};
 use crate::latency::Log;
 use crate::now_ns;
-use crate::pty::{Pty, PtyWriter};
+use crate::pty::{Pty, PtyReader, PtyWriter, Wake};
 
 const SCROLLBACK: usize = 10_000;
 /// The PTY reader waits while this many bytes are queued, so a flood cannot build a backlog
 /// that later output (a key's echo) has to wait behind.
 const MAX_QUEUED: usize = 256 * 1024;
+/// PTY output is parsed this many bytes at a time, checking for shutdown in between.
+const PARSE_PIECE: usize = 4096;
 
 #[derive(Debug)]
 pub enum InputMsg {
@@ -40,21 +40,20 @@ pub enum InputMsg {
 pub struct Emu {
     pub input_tx: Sender<InputMsg>,
     pub frames: FrameSlot,
-    exited: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    reader: Option<(JoinHandle<()>, Arc<Backlog>, Arc<Wake>)>,
 }
 
 impl Emu {
     pub fn start(pty: Pty, cols: u16, rows: u16, log: Option<Log>) -> anyhow::Result<Emu> {
         let (input_tx, rx) = channel();
         let frames = FrameSlot::new(log.clone());
-        let exited = Arc::new(AtomicBool::new(false));
-        let queued = Arc::new(AtomicUsize::new(0));
-        spawn_reader(pty.reader()?, input_tx.clone(), queued.clone(), exited.clone(), frames.clone())?;
+        let backlog = Arc::new(Backlog::default());
+        let reader = pty.stoppable_reader()?;
         let (ready_tx, ready_rx) = channel();
-        let slot = frames.clone();
+        let (slot, counted) = (frames.clone(), backlog.clone());
         let thread = std::thread::Builder::new().name("s2-emu".into()).spawn(move || {
-            match State::new(pty, cols, rows, log, slot, queued) {
+            match State::new(pty, cols, rows, log, slot, counted) {
                 Ok(mut state) => {
                     let _ = ready_tx.send(Ok(()));
                     state.run(rx);
@@ -63,54 +62,111 @@ impl Emu {
             }
         })?;
         ready_rx.recv()??;
-        Ok(Emu { input_tx, frames, exited, thread: Some(thread) })
+        // From here `Drop` stops and joins whatever is running, also when the next spawn fails.
+        let mut emu = Emu { input_tx, frames, thread: Some(thread), reader: None };
+        let stop = reader.stopper();
+        let (tx, counted, slot) = (emu.input_tx.clone(), backlog.clone(), emu.frames.clone());
+        let read_thread = std::thread::Builder::new()
+            .name("s2-pty-read".into())
+            .spawn(move || read_pty(reader, &tx, &counted, &slot))?;
+        emu.reader = Some((read_thread, backlog, stop));
+        Ok(emu)
     }
 
     /// True once the PTY reached end of file (the child exited). The waker fires when it does.
     pub fn exited(&self) -> bool {
-        self.exited.load(Ordering::Relaxed)
+        self.frames.exited()
     }
 }
 
 impl Drop for Emu {
+    /// Stops and joins both threads. Neither can be stuck: the emulator thread never blocks on
+    /// the PTY, and the reader waits only in `poll` or on the backlog, both of which are woken.
     fn drop(&mut self) {
+        if let Some((_, backlog, stop)) = &self.reader {
+            backlog.stop();
+            stop.signal();
+        }
         let _ = self.input_tx.send(InputMsg::Shutdown);
         if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        if let Some((thread, ..)) = self.reader.take() {
             let _ = thread.join();
         }
     }
 }
 
-fn spawn_reader(
-    mut reader: Box<dyn Read + Send>,
-    tx: Sender<InputMsg>,
-    queued: Arc<AtomicUsize>,
-    exited: Arc<AtomicBool>,
-    frames: FrameSlot,
-) -> std::io::Result<()> {
-    std::thread::Builder::new().name("s2-pty-read".into()).spawn(move || {
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            while queued.load(Ordering::Relaxed) > MAX_QUEUED {
-                std::thread::sleep(Duration::from_micros(200));
-            }
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let t_output_ns = now_ns();
-                    queued.fetch_add(n, Ordering::Relaxed);
-                    if tx.send(InputMsg::Bytes(buf[..n].to_vec(), t_output_ns)).is_err() {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
-            }
+/// PTY bytes read but not yet fed to the terminal. The reader waits while more than
+/// `MAX_QUEUED` are queued, so a flood cannot build a backlog that later output (a key's echo)
+/// has to wait behind.
+#[derive(Default)]
+struct Backlog {
+    state: Mutex<BacklogState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct BacklogState {
+    queued: usize,
+    stopped: bool,
+}
+
+impl Backlog {
+    /// Waits for room. False when the reader must stop instead.
+    fn wait_for_room(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        while state.queued > MAX_QUEUED && !state.stopped {
+            state = self.changed.wait(state).unwrap();
         }
-        exited.store(true, Ordering::Relaxed);
-        frames.wake();
-    })?;
-    Ok(())
+        !state.stopped
+    }
+
+    fn add(&self, n: usize) {
+        self.state.lock().unwrap().queued += n;
+    }
+
+    fn remove(&self, n: usize) {
+        let mut state = self.state.lock().unwrap();
+        let was_full = state.queued > MAX_QUEUED;
+        state.queued = state.queued.saturating_sub(n);
+        if was_full && state.queued <= MAX_QUEUED {
+            self.changed.notify_all();
+        }
+    }
+
+    fn stop(&self) {
+        self.state.lock().unwrap().stopped = true;
+        self.changed.notify_all();
+    }
+
+    fn stopped(&self) -> bool {
+        self.state.lock().unwrap().stopped
+    }
+}
+
+/// The reader thread: forwards PTY output until the child closes the PTY, the emulator thread
+/// is gone, or `Emu::drop` stops it.
+fn read_pty(mut reader: PtyReader, tx: &Sender<InputMsg>, backlog: &Backlog, frames: &FrameSlot) {
+    let mut buf = vec![0u8; 64 * 1024];
+    while backlog.wait_for_room() {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let t_output_ns = now_ns();
+                backlog.add(n);
+                if tx.send(InputMsg::Bytes(buf[..n].to_vec(), t_output_ns)).is_err() {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    // A stopped reader also reads 0 bytes; only the child closing the PTY is an exit.
+    if !backlog.stopped() {
+        frames.mark_exited();
+    }
 }
 
 /// Removes key repeats that must not reach the PTY: those queued ahead of a focus loss in
@@ -144,14 +200,17 @@ struct State {
     writer: PtyWriter,
     log: Option<Log>,
     frames: FrameSlot,
-    queued: Arc<AtomicUsize>,
+    backlog: Arc<Backlog>,
     /// The viewport as last read; rows the render state reports clean are reused.
     cells: Vec<Cell>,
     size: (u16, u16),
     seq: u64,
-    /// Written keys not yet attributed to a frame: (key id, when its PTY write began).
-    unseen_keys: Vec<(u64, u128)>,
+    /// Keys the PTY has accepted and no frame carries yet: (key id, when its PTY write began).
+    /// Filled by the write's completion, which runs on the writer thread for a queued write.
+    unseen_keys: Arc<Mutex<Vec<(u64, u128)>>>,
     repeat_ok: bool,
+    /// This batch changed what the viewport shows without PTY output (a resize).
+    redraw: bool,
 }
 
 impl State {
@@ -161,7 +220,7 @@ impl State {
         rows: u16,
         log: Option<Log>,
         frames: FrameSlot,
-        queued: Arc<AtomicUsize>,
+        backlog: Arc<Backlog>,
     ) -> anyhow::Result<State> {
         let mut term = Terminal::new(Options { cols, rows, max_scrollback: SCROLLBACK })?;
         let writer = pty.writer();
@@ -178,74 +237,89 @@ impl State {
             writer,
             log,
             frames,
-            queued,
+            backlog,
             cells: Vec::new(),
             size: (0, 0),
             seq: 0,
-            unseen_keys: Vec::new(),
+            unseen_keys: Arc::default(),
             repeat_ok: true,
+            redraw: false,
         })
     }
 
     fn run(&mut self, rx: Receiver<InputMsg>) {
-        self.publish(now_ns());
+        self.publish(now_ns(), false);
         while let Ok(first) = rx.recv() {
             let mut batch = vec![first];
             batch.extend(rx.try_iter());
             // Input is handled before this batch's output so a flood never delays a key.
             let mut output = Vec::new();
-            let mut resized = false;
+            self.redraw = false;
             for msg in drop_stale_repeats(batch, &mut self.repeat_ok) {
                 match msg {
                     InputMsg::Bytes(bytes, t_output_ns) => output.push((bytes, t_output_ns)),
                     InputMsg::Key(ev, id) => self.key(&ev, id),
                     InputMsg::Paste(text) => self.paste(&text),
                     InputMsg::Focus(focused) => self.focus(focused),
-                    InputMsg::Resize(cols, rows) => resized |= self.resize(cols, rows),
+                    InputMsg::Resize(cols, rows) => self.redraw |= self.resize(cols, rows),
                     InputMsg::Shutdown => return,
                 }
             }
-            let mut t_output_ns = resized.then(now_ns);
+            let mut t_output_ns = None;
             for (bytes, t) in output {
-                self.term.vt_write(&bytes);
-                let _ = self.queued.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |q| {
-                    Some(q.saturating_sub(bytes.len()))
-                });
+                // In pieces, so `Emu::drop` never waits for a whole backlog to be parsed (a
+                // debug build of libghostty-vt takes seconds for the 256 KiB).
+                for piece in bytes.chunks(PARSE_PIECE) {
+                    if self.backlog.stopped() {
+                        return;
+                    }
+                    self.term.vt_write(piece);
+                }
+                self.backlog.remove(bytes.len());
                 t_output_ns = Some(t);
             }
-            if let Some(t) = t_output_ns {
-                self.publish(t);
+            match t_output_ns {
+                Some(t) => self.publish(t, true),
+                // Nothing was read from the PTY, so this frame cannot show any key's echo.
+                None if self.redraw => self.publish(now_ns(), false),
+                None => {}
             }
         }
     }
 
-    fn send(&mut self, bytes: &[u8]) -> bool {
-        !bytes.is_empty() && self.writer.write_all(bytes).is_ok()
+    /// Queues `bytes` for the PTY; the emulator thread never waits for the child to read.
+    fn send(&mut self, bytes: Vec<u8>, written: Option<crate::pty::Written>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let _ = self.writer.write_then(bytes, written);
     }
 
     fn key(&mut self, ev: &KeyEvent, id: u64) {
         let Ok(bytes) = self.encoder.encode(ev, &self.term) else { return };
-        // The echo can be read (and stamped) by the reader thread before `write_all` returns
-        // here, so attribution compares against the time the write began.
-        let t_write_began_ns = now_ns();
-        if self.send(&bytes) {
-            if let Some(log) = &self.log {
-                log.write(id, now_ns());
+        let (log, unseen_keys) = (self.log.clone(), self.unseen_keys.clone());
+        // The echo can be read (and stamped) by the reader thread before the write returns, so
+        // attribution compares against the time the write began.
+        let written = move |t_write_began_ns, t_write_ns| {
+            if let Some(log) = &log {
+                log.write(id, t_write_ns);
             }
-            self.unseen_keys.push((id, t_write_began_ns));
-        }
+            unseen_keys.lock().unwrap().push((id, t_write_began_ns));
+        };
+        self.send(bytes, Some(Box::new(written)));
     }
 
     fn paste(&mut self, text: &str) {
         let bracketed = self.term.mode(Mode::BRACKETED_PASTE).unwrap_or(false);
         if let Ok(bytes) = keys::paste_bytes(text, bracketed) {
-            self.send(&bytes);
+            self.send(bytes, None);
         }
     }
 
     fn focus(&mut self, focused: bool) {
         if self.term.mode(Mode::FOCUS_EVENT).unwrap_or(false) {
-            self.send(if focused { b"\x1b[I" } else { b"\x1b[O" });
+            let report: &[u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+            let _ = self.writer.write_all(report);
         }
     }
 
@@ -254,20 +328,24 @@ impl State {
         self.term.resize(cols, rows, 8, 16).is_ok() && self.pty.resize(cols, rows).is_ok()
     }
 
-    fn publish(&mut self, t_output_ns: u128) {
+    /// Publishes the viewport. `has_output` says PTY output read at `t_output_ns` is in it; only
+    /// such a frame can show a key's echo, so only such a frame takes keys.
+    fn publish(&mut self, t_output_ns: u128, has_output: bool) {
         let (cursor, dirty_rows) = match self.read_viewport() {
             Ok(read) => read,
             Err(e) => return eprintln!("s2-core: reading the render state failed: {e:#}"),
         };
         // A key belongs to the first frame whose output was read at or after its write began.
         let mut keys = Vec::new();
-        self.unseen_keys.retain(|&(id, t_write_began_ns)| {
-            let seen = t_write_began_ns <= t_output_ns;
-            if seen {
-                keys.push(id);
-            }
-            !seen
-        });
+        if has_output {
+            self.unseen_keys.lock().unwrap().retain(|&(id, t_write_began_ns)| {
+                let seen = t_write_began_ns <= t_output_ns;
+                if seen {
+                    keys.push(id);
+                }
+                !seen
+            });
+        }
         self.seq += 1;
         self.frames.publish(Frame {
             cols: self.size.0,

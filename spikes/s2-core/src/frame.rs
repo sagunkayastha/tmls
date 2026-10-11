@@ -1,5 +1,6 @@
 //! The frame the emulator thread publishes and the latest-wins slot the front-end reads.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::latency::Log;
@@ -13,9 +14,11 @@ pub struct Frame {
     pub cursor: Option<Cursor>,
     pub dirty_rows: Vec<bool>,
     pub seq: u64,
-    /// When the PTY bytes that produced this frame were read.
+    /// When the last PTY bytes in this frame were read. A frame published without new output
+    /// (the first one, a resize) carries the time it was built instead.
     pub t_output_ns: u128,
-    /// Ids of the keys whose echo is in this frame.
+    /// Ids of the keys this frame is the first to show output for: keys whose PTY write began at
+    /// or before `t_output_ns`. Always empty for a frame without new output.
     pub keys: Vec<u64>,
 }
 
@@ -84,6 +87,7 @@ type Waker = Box<dyn Fn() + Send + Sync>;
 struct SlotInner {
     frame: Mutex<Option<Frame>>,
     waker: Mutex<Option<Waker>>,
+    exited: AtomicBool,
     log: Option<Log>,
 }
 
@@ -95,7 +99,8 @@ pub struct FrameSlot {
 
 impl FrameSlot {
     pub(crate) fn new(log: Option<Log>) -> FrameSlot {
-        FrameSlot { inner: Arc::new(SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), log }) }
+        let inner = SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), exited: AtomicBool::new(false), log };
+        FrameSlot { inner: Arc::new(inner) }
     }
 
     /// Replaces an unread frame. The replaced frame's keys and dirty rows carry over, so a
@@ -120,10 +125,20 @@ impl FrameSlot {
         self.wake();
     }
 
-    pub(crate) fn wake(&self) {
+    fn wake(&self) {
         if let Some(waker) = self.inner.waker.lock().unwrap().as_ref() {
             waker();
         }
+    }
+
+    /// The child closed the PTY: `exited` turns true, then the waker fires.
+    pub(crate) fn mark_exited(&self) {
+        self.inner.exited.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
+    pub(crate) fn exited(&self) -> bool {
+        self.inner.exited.load(Ordering::SeqCst)
     }
 
     pub fn take(&self) -> Option<Frame> {
@@ -134,7 +149,111 @@ impl FrameSlot {
         Some(frame)
     }
 
+    /// Installs the wake callback, replacing any earlier one. It is called after every publish
+    /// and when the child exits — and once from here, before this returns, if a frame is already
+    /// waiting or the child has already exited, so a waker installed late misses nothing.
+    /// It may run on any thread and may run spuriously; it must not call `set_waker`.
     pub fn set_waker(&self, f: Box<dyn Fn() + Send + Sync>) {
         *self.inner.waker.lock().unwrap() = Some(f);
+        // The waker is stored before the checks, and `publish` / `mark_exited` store their state
+        // before they read the waker: whichever runs second sees the other's write.
+        let pending = self.inner.frame.lock().unwrap().is_some();
+        if pending || self.exited() {
+            self.wake();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use super::*;
+
+    fn frame(seq: u64, rows: u16, dirty: &[u16], keys: &[u64]) -> Frame {
+        let mut dirty_rows = vec![false; rows as usize];
+        for &y in dirty {
+            dirty_rows[y as usize] = true;
+        }
+        Frame {
+            cols: 2,
+            rows,
+            cells: vec![Cell::default(); 2 * rows as usize],
+            cursor: None,
+            dirty_rows,
+            seq,
+            t_output_ns: seq as u128,
+            keys: keys.to_vec(),
+        }
+    }
+
+    fn counting_waker(slot: &FrameSlot) -> Arc<AtomicUsize> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        slot.set_waker(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        calls
+    }
+
+    #[test]
+    fn slot_keeps_only_the_latest_frame() {
+        let slot = FrameSlot::new(None);
+        assert!(slot.take().is_none());
+        for seq in 1..=3 {
+            slot.publish(frame(seq, 4, &[], &[]));
+        }
+        assert_eq!(slot.take().map(|f| f.seq), Some(3));
+        assert!(slot.take().is_none(), "one slot, not a queue");
+    }
+
+    #[test]
+    fn slot_carries_keys_and_dirty_rows_of_a_replaced_frame() {
+        let slot = FrameSlot::new(None);
+        slot.publish(frame(1, 4, &[0], &[7]));
+        slot.publish(frame(2, 4, &[2], &[]));
+        slot.publish(frame(3, 4, &[], &[8, 9]));
+        let merged = slot.take().unwrap();
+        assert_eq!(merged.seq, 3);
+        assert_eq!(merged.keys, [7, 8, 9], "keys of replaced frames come first, in order");
+        assert_eq!(merged.dirty_rows, [true, false, true, false]);
+
+        // Nothing carries over from a frame that was taken.
+        slot.publish(frame(4, 4, &[3], &[10]));
+        let next = slot.take().unwrap();
+        assert_eq!((next.keys, next.dirty_rows), (vec![10], vec![false, false, false, true]));
+
+        // A replaced frame of another size makes every row dirty.
+        slot.publish(frame(5, 4, &[1], &[11]));
+        slot.publish(frame(6, 6, &[0], &[]));
+        let resized = slot.take().unwrap();
+        assert_eq!((resized.keys, resized.dirty_rows), (vec![11], vec![true; 6]));
+    }
+
+    #[test]
+    fn waker_fires_on_publish_and_exit() {
+        let slot = FrameSlot::new(None);
+        let calls = counting_waker(&slot);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing pending yet");
+        slot.publish(frame(1, 1, &[], &[]));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!slot.exited());
+        slot.mark_exited();
+        assert!(slot.exited());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn waker_set_late_fires_at_once() {
+        let pending = FrameSlot::new(None);
+        pending.publish(frame(1, 1, &[], &[]));
+        assert_eq!(counting_waker(&pending).load(Ordering::SeqCst), 1, "a frame was waiting");
+
+        let exited = FrameSlot::new(None);
+        exited.mark_exited();
+        assert_eq!(counting_waker(&exited).load(Ordering::SeqCst), 1, "the child had exited");
+
+        let idle = FrameSlot::new(None);
+        assert_eq!(counting_waker(&idle).load(Ordering::SeqCst), 0);
     }
 }

@@ -1,5 +1,8 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use libghostty_vt::terminal::{Options, Terminal};
@@ -11,6 +14,10 @@ const WAIT: Duration = Duration::from_secs(5);
 
 fn cat(cols: u16, rows: u16) -> Pty {
     Pty::spawn(&["cat".to_string()], cols, rows).expect("spawn cat")
+}
+
+fn sh(script: &str, cols: u16, rows: u16) -> Pty {
+    Pty::spawn(&["sh".to_string(), "-c".to_string(), script.to_string()], cols, rows).expect("spawn sh")
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -55,6 +62,24 @@ fn typed(c: char) -> KeyEvent {
     press(Key::Char(c), Mods::default(), Some(&c.to_string()))
 }
 
+fn repeated(c: char) -> KeyEvent {
+    KeyEvent { repeat: true, ..typed(c) }
+}
+
+fn has_row(frame: &Frame, text: &str) -> bool {
+    (0..frame.rows).any(|y| frame.row_text(y).contains(text))
+}
+
+/// A waker that counts its calls.
+fn count_wakes(emu: &Emu) -> Arc<AtomicUsize> {
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counter = wakes.clone();
+    emu.frames.set_waker(Box::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+    wakes
+}
+
 /// The `frame` lines of a latency log: (seq, keys).
 fn logged_frames(dir: &std::path::Path) -> Vec<(u64, Vec<u64>)> {
     let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
@@ -72,35 +97,66 @@ fn pty_echo_roundtrip() {
     let pty = cat(80, 24);
     let mut reader = pty.reader().unwrap();
     pty.writer().write_all(b"hi\n").unwrap();
+    // `read` waits for data, so it runs on its own thread and the wait here can time out.
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
     let mut seen = Vec::new();
-    let mut buf = [0u8; 256];
     let start = Instant::now();
     // The tty echoes "hi" and cat prints it again.
     while seen.iter().filter(|&&b| b == b'h').count() < 2 {
-        assert!(start.elapsed() < WAIT, "read back {:?}", String::from_utf8_lossy(&seen));
-        let n = reader.read(&mut buf).unwrap();
-        seen.extend_from_slice(&buf[..n]);
+        let left = WAIT.checked_sub(start.elapsed()).unwrap_or_default();
+        let chunk = rx.recv_timeout(left);
+        seen.extend(chunk.unwrap_or_else(|_| panic!("read back only {:?}", String::from_utf8_lossy(&seen))));
     }
     assert!(contains(&seen, b"hi"));
+    // Once the child is gone the reader reports end of file instead of waiting forever.
+    drop(pty);
+    let start = Instant::now();
+    while rx.recv_timeout(WAIT.checked_sub(start.elapsed()).expect("the reader to end")).is_ok() {}
 }
 
 #[test]
 fn emu_frame_after_output() {
     let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    let (first, _) = frames_until(&emu, |_| true);
+    assert_eq!((first.cols, first.rows, first.cells.len()), (80, 24, 80 * 24));
+    assert!(first.dirty_rows.iter().all(|&d| d), "the first frame draws every row");
+
     emu.input_tx.send(InputMsg::Bytes(b"ok".to_vec(), now_ns())).unwrap();
     let (frame, _) = frames_until(&emu, |f| f.row_text(0) == "ok");
-    assert_eq!((frame.cols, frame.rows, frame.cells.len()), (80, 24, 80 * 24));
     assert!(frame.dirty_rows[0]);
+    assert!(frame.dirty_rows[1..].iter().all(|&d| !d), "only row 0 changed: {:?}", frame.dirty_rows);
+    assert!(frame.seq > first.seq);
+}
 
-    // 100 feeds give at most 100 frames, and the last one holds the final state.
+/// The slot holds one frame: 100 frames published while the front-end is busy leave only the
+/// last one to take, and it redraws every row the 100 changed.
+#[test]
+fn emu_slot_is_latest_wins() {
+    let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Bytes(b"top".to_vec(), now_ns())).unwrap();
+    let (before, _) = frames_until(&emu, |f| f.row_text(0) == "top");
+    let wakes = count_wakes(&emu);
+    // One feed at a time, each waited for, so each is its own publish; none is taken.
     for i in 0..100 {
+        let published = wakes.load(Ordering::SeqCst);
         emu.input_tx.send(InputMsg::Bytes(format!("\r\nline {i}").into_bytes(), now_ns())).unwrap();
+        wait_for("a frame for the feed", || wakes.load(Ordering::SeqCst) > published);
     }
-    let (last, taken) = frames_until(&emu, |f| f.row_text(23) == "line 99");
-    assert!(taken <= 100, "{taken} frames for 100 feeds");
-    assert_eq!(last.row_text(22), "line 98");
+    let last = emu.frames.take().expect("the latest frame");
+    assert_eq!(last.seq, before.seq + 100, "every feed was published");
+    assert_eq!((last.row_text(22), last.row_text(23)), ("line 98".to_string(), "line 99".to_string()));
+    assert!(last.dirty_rows.iter().all(|&d| d), "rows dirtied by replaced frames stay dirty");
     let cursor = last.cursor.expect("cursor in viewport");
     assert_eq!((cursor.col, cursor.row), (7, 23));
+    assert!(emu.frames.take().is_none(), "one slot, not a queue");
 }
 
 #[test]
@@ -217,15 +273,43 @@ fn key_reaches_pty_and_is_attributed_to_a_frame() {
     let log = Log::create(&dir).unwrap();
     let emu = Emu::start(cat(80, 24), 80, 24, Some(log.clone())).unwrap();
     log.key(7, now_ns());
-    emu.input_tx.send(InputMsg::Key(press(Key::Char('x'), Mods::default(), Some("x")), 7)).unwrap();
+    emu.input_tx.send(InputMsg::Key(typed('x'), 7)).unwrap();
     // The tty echoes the key; the frame showing the echo carries the key id.
     let (frame, _) = frames_until(&emu, |f| f.keys.contains(&7));
     assert_eq!(frame.row_text(0), "x");
+    assert_eq!(frame.keys, [7]);
     log.frame(frame.seq, now_ns(), now_ns(), "present_return");
     log.flush();
+    assert_eq!(logged_frames(&dir), [(frame.seq, vec![7])]);
     let report = latency::report(&dir.join("latency.jsonl")).unwrap();
     assert_eq!(report.key_to_present.n, 1);
     assert!(report.key_to_present.p50 > 0);
+    // A key is reported once: no later frame carries it again.
+    emu.input_tx.send(InputMsg::Bytes(b"more".to_vec(), now_ns())).unwrap();
+    let (later, _) = frames_until(&emu, |f| f.row_text(0).contains("more"));
+    assert!(later.keys.is_empty());
+}
+
+/// B3: a frame made without PTY output (here a resize) cannot show a key's echo, so it must not
+/// take the key; the next frame that has output does.
+#[test]
+fn frame_without_output_takes_no_key() {
+    let pty = sh("stty -echo; echo ready; sleep 1000", 80, 24);
+    let writer = pty.writer();
+    writer.start_recording();
+    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    frames_until(&emu, |f| has_row(f, "ready"));
+    emu.input_tx.send(InputMsg::Key(typed('x'), 1)).unwrap();
+    // Echo is off and the child prints nothing: the key is written and nothing comes back.
+    wait_for("the key to be written", || writer.recorded() == b"x");
+    emu.input_tx.send(InputMsg::Resize(90, 30)).unwrap();
+    let (resized, _) = frames_until(&emu, |f| f.cols == 90);
+    assert!(resized.keys.is_empty(), "a resize frame took keys {:?}", resized.keys);
+    assert!(!has_row(&resized, "x"));
+
+    emu.input_tx.send(InputMsg::Bytes(b"out".to_vec(), now_ns())).unwrap();
+    let (with_output, _) = frames_until(&emu, |f| has_row(f, "out"));
+    assert_eq!(with_output.keys, [1], "the first frame with output after the write takes the key");
 }
 
 /// B8: a frame that was taken but never presented must not lose its keys; they belong to the
@@ -246,6 +330,28 @@ fn keys_of_a_taken_frame_that_was_not_presented_are_logged() {
     log.flush();
     assert_eq!(logged_frames(&dir), [(second.seq, vec![1])]);
     assert_eq!(latency::report(&dir.join("latency.jsonl")).unwrap().key_to_present.n, 1);
+}
+
+/// The repeat filter on the emulator thread: no repeat reaches the PTY from a focus loss until
+/// a fresh press, whatever batches the messages arrive in.
+#[test]
+fn no_key_repeat_reaches_the_pty_after_focus_loss() {
+    let pty = cat(80, 24);
+    let writer = pty.writer();
+    writer.start_recording();
+    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    let send = |msg| emu.input_tx.send(msg).unwrap();
+    send(InputMsg::Key(typed('a'), 1));
+    send(InputMsg::Key(repeated('b'), 2));
+    wait_for("the press and its repeat", || writer.recorded() == b"ab");
+    send(InputMsg::Focus(false));
+    send(InputMsg::Key(repeated('x'), 3));
+    send(InputMsg::Focus(true));
+    send(InputMsg::Key(repeated('y'), 4));
+    send(InputMsg::Key(typed('c'), 5));
+    send(InputMsg::Key(repeated('d'), 6));
+    wait_for("the fresh press and its repeat", || writer.recorded().ends_with(b"cd"));
+    assert_eq!(String::from_utf8_lossy(&writer.recorded()), "abcd");
 }
 
 #[test]
@@ -282,18 +388,48 @@ fn reply_goes_through_writer() {
 
 #[test]
 fn resize_changes_frame_and_pty_size() {
-    let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    // The child reports the size of its tty when it gets a line.
+    let emu = Emu::start(sh("read line; stty size; sleep 1000", 80, 24), 80, 24, None).unwrap();
     emu.input_tx.send(InputMsg::Resize(100, 30)).unwrap();
     let (frame, _) = frames_until(&emu, |f| f.cols == 100);
     assert_eq!((frame.rows, frame.cells.len()), (30, 3000));
     assert!(frame.dirty_rows.iter().all(|&d| d));
+    emu.input_tx.send(InputMsg::Key(press(Key::Named(Named::Enter), Mods::default(), None), 1)).unwrap();
+    frames_until(&emu, |f| has_row(f, "30 100"));
 }
 
 #[test]
 fn exit_is_reported() {
-    let pty = Pty::spawn(&["true".to_string()], 80, 24).unwrap();
-    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    // Echo is off and the child prints nothing more, so the only wake after "ready" is the exit.
+    let emu = Emu::start(sh("stty -echo; echo ready; read line", 80, 24), 80, 24, None).unwrap();
+    frames_until(&emu, |f| has_row(f, "ready"));
+    let (tx, rx) = channel();
+    let tx = std::sync::Mutex::new(tx);
+    emu.frames.set_waker(Box::new(move || {
+        let _ = tx.lock().unwrap().send(());
+    }));
+    assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "nothing is pending");
+    assert!(!emu.exited());
+    emu.input_tx.send(InputMsg::Key(press(Key::Named(Named::Enter), Mods::default(), None), 1)).unwrap();
+    rx.recv_timeout(WAIT).expect("the waker to fire when the child exits");
+    assert!(emu.exited(), "exited is true by the time the waker runs");
+}
+
+/// B7: a waker installed after the first frame was published, or after the child exited, is
+/// called at once instead of waiting for a wake-up that already happened.
+#[test]
+fn waker_set_late_is_called_at_once() {
+    let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Bytes(b"x".to_vec(), now_ns())).unwrap();
+    let early = count_wakes(&emu);
+    wait_for("a frame to be published", || early.load(Ordering::SeqCst) > 0);
+    // A frame is waiting in the slot and its wake-up went to the old waker.
+    assert_eq!(count_wakes(&emu).load(Ordering::SeqCst), 1, "a frame was pending");
+
+    let emu = Emu::start(Pty::spawn(&["true".to_string()], 80, 24).unwrap(), 80, 24, None).unwrap();
     wait_for("the child to exit", || emu.exited());
+    while emu.frames.take().is_some() {}
+    assert_eq!(count_wakes(&emu).load(Ordering::SeqCst), 1, "the child had exited");
 }
 
 #[test]
