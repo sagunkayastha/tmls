@@ -125,9 +125,11 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   its fixterms CSI-u form for a few chords (`ESC[91;5u` for Ctrl+`[`) — so do not pass it.
 - **Public API Track B calls that the notes above omit:** `bench::Sampler::start(Log) -> Sampler` (writes a `sample`
   line every 500 ms and flushes the log; stops when dropped), `Log::frames_logged() -> u64` (what the sampler's `fps`
-  counts — one per `log.frame` call), `keys::Encoder` (`new()`, `encode(&KeyEvent, &Terminal) -> Vec<u8>`; front-ends
-  normally send `InputMsg::Key` instead) and `keys::paste_bytes(text, bracketed)`, and the `Mods` fields
-  `shift`, `ctrl`, `alt`, `logo` (all `bool`, `Default` = none).
+  counts — one per `log.frame` call), `keys::Encoder` (`new() -> anyhow::Result<Encoder>`,
+  `encode(&mut self, &KeyEvent, &Terminal) -> anyhow::Result<Vec<u8>>`; front-ends normally send `InputMsg::Key`
+  instead) and `keys::paste_bytes(text: &str, bracketed: bool) -> anyhow::Result<Vec<u8>>`, and the `Mods` fields
+  `shift`, `ctrl`, `alt`, `logo` (all `bool`, `Default` = none). *(Signatures corrected in the final fix wave,
+  2026-10-11: all three return `anyhow::Result`, and `encode` takes `&mut self`.)*
 - **Measurement validity — flood runs:** under `--load-label flood`, key→present (and the `--photon` square) means
   "the next frame with output after the key was written", not "the frame in which the echo is visible": any PTY output
   read after the write began counts. Quiet runs measure echo-visible latency. State this next to flood results.
@@ -148,8 +150,9 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   Option<t_redraw_ns>)`; `frame` and `frame_with_work_done` keep their signatures and write no `t_redraw_ns`.
   `latency::Event::Frame` has the new field `t_redraw_ns: Option<u64>` — code that builds or fully destructures that
   variant must name it (or use `..`).
-- **Re-presents:** presenting an already logged frame again (selection, preedit, resize repaint) writes a `frame` line
-  with the same `seq`, `t_output_ns: 0` and no keys. Per-frame analysis must skip lines with `t_output_ns == 0`.
+- **Re-presents:** presenting an already logged frame again (selection, preedit, resize repaint, and since A3 any
+  redraw caused by the UI alone: a focus change, typing in the text field, the list, the menu, zoom) writes a `frame`
+  line with the same `seq`, `t_output_ns: 0` and no keys. Per-frame analysis must skip lines with `t_output_ns == 0`.
 - **`meta.hz` is `0.0` when the refresh rate is unknown.** Treat it as unknown; never divide by it.
   *(A3 fix round, 2026-10-11)* How `s2-wgpu` finds it, in this order, never a guess: the monitor the window is on
   (winit `Window::current_monitor()`); else, if exactly one monitor is connected, that one; else unknown. With several
@@ -190,17 +193,46 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   `Session::begin_exit` / `Session::output_drained` (re-send in `Session::take_frames`); the exit decision is
   `spikes/s2-wgpu/src/surface.rs`, `may_exit`, with the 2 s deadline `EXIT_WAIT` in `spikes/s2-wgpu/src/app.rs`.
 
+**Contract notes from A3 and the final fix wave (2026-10-11, `s2-wgpu` as merged; `s2-gpui` must match the first two):**
+- **Focus traversal binding.** Ctrl+Tab / Ctrl+Shift+Tab move the keyboard focus to the next / previous stop
+  (list → field → terminal → list) from anywhere, the terminal included. Plain Tab / Shift+Tab do the same **only
+  while the focus is outside the terminal** (list, field). **With the terminal focused, Tab and Shift+Tab always go
+  to the program** (shell completion) and never move the focus. `s2-gpui` must bind the same keys the same way, or
+  the two checklists and bench runs are not comparable. Ctrl+Tab and Ctrl+Shift+Tab get no `key` line.
+- **`InputMsg::Focus(false)` is sent to the core when the keyboard focus leaves the terminal inside the window**
+  (to the list, the field or an open menu), not only when the window loses focus; `Focus(true)` when it comes back.
+  What the core is sent is "window focused AND terminal focused". Consequences: under mode 1004 the program sees
+  focus-out when the user tabs to the sidebar, and queued key repeats are dropped then.
+- **Ctrl+Space is sent with `text: None`** (`Key::Char(' ')`, `mods.ctrl`), like every key with Ctrl held; the core
+  encodes it from key and modifiers (NUL in legacy mode).
+- **Queued writes and attribution.** When the PTY input buffer is full (the child is not reading), a key's bytes wait
+  in the writer queue; its write-begin time and its entry into the core's unseen-key list are then taken when the
+  queued write runs, which can be late, so the key's attribution can slip to a later frame than the one that shows
+  its echo. Quiet runs and the 2000-key flood runs stay below that buffer and are not affected.
+- **Analysis conventions for both front-ends** (`analyze.py` and any ad-hoc script): count only keys that have a
+  `write` line (a key the core encoded to no bytes has a `key` line and nothing else); and drop the first second of
+  a run — the first frame is slow (submit→present ≈ 52 ms in the smoke logs), and `s2-wgpu` queries the monitors
+  inside the redraw window until `meta` is written (up to 1 s after the first present).
+- **`meta.git` may end in `-dirty`** (`<short hash>-dirty`): the binary was built from a tree in which a tracked file
+  differed from that commit. Results for the record come from a build without it.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:
 
 ```json
-{"ev":"meta","app":"wgpu","git":"<hash>","profile":"release","hz":144.0,"scale":1.25,"present_mode":"fifo","load":"quiet"}
+{"ev":"meta","app":"wgpu","git":"<hash>","profile":"release","hz":144.0,"scale":1.25,"present_mode":"fifo","load":"quiet","ui":true,"hz_source":"current_monitor"}
 {"ev":"key","id":1,"t_key_ns":0}
 {"ev":"write","id":1,"t_write_ns":0}
-{"ev":"frame","seq":7,"t_output_ns":0,"t_submit_ns":0,"t_present_ns":0,"present_kind":"present_return|work_done|frame_callback","keys":[1]}
+{"ev":"frame","seq":7,"t_output_ns":0,"t_submit_ns":0,"t_present_ns":0,"present_kind":"present_return|work_done|frame_callback","keys":[1],"t_work_done_ns":0,"t_redraw_ns":0}
 {"ev":"sample","t_ns":0,"cpu_pct":0.0,"rss_kb":0,"fps":0.0,"gpu_util":null,"gpu_w":null}
 ```
+
+**Optional fields** — a line may omit them, and a reader must accept lines with and without: on `meta`, `ui`
+(`true|false`) and `hz_source` (`"current_monitor"|"only_monitor"|"unknown"`); on `frame`, `t_work_done_ns` and
+`t_redraw_ns`. `s2-wgpu` writes `ui`, `hz_source` and `t_redraw_ns` on every such line and `t_work_done_ns` when the
+callback ran in time; `s2-gpui` may omit any of them. `git` is `<short hash>` or `<short hash>-dirty`. The `meta`
+line is not necessarily the first line (see the A2 notes).
 
 Key attribution is the `keys` array of the `frame` line (the emulator fills it; rule in "Contract notes from A1" and
 "A1 fix wave" above) — do not re-derive it from the timestamps. `present_kind` must be honest: `present()` return ≠ photon; gpui may only offer a frame callback.
