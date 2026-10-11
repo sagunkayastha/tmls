@@ -27,6 +27,10 @@ pub enum Event {
         keys: Vec<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         t_work_done_ns: Option<u64>,
+        /// When the redraw that presented the frame began (the front-end stopped taking events).
+        /// Left out of the line when the front-end does not report it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        t_redraw_ns: Option<u64>,
     },
     Sample { t_ns: u64, cpu_pct: f64, rss_kb: u64, fps: f64, gpu_util: Option<f64>, gpu_w: Option<f64> },
 }
@@ -108,6 +112,20 @@ impl Log {
         t_present_kind: &str,
         t_work_done_ns: Option<u128>,
     ) {
+        self.frame_with_marks(seq, t_submit_ns, t_present_ns, t_present_kind, t_work_done_ns, None);
+    }
+
+    /// `frame_with_work_done` plus `t_redraw_ns`: when the redraw that presented the frame began.
+    /// Each optional time is left out of the line when it is `None`.
+    pub fn frame_with_marks(
+        &self,
+        seq: u64,
+        t_submit_ns: u128,
+        t_present_ns: u128,
+        t_present_kind: &str,
+        t_work_done_ns: Option<u128>,
+        t_redraw_ns: Option<u128>,
+    ) {
         let mut inner = self.inner.lock().unwrap();
         let newer = inner.taken.split_off(&seq.saturating_add(1));
         let covered = std::mem::replace(&mut inner.taken, newer);
@@ -124,6 +142,7 @@ impl Log {
             present_kind: t_present_kind.to_string(),
             keys,
             t_work_done_ns: t_work_done_ns.map(|t| t as u64),
+            t_redraw_ns: t_redraw_ns.map(|t| t as u64),
         };
         inner.write(&line);
         inner.frames_logged += 1;
@@ -247,6 +266,42 @@ mod tests {
         assert_eq!(frame_lines(&dir), [(3, 300, vec![1, 2, 3]), (4, 400, vec![4]), (4, 0, vec![])]);
         assert_eq!(log.frames_logged(), 3);
         assert!(log.inner.lock().unwrap().taken.is_empty());
+    }
+
+    #[test]
+    fn redraw_time_is_on_the_line_only_when_given() {
+        let dir = scratch("latency_redraw");
+        let log = Log::create(&dir).unwrap();
+        log.frame_taken(1, 100, &[7]);
+        log.frame_with_marks(1, 110, 120, "present_return", Some(125), Some(105));
+        log.frame_with_marks(2, 210, 220, "present_return", None, Some(205));
+        // The older calls, and a front-end without the mark: the line is what it always was.
+        log.frame_with_marks(3, 310, 320, "frame_callback", None, None);
+        log.frame_with_work_done(4, 410, 420, "present_return", Some(425));
+        log.frame(5, 510, 520, "present_return");
+        log.flush();
+        let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"ev":"frame","seq":1,"t_output_ns":100,"t_submit_ns":110,"t_present_ns":120,"present_kind":"present_return","keys":[7],"t_work_done_ns":125,"t_redraw_ns":105}"#,
+                r#"{"ev":"frame","seq":2,"t_output_ns":0,"t_submit_ns":210,"t_present_ns":220,"present_kind":"present_return","keys":[],"t_redraw_ns":205}"#,
+                r#"{"ev":"frame","seq":3,"t_output_ns":0,"t_submit_ns":310,"t_present_ns":320,"present_kind":"frame_callback","keys":[]}"#,
+                r#"{"ev":"frame","seq":4,"t_output_ns":0,"t_submit_ns":410,"t_present_ns":420,"present_kind":"present_return","keys":[],"t_work_done_ns":425}"#,
+                r#"{"ev":"frame","seq":5,"t_output_ns":0,"t_submit_ns":510,"t_present_ns":520,"present_kind":"present_return","keys":[]}"#,
+            ]
+        );
+        assert_eq!(log.frames_logged(), 5);
+        // Lines with and without the field read back.
+        let read: Vec<Option<u64>> = lines
+            .iter()
+            .map(|line| match serde_json::from_str(line).unwrap() {
+                Event::Frame { t_redraw_ns, .. } => t_redraw_ns,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(read, [Some(105), Some(205), None, None, None]);
     }
 
     #[test]

@@ -256,6 +256,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
                 present_kind,
                 keys,
                 t_work_done_ns,
+                t_redraw_ns: _,
             } => Some((
                 *seq,
                 *t_output_ns,

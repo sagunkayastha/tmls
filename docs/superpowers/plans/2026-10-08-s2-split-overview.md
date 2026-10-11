@@ -87,7 +87,8 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
 - `Pty::reader()`; `PtyWriter::write_all(&[u8])` (plus `start_recording()` / `recorded()` for tests).
 - `Frame::row_text(y)`. When the slot replaces an unread frame, the new frame inherits its `keys` and dirty rows.
 - `latency::Log`: `create(dir)`, `key(id, t_key_ns)`, `write(id, t_write_ns)` (called by the core), `frame(…)`,
-  `frame_with_work_done(…, Option<t_work_done_ns>)`, `event(&Event)` for `meta`, `flush()`. `latency::Event` is the serde
+  `frame_with_work_done(…, Option<t_work_done_ns>)`, `frame_with_marks(…, Option<t_work_done_ns>, Option<t_redraw_ns>)`
+  (added in A2, see below), `event(&Event)` for `meta`, `flush()`. `latency::Event` is the serde
   type of a log line. Times are written as unsigned 64-bit ns; `frame` may carry an optional `t_work_done_ns`.
 - **Key attribution is `frame.keys`, not the timestamps.** The core assigns a key to the first frame *with PTY output*
   whose output was read at or after the key's PTY write *began*: the tty echo can be read before `write()` returns, so
@@ -137,12 +138,15 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   paced fifo on Wayland; not negligible for flood with `--present mailbox|immediate`, for X11 (fifo can block in
   acquire/present for up to a refresh) and for the first frame (submit→present ≈ 52 ms in the smoke logs). State this
   next to flood and X11 results.
-- **`t_redraw_ns` (redraw entry) is NOT in the log yet.** `s2-wgpu` takes it as the first statement of each redraw
-  and carries it per presented frame (`spikes/s2-wgpu/src/marks.rs`, `FrameLine::t_redraw_ns`, `t_redraw_ns ≤
-  t_submit_ns`), so analysis could flag keys whose `t_key_ns` falls just after a frame's redraw..present window. It
-  cannot be written: `latency::Log` builds the `frame` line itself and `Event::Frame` has no such field. Needed in
-  `s2-core` (Track A): an optional `t_redraw_ns` on `Event::Frame` and on `Log::frame_with_work_done`, like
-  `t_work_done_ns`. Until then `analyze.py` must not expect the field.
+- **New optional `frame` field `t_redraw_ns`** (contract change, additive): when the redraw that presented the frame
+  began, i.e. from when the front-end's main thread took no events until `present()` returned. `t_redraw_ns ≤
+  t_submit_ns`. Analysis can flag keys whose `t_key_ns` falls just after a frame's `t_redraw_ns..t_present_ns` window as
+  possibly stamped late. A front-end that does not have the mark omits the field (`s2-gpui` may); lines without it,
+  the golden pair and `latency::report` are unchanged. `s2-wgpu` writes it on every `frame` line.
+  New `s2-core` API: `Log::frame_with_marks(seq, t_submit_ns, t_present_ns, t_present_kind, Option<t_work_done_ns>,
+  Option<t_redraw_ns>)`; `frame` and `frame_with_work_done` keep their signatures and write no `t_redraw_ns`.
+  `latency::Event::Frame` has the new field `t_redraw_ns: Option<u64>` — code that builds or fully destructures that
+  variant must name it (or use `..`).
 - **Re-presents:** presenting an already logged frame again (selection, preedit, resize repaint) writes a `frame` line
   with the same `seq`, `t_output_ns: 0` and no keys. Per-frame analysis must skip lines with `t_output_ns == 0`.
 - **`meta.hz` is `0.0` when the window system reports no refresh rate.** Treat it as unknown; never divide by it.
