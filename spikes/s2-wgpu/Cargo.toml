@@ -6,3 +6,19 @@ license.workspace = true
 description = "tmls-rs spike S2: wgpu front-end for the interaction slice"
 
 [dependencies]
+s2-core = { path = "../s2-core" }
+wgpu = "30"
+cosmic-text = "0.19"
+swash = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
+unicode-width = "0.2"
+anyhow = "1"
+winit = "0.30"
+# No image support (it would pull in the `image` crate); data-control lets the clipboard work on
+# wlroots/KDE Wayland without XWayland.
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
+serde_json = "1"

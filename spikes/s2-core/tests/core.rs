@@ -472,11 +472,12 @@ fn latency_report_percentiles() {
             present_kind: "present_return".into(),
             keys: vec![i],
             t_work_done_ns: None,
+            t_redraw_ns: None,
         });
     }
     // A key that was never written and a frame with an unknown key are ignored.
     log.event(&Event::Key { id: 99, t_key_ns: 0 });
-    log.event(&Event::Frame { seq: 10, t_output_ns: 1, t_submit_ns: 2, t_present_ns: 3, present_kind: "present_return".into(), keys: vec![99, 1234], t_work_done_ns: None });
+    log.event(&Event::Frame { seq: 10, t_output_ns: 1, t_submit_ns: 2, t_present_ns: 3, present_kind: "present_return".into(), keys: vec![99, 1234], t_work_done_ns: None, t_redraw_ns: None });
     log.flush();
 
     let report = latency::report(&dir.join("latency.jsonl")).unwrap();

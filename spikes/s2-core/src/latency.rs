@@ -27,8 +27,26 @@ pub enum Event {
         keys: Vec<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         t_work_done_ns: Option<u64>,
+        /// When the redraw that presented the frame began (the front-end stopped taking events).
+        /// Left out of the line when the front-end does not report it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        t_redraw_ns: Option<u64>,
     },
     Sample { t_ns: u64, cpu_pct: f64, rss_kb: u64, fps: f64, gpu_util: Option<f64>, gpu_w: Option<f64> },
+}
+
+/// Optional fields of the `meta` line that only some front-ends write, after the fixed ones
+/// (`Log::meta_with`). A field that is `None` is left out of the line, so a line without any is
+/// byte for byte what `Log::event` writes. `Event::Meta` itself is unchanged and ignores them
+/// when a line is read as an `Event`; read the same line as a `MetaExtra` to get them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaExtra {
+    /// Whether the front-end's non-terminal UI was on (`s2-wgpu`: `S2_WGPU_NO_UI` not set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<bool>,
+    /// Where `hz` came from: `current_monitor` | `only_monitor` | `unknown` (`s2-wgpu`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hz_source: Option<String>,
 }
 
 struct Inner {
@@ -70,6 +88,23 @@ impl Log {
         self.inner.lock().unwrap().write(ev);
     }
 
+    /// Writes a `meta` line with the optional fields of `extra` after the fixed ones; with no
+    /// extras it is `event(meta)`. For any other event the extras are ignored.
+    pub fn meta_with(&self, meta: &Event, extra: &MetaExtra) {
+        let (Event::Meta { .. }, Ok(mut line), Ok(extra)) = (meta, serde_json::to_string(meta), serde_json::to_string(extra)) else {
+            return self.event(meta);
+        };
+        // `extra` is `{}` or `{"ui":…,…}`: its fields go before the line's closing brace.
+        if extra.len() > 2 && line.ends_with('}') {
+            line.pop();
+            line.push(',');
+            line.push_str(&extra[1..]);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let _ = inner.out.write_all(line.as_bytes());
+        let _ = inner.out.write_all(b"\n");
+    }
+
     pub fn key(&self, id: u64, t_key_ns: u128) {
         self.event(&Event::Key { id, t_key_ns: t_key_ns as u64 });
     }
@@ -108,6 +143,20 @@ impl Log {
         t_present_kind: &str,
         t_work_done_ns: Option<u128>,
     ) {
+        self.frame_with_marks(seq, t_submit_ns, t_present_ns, t_present_kind, t_work_done_ns, None);
+    }
+
+    /// `frame_with_work_done` plus `t_redraw_ns`: when the redraw that presented the frame began.
+    /// Each optional time is left out of the line when it is `None`.
+    pub fn frame_with_marks(
+        &self,
+        seq: u64,
+        t_submit_ns: u128,
+        t_present_ns: u128,
+        t_present_kind: &str,
+        t_work_done_ns: Option<u128>,
+        t_redraw_ns: Option<u128>,
+    ) {
         let mut inner = self.inner.lock().unwrap();
         let newer = inner.taken.split_off(&seq.saturating_add(1));
         let covered = std::mem::replace(&mut inner.taken, newer);
@@ -124,6 +173,7 @@ impl Log {
             present_kind: t_present_kind.to_string(),
             keys,
             t_work_done_ns: t_work_done_ns.map(|t| t as u64),
+            t_redraw_ns: t_redraw_ns.map(|t| t as u64),
         };
         inner.write(&line);
         inner.frames_logged += 1;
@@ -250,6 +300,42 @@ mod tests {
     }
 
     #[test]
+    fn redraw_time_is_on_the_line_only_when_given() {
+        let dir = scratch("latency_redraw");
+        let log = Log::create(&dir).unwrap();
+        log.frame_taken(1, 100, &[7]);
+        log.frame_with_marks(1, 110, 120, "present_return", Some(125), Some(105));
+        log.frame_with_marks(2, 210, 220, "present_return", None, Some(205));
+        // The older calls, and a front-end without the mark: the line is what it always was.
+        log.frame_with_marks(3, 310, 320, "frame_callback", None, None);
+        log.frame_with_work_done(4, 410, 420, "present_return", Some(425));
+        log.frame(5, 510, 520, "present_return");
+        log.flush();
+        let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"ev":"frame","seq":1,"t_output_ns":100,"t_submit_ns":110,"t_present_ns":120,"present_kind":"present_return","keys":[7],"t_work_done_ns":125,"t_redraw_ns":105}"#,
+                r#"{"ev":"frame","seq":2,"t_output_ns":0,"t_submit_ns":210,"t_present_ns":220,"present_kind":"present_return","keys":[],"t_redraw_ns":205}"#,
+                r#"{"ev":"frame","seq":3,"t_output_ns":0,"t_submit_ns":310,"t_present_ns":320,"present_kind":"frame_callback","keys":[]}"#,
+                r#"{"ev":"frame","seq":4,"t_output_ns":0,"t_submit_ns":410,"t_present_ns":420,"present_kind":"present_return","keys":[],"t_work_done_ns":425}"#,
+                r#"{"ev":"frame","seq":5,"t_output_ns":0,"t_submit_ns":510,"t_present_ns":520,"present_kind":"present_return","keys":[]}"#,
+            ]
+        );
+        assert_eq!(log.frames_logged(), 5);
+        // Lines with and without the field read back.
+        let read: Vec<Option<u64>> = lines
+            .iter()
+            .map(|line| match serde_json::from_str(line).unwrap() {
+                Event::Frame { t_redraw_ns, .. } => t_redraw_ns,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(read, [Some(105), Some(205), None, None, None]);
+    }
+
+    #[test]
     fn taken_frames_stay_bounded_and_keep_their_keys() {
         let dir = scratch("latency_bound");
         let log = Log::create(&dir).unwrap();
@@ -263,5 +349,51 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].1, 10_000);
         assert_eq!(lines[0].2, (1..=10_000).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn meta_extras_are_on_the_line_only_when_given() {
+        let dir = scratch("latency_meta_extra");
+        let log = Log::create(&dir).unwrap();
+        let meta = Event::Meta {
+            app: "wgpu".into(),
+            git: "abc1234".into(),
+            profile: "release".into(),
+            hz: 165.0,
+            scale: 1.25,
+            present_mode: "fifo".into(),
+            load: "quiet".into(),
+        };
+        let both = MetaExtra { ui: Some(false), hz_source: Some("current_monitor".into()) };
+        let ui_only = MetaExtra { ui: Some(true), hz_source: None };
+        log.event(&meta);
+        log.meta_with(&meta, &MetaExtra::default());
+        log.meta_with(&meta, &both);
+        log.meta_with(&meta, &ui_only);
+        log.flush();
+        let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        // The line as it has always been: fixed fields only.
+        let plain = r#"{"ev":"meta","app":"wgpu","git":"abc1234","profile":"release","hz":165.0,"scale":1.25,"present_mode":"fifo","load":"quiet"}"#;
+        assert_eq!(lines[0], plain);
+        assert_eq!(lines[1], plain, "no extras: byte for byte the old line");
+        // Extras come after the fixed fields; an absent one is not written at all.
+        assert_eq!(lines[2], format!(r#"{},"ui":false,"hz_source":"current_monitor"}}"#, &plain[..plain.len() - 1]));
+        assert_eq!(lines[3], format!(r#"{},"ui":true}}"#, &plain[..plain.len() - 1]));
+        assert_eq!(lines.len(), 4);
+        // Every line still reads as the same `Event` (old readers lose nothing they had), and
+        // the extras read back from the same line; an old line has none.
+        let extras = [MetaExtra::default(), MetaExtra::default(), both, ui_only];
+        for (line, extra) in lines.iter().zip(extras) {
+            assert_eq!(serde_json::from_str::<Event>(line).unwrap(), meta);
+            assert_eq!(serde_json::from_str::<MetaExtra>(line).unwrap(), extra);
+        }
+        // Only a `meta` line takes extras.
+        let key = Event::Key { id: 1, t_key_ns: 5 };
+        let log = Log::create(&scratch("latency_meta_extra_key")).unwrap();
+        log.meta_with(&key, &MetaExtra { ui: Some(true), hz_source: None });
+        log.flush();
+        let text = std::fs::read_to_string(scratch("latency_meta_extra_key").join("latency.jsonl")).unwrap();
+        assert_eq!(text, "{\"ev\":\"key\",\"id\":1,\"t_key_ns\":5}\n");
     }
 }
