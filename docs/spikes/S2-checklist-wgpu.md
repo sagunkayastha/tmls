@@ -33,12 +33,15 @@ tooling/docker/build.sh build --release -p s2-wgpu
 ldd target-docker/release/s2-wgpu | grep "not found"   # must print nothing
 ```
 
-- [ ] Hash printed by `git rev-parse --short HEAD`: ________
+- [x] Hash printed by `git rev-parse --short HEAD`: `8b292c2` — branch `origin/feat/desktop-v0`, not
+      `origin/main`; it contains everything on `main` (measured unattended, 2026-10-11)
 - [ ] `git log --oneline -15` lists the line `s2-wgpu: photon square flips once per presented frame with a
       key press` (if it does not, `origin/main` does not have this work yet: stop here and say so): ________
-- [ ] The `ldd … | grep "not found"` line printed nothing: ________
+- [x] The `ldd … | grep "not found"` line printed nothing: nothing printed, for `s2-wgpu` and for `tmls-rs`
+      (measured unattended, 2026-10-11)
       (If it printed a library name: paste the output here and install nothing.)
-- [ ] The `meta` line of the first bench log (section 1.7) must show `"git":"<that hash>"`: ________
+- [x] The `meta` line of the first bench log (section 1.7) must show `"git":"<that hash>"`: `"git":"8b292c2"`,
+      not dirty (measured unattended, 2026-10-11)
       (`"git":"<that hash>-dirty"` means a tracked file in the clone was modified when the binary was built:
       paste the output of `git -C ~/Others/tmls-rs status --short` here.)
 
@@ -81,7 +84,11 @@ Run `printf 'ab你好cd   \n'`. Drag over that line with the left button, then r
 - [ ] Menu → Paste types the clipboard into the shell; Menu → Clear redraws an empty screen (it sends
       Ctrl+L, see "Not built"): ________
 - [ ] Run `printf '😀 ok\n'`. The emoji is drawn in colour, two cells wide, and ` ok` follows it without
-      overlap: ________
+      overlap: **not in colour on the PC** — `😀` is drawn as a one-colour outline, two cells wide, ` ok`
+      follows without overlap; `ab你好cd` above it is placed right and crisp. Printed by the child program
+      (`--cmd sh -c "printf …"`), no key typed. Picture: `/data/scratch/tmls-rs-v0/pc/s2-wgpu-ui-crop.png` on
+      archbox. In the headless smoke image, which has a colour-emoji font, the emoji is drawn in colour
+      (measured unattended, 2026-10-11)
       (The colour-glyph path has never been seen on any display. If an empty box or a one-colour outline
       is drawn instead, write that down.)
 
@@ -169,9 +176,13 @@ the `meta` line is not always the first line of a log.
       app now waits for it (up to 1 s after the first frame) and the `meta` line says where it came from:
       `"hz_source":"current_monitor"` = the monitor the window is on (what is wanted); `"only_monitor"` =
       one monitor is connected and it was used; `"unknown"` with `"hz":0.0` = still not found — please
-      report it. Paste the `meta` line of one run: ________
+      report it. Paste the `meta` line of one run:
+      `{"ev":"meta","app":"wgpu","git":"8b292c2","profile":"release","hz":164.958,"scale":1.15,"present_mode":"fifo","load":"quiet","ui":true,"hz_source":"current_monitor"}`
+      — `hz` 164.958 from `current_monitor`, in all three runs (s2-wgpu with UI, without UI, tmls-rs)
+      (measured unattended, 2026-10-11)
 - [ ] `"ui":false` in `meta` on the `S2_WGPU_NO_UI=1` runs and no sidebar on screen; `"ui":true` on the
-      others: ________
+      others: `meta` is right in both (`"ui":false` / `"ui":true`) (measured unattended, 2026-10-11); "no sidebar on
+      screen" was not looked at — still for a person: ________
 
 Numbers. After the four runs, paste this block as it is. For each log it prints the `meta` values, how
 many keys were sent to the shell and how many of them were attributed to a frame (the two should be
@@ -213,7 +224,14 @@ column from the last line of each log's output.
 | 100 % quiet, `S2_WGPU_NO_UI=1` (`wgpu-scale100-quiet-noui`) | | | | | | | | | |
 | 125 % quiet, UI (`wgpu-scale125-quiet-ui`) | | | | | | | | | |
 | 125 % quiet, `S2_WGPU_NO_UI=1` (`wgpu-scale125-quiet-noui`) | | | | | | | | | |
+| 115 % (the PC's own setting, not changed) quiet, UI — `~/offload/tmls-rs-v0/night-ui` (measured unattended, 2026-10-11) | 1.15 | 164.958 | current_monitor | 0 / 0 — no keys were typed (see note below) | — | — | — | — | — |
+| 115 % quiet, `S2_WGPU_NO_UI=1` — `~/offload/tmls-rs-v0/night-noui` (measured unattended, 2026-10-11) | 1.15 | 164.958 | current_monitor | 0 / 0 — no keys were typed | — | — | — | — | — |
 | other monitor (if any), UI (`wgpu-othermon-quiet-ui`); hz and scale from `kscreen-doctor -o` and the `scale factor` stderr line, not from `meta` | | | | | | | | | |
+
+Note on the two 115 % rows: the unattended run on 2026-10-11 started the apps on the PC and read `meta`, but
+typed nothing. Typing from a script goes to whatever window has the focus, which could have been a running
+Claude session, so it was left out. The latency columns need a person: do the runs of the command block above
+at the scale the PC is set to.
 
 Note for reading the logs: only keys typed while the terminal has the focus are in them, with one
 addition: choosing Menu → Clear (with the mouse or with Enter) sends Ctrl+L to the program and writes a
