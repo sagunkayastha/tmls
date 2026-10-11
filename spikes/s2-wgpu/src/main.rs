@@ -1,12 +1,22 @@
-//! `s2-wgpu` binary. The window, input and CLI arrive with the next task; until then this only
-//! reports which GPU adapters wgpu finds, which is enough to check a build on a new machine.
+//! `s2-wgpu`: a terminal window on winit + wgpu, instrumented for the S2 latency runs.
 
-fn main() {
-    let adapters = s2_wgpu::gfx::render::adapter_report();
-    if adapters.is_empty() {
-        println!("s2-wgpu: no wgpu adapter found");
-    }
-    for adapter in adapters {
-        println!("s2-wgpu: adapter {adapter}");
+use std::process::ExitCode;
+
+use s2_wgpu::{app, cli};
+
+fn main() -> ExitCode {
+    let args = match cli::parse(std::env::args().skip(1), std::env::var("SHELL").ok()) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("s2-wgpu: {e}\n{}", cli::USAGE);
+            return ExitCode::from(2);
+        }
+    };
+    match app::run(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("s2-wgpu: {e:#}");
+            ExitCode::FAILURE
+        }
     }
 }

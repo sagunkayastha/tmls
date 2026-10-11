@@ -14,7 +14,8 @@
 //! - `Scene::layers()` → `[background, glyphs, overlay]` in draw order, for
 //!   `Renderer::prepare`. A front-end can append layers of its own (sidebar, menus).
 //! - `Scene::set_origin(x, y)` moves the grid inside the window (snapped to whole pixels);
-//!   `Scene::cell_at(x, y)` maps a pixel back to `(col, row)` for the mouse.
+//!   `Scene::cell_at(x, y)` maps a pixel back to `(col, row)` for the mouse, and
+//!   `Scene::nearest_cell(x, y)` does so for a drag that may be outside the grid.
 //!
 //! Positions and sizes are physical pixels, y down, origin at the window's top-left corner.
 //! Layout rules: a `Wide::Lead` cell followed by its `Wide::Spacer` is one quad two columns
@@ -390,6 +391,21 @@ impl Scene {
         let row = ((y - built.origin[1]) / built.metrics.height).floor();
         let inside = col >= 0.0 && row >= 0.0 && col < built.cols as f32 && row < built.rows as f32;
         inside.then_some((col as u16, row as u16))
+    }
+
+    /// The cell nearest to a window pixel: `cell_at` for a drag that may have left the grid.
+    /// `None` only before the first `update_cells`.
+    pub fn nearest_cell(&self, x: f32, y: f32) -> Option<(u16, u16)> {
+        let built = self.built.as_ref()?;
+        // `as` saturates and maps NaN to 0, so any input lands on a valid cell.
+        let index = |px: f32, origin: f32, cell: f32, count: u16| {
+            (((px - origin) / cell).floor().max(0.0) as u32).min(count.saturating_sub(1) as u32)
+                as u16
+        };
+        Some((
+            index(x, built.origin[0], built.metrics.width, built.cols),
+            index(y, built.origin[1], built.metrics.height, built.rows),
+        ))
     }
 }
 
