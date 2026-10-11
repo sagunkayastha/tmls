@@ -2,7 +2,151 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-11 (later) — Track A merged to main at `bd09e33`; waiting on the user's A3 checklist run ✅
+
+`main` = `spike/s2-wgpu` = `bd09e33` (merge, `--no-ff`). On the merged tree `cargo test -p s2-core -p s2-wgpu`: 155 passed,
+0 failed, 1 ignored. The entry below was written mid-run; its NEXT 1, 2 (hz part) and 4 are done.
+
+- **Task 4 (A3)** reviewed: 3 important findings fixed in one round (`b60715d`..`79e7e97`) — held key that moves focus
+  into the terminal no longer writes orphan `key` lines; focus decisions moved to a pure tested `Ui::sync_focus`;
+  env switch **`S2_WGPU_NO_UI=1`** drops the sidebar for A/B runs (`meta.ui` records it); Ctrl+_ returned to the
+  terminal; `meta.hz` fixed (cause: on Wayland the monitor is unknown until the surface is mapped, after the first
+  present — `meta` now waits up to 1 s, so it is **no longer the first log line**; new `meta.hz_source`). Core gained
+  `MetaExtra` + `Log::meta_with` (additive). Headless A/B on lavapipe: submit→present p50 2.4 ms without UI, 6.0–6.4 ms
+  with; CPU side unchanged. **UI cost on a real GPU is still unmeasured.**
+- **Final whole-branch review (opus):** 0 critical; no path found that loses, double-counts or mis-attributes a key.
+  Fix wave `3e3b355`..`80ae53b` + `0f08621`: checklist made runnable (update-and-build step, bench commands, analysis
+  snippet, results table), stale scale/refresh removed from startup stderr, `meta.git` gets `-dirty` for a changed
+  tracked file, photon square = one flip per presented frame with a key press, contract drift fixed
+  (`keys::Encoder` signatures, optional fields in the JSON example, focus binding, analysis conventions).
+- **Decisions Track B must follow** (all in the split overview): focus traversal is Ctrl+Tab / Ctrl+Shift+Tab (plain Tab
+  only outside the terminal — plan said Tab/Shift-Tab); `Focus(false)` goes to the core when focus leaves the terminal
+  inside the window (an open context menu does not count); photon rule above; `meta` found by `"ev":"meta"`, optional
+  `ui` / `hz_source`; `Event::Frame` has `t_redraw_ns`; analysis counts only keys with a `write` line and drops the first second.
+- **Still open:** the single 38 ms key of PC run 1 (1 of 312, unexplained; visible as `t_redraw_ns − t_output_ns`);
+  B6 kitty Shift+letter encoding; IME edge cases (commit while the menu is open, composition across a focus move) —
+  decide after the fcitx5 checklist items; `build.rs` `-dirty` reflects the tree at the last build-script run.
+- **Cleaned (user's yes, 2026-10-11):** SDD workspace `.superpowers/sdd/2026-10-08-s2-track-a-core-wgpu/` (ledger,
+  task reports, review packages — the record is now git + this file; the checklist's line 14 still names
+  `task-4-report.md` there, which no longer exists), `/data/scratch/s2/{task2,task3,task4,final-fix,final-review,
+  review-final-fix,smoke,tmp}`, archbox `target-docker/` (1.2 GB, on `/`), image `s2-wgpu-smoke:latest`.
+  `/data` freed only ~0.4 GB (still 89 %): the image and `target-docker/` lived on `/`. Kept: `/data/scratch/s2/wgpu-smoke/`
+  (PC logs `pc/`, `pc2/` + headless runs), `/data/scratch/s2/review/` (888 MB, A1 review experiments — not on the
+  approved list), `wt-b1` (Track B worktree), image `tmls-rs-build:latest`.
+- **Headless smoke setup is gone with `smoke/` and the image:** to smoke-test on archbox again, rebuild a derived
+  image (sway or weston headless + lavapipe + `wtype` + a monospace and a CJK font on top of `tmls-rs-build`) and
+  `tooling/docker/build.sh build --release -p s2-wgpu`.
+- **`PROGRESS.md` is uncommitted on purpose:** committing would move `main` past `bd09e33`, the hash the user was told
+  to expect on the PC. Commit it after the checklist run.
+
+### NEXT (in order)
+0. **Overnight 2026-10-11 (user's request, supersedes 1–4 below for now):** execute
+   `docs/superpowers/plans/2026-10-11-tmls-rs-desktop-v0.md` unattended — a tmls-like native app (`tmls-rs`: real
+   sessions over ssh+tmux, tmls sidebar, tabs) on `feat/desktop-v0`; machine-doable checklist items run on the PC;
+   hand-off in `docs/MORNING-TEST.md`. The user said the S2 spike "looks nothing like tmls" and does the main test
+   in the morning. wgpu chosen for now; the gpui comparison is deferred.
+1. **User at the PC:** follow `docs/spikes/S2-checklist-wgpu.md` from the top (it starts with fetch → `git checkout
+   --detach origin/main` → Docker build → `ldd`; expected hash `bd09e33`; the command blocks are bash). Fill in the
+   answers, the results table and "hours". After the 100 % / 125 % runs restore the normal 115 % scaling.
+2. Copy `~/s2-logs/` from the PC to `/data/scratch/s2/pc-checklist/` and read the logs: `meta.hz` should be 165 with
+   `hz_source current_monitor`; compare `-ui` against `-noui` runs for the sidebar's cost on the GPU.
+3. Track B: rebase on `main`, gpui slice against the updated contract, bench scripts, `analyze.py` vs the golden pair.
+4. The 16-run matrix + photon video → `S2-results.md`, wgpu-vs-gpui decision in PLAN §3.
+
+## 2026-10-11 — A2 `s2-wgpu` terminal app built, reviewed, passed the PC smoke run; A3 built (review running) ✅
+
+Same subagent-driven run (ledger `.superpowers/sdd/2026-10-08-s2-track-a-core-wgpu/progress.md`). `spike/s2-wgpu` =
+`443dc5a`, 11 commits ahead of `main` (`1199fb4`); not merged. PC clone is detached at `3593613` (reviewed A2 state).
+
+- **Task 2 (A2 part a)** `7d1edc4` — `spikes/s2-wgpu/src/gfx/`: glyph atlas (cosmic-text + swash), WGSL shader, `Frame` →
+  instanced quads, offscreen render. Review: approved, 0 critical / 0 important. archbox has a GL adapter (Mesa, no
+  Vulkan), so offscreen tests run for real. Deps: wgpu 30.0.1, cosmic-text 0.19.0, swash 0.2.10, winit 0.30.13, arboard 3.6.1.
+- **Task 3 (A2 part b)** `7b45d0e`..`3593613` — winit window, key/IME/mouse/clipboard input, latency marks, `--photon`,
+  contract CLI; three `gfx` fixes (origin snapped to whole pixels, `update_overlays` rebuilds after an atlas restart,
+  atlas height capped at the device limit). Review: approved; 1 important (plan-mandated): `t_key_ns` is the time the
+  event is dequeued, so a key arriving during a redraw is stamped late → fix round added frame field **`t_redraw_ns`**
+  (core: `Log::frame_with_marks`, optional field, golden pair unchanged), redraw after a surface timeout, exit only
+  after the last present, and "Contract notes from A2" in the split overview. Re-review clean.
+- **PC smoke (user at the PC, `3593613`, release, fifo, scale 1.15, 165 Hz monitor)** — Docker release build 1m01s,
+  `ldd` clean on the host. Run 2, `/data/scratch/s2/wgpu-smoke/pc2/wgpu-smoke2/latency.jsonl`: 120 s, **309 keys, 309
+  attributed**, 0 duplicated, 1010 frame lines (524 real, 486 re-presents), 0 ordering violations. **key→present
+  (to `present()` return, not photon) p50 0.563 / p95 0.912 / p99 2.062 / max 4.238 ms.** Frame gaps cluster at 6 ms
+  (165 Hz cadence). User: "very smooth". Run 1 (`…/pc/wgpu-smoke/`, only 3 keys) had one 38.1 ms key: 37.6 ms between
+  output read and redraw entry — not seen again (1 of 312 keys), unexplained.
+- **Bug found on the PC:** `meta.hz` is `0.0` on the real desktop (refresh rate not read; should be 165). Not fixed.
+- **Task 4 (A3)** `561b650` + `443dc5a` — `spikes/s2-wgpu/src/ui/` (sidebar list, one-field form, focus, context menu,
+  theme, zoom, HiDPI), 103 tests, headless smoke OK (296 terminal keys attributed; list/field keys leave no `key`
+  line). Checklist + cost file `docs/spikes/S2-checklist-wgpu.md`; render `/data/scratch/s2/task4/ui-125.png`.
+  **Task review was running at log time — not yet approved.** Open points handed to the reviewer: focus keys are
+  Ctrl+Tab / Ctrl+Shift+Tab (plan says Tab/Shift-Tab), and the terminal no longer receives Ctrl+Tab, Ctrl+=, Ctrl+−,
+  Ctrl+_ (readline undo). Sidebar raised submit→present 2.4 → ~5.5–6 ms under software rendering; unmeasured on a GPU.
+- **For Track B:** `Event::Frame` gained `t_redraw_ns` (name it or use `..`); re-present and UI-only frame lines have
+  `t_output_ns: 0` and no keys — `analyze.py` must skip them; `hz: 0.0` = unknown; `t_work_done_ns` is an upper
+  bound; key ids are not dense; `Emu::exited()` can be true before the last frame (send `ScrollToBottom`, wait for the
+  frame after it — see the contract notes).
+- **Comparison with Python tmls is not like-for-like:** S0 measured tmls's input path only (p50 5.7 ms quiet, 13.5 ms
+  under flood); tonight's number is a bare shell in a window, no session layer or transport. The 16-run matrix is the
+  fair comparison.
+- **Session mechanics:** the permission classifier blocks `ssh pcl '…'` build commands from the session (plain `scp`
+  from `pcl` works), so PC commands are given to the user. The user reads this session on the PC: `!` commands run on
+  archbox, PC steps need a local PC terminal and explicit step-by-step instructions.
+- **Left on archbox, not removed:** image `s2-wgpu-smoke:latest` (3.77 GB), `target-docker/` (1.2 GB),
+  `/data/scratch/s2/{task2,task3,task4,smoke,wgpu-smoke,tmp}`. `/data` was at 89 %.
+
+### NEXT (in order)
+1. Read the Task 4 review (reviewer package `review-3593613..443dc5a.diff`) → fix loop → ledger. Rule on the focus keys.
+2. Fix `meta.hz` on the PC desktop (ask the user which compositor); look at the 38 ms key with a longer fifo run.
+3. User at the PC: rebuild at the new head, then the A3 checklist in `docs/spikes/S2-checklist-wgpu.md` (fcitx5
+   compose in the field, wide-char select + copy, paste into the field, right-click menu, wheel, 125 % scaling,
+   monitor move) and fill in "hours". Mouse paths and IME have never run in a real window.
+4. Final whole-branch review of Track A (opus), triaging the ledger's "minor (deferred)" lines; then merge
+   `spike/s2-wgpu` → `main` (user already said yes to the merges).
+5. Track B: rebase on `main`, gpui probe, bench scripts, `analyze.py` against the golden pair; then the 16-run matrix
+   and the wgpu-vs-gpui decision in PLAN §3.
+
+## 2026-10-10 (late) — A1 `s2-core` fix wave reviewed and merged to main; B1 merged; A2 part a running ✅
+
+*(NEXT 1–3 below are superseded by the entry above: Tasks 2–3 are done and the PC build + smoke ran.)*
+
+Subagent-driven run of the Track A plan (ledger `.superpowers/sdd/2026-10-08-s2-track-a-core-wgpu/progress.md`).
+`main` = `1199fb4` (merge of `spike/s2-wgpu`, includes B1 `37d949b`); `spike/s2-wgpu` fast-forwarded to the same commit.
+
+- **A1 fix wave** — 7 commits `2061569`..`0ba295a`. All must-fix items of `docs/reviews/2026-10-10-opus-s2-core.md`
+  (B1–B5, B7, B8) fixed, each regression test seen failing on the pre-fix code. Opus task review: concurrency rework
+  sound, 0 critical, 2 test defects (vacuous reader-EOF check, racy thread count) → fixed in `0ba295a`, re-review clean.
+  `cargo test -p s2-core` on the merged tree: 33 pass, 1 ignored (release-only literal 4 MiB paste into `cat`; passes
+  with `cargo test --release -p s2-core -- --include-ignored`).
+- **What changed in the core:** PTY master is non-blocking; writes go inline, a `s2-pty-write` thread finishes what a
+  full PTY refuses (`PtyWriter::write_all` no longer blocks); reader back-pressure is a condvar, reader + emu joined in
+  `Emu::drop`, writer in `Pty::drop`; frames without PTY output no longer satisfy key attribution; `set_waker` fires
+  at once if a frame is pending or the child exited; `log.frame(seq)` folds in keys of taken-but-unlogged frames
+  (`taken` capped at 256 entries); new `InputMsg::Scroll(i32)` + `ScrollToBottom`; Ctrl+punctuation and C0 `text`
+  encode correctly. Contract (split overview) updated in the same commits.
+- **For Track B:** the waker can fire spuriously — do not assert one wake per frame. A key or paste that sends bytes
+  returns a scrolled viewport to the bottom. Under flood, key→present means "next frame after the key".
+- **B1** merged (`main` fast-forward to `37d949b`). **PC image rebuilt** by the user (the session's ssh command was
+  blocked by the permission classifier): PC clone on `main` at `1199fb4`, `tmls-rs-build:latest` now has the GUI libs.
+- **Open, deferred to the final branch review** (ledger "minor (deferred)" lines): `pty.rs:165` write-begin time is
+  stamped even when the first attempt is refused (affects only keys queued behind a full PTY); `write_then` returns
+  `Ok` on the call that finds the PTY dead; child not reaped on a late spawn error; writer queue unbounded; `scrolled`
+  stays true after a delta reaches the bottom; duplicated test helpers. B6 (kitty Shift+letter) still open.
+- **Removed (user's yes):** untracked probe `spikes/s2-core/tests/zz_keyprobe.rs`, `/data/scratch/s2/fix/` (781 MB).
+- **A2 part a** (Task 2: `s2-wgpu` atlas, shader, quad building, offscreen render, tests) — implementer running at
+  log time, uncommitted changes in `Cargo.lock` + `spikes/s2-wgpu/`. Brief: `task-2-brief.md` in the ledger directory.
+
+### NEXT (in order)
+1. Task 2: read the implementer's report → task review → fix loop → ledger. Then Task 3 (A2 part b: winit window,
+   input, IME, clipboard, latency marks, `--photon`, CLI; archbox smoke in Docker) and Task 4 (A3 logic).
+2. (done) PC image rebuild. ssh to `pcl` from the session is blocked by the permission classifier, so PC commands
+   are handed to the user to run (`! ssh pcl '…'`) unless a Bash permission rule is added.
+3. PC: release build of `s2-wgpu`, then the user-run smoke run and A3 checklist (user at the PC). The user gave a
+   yes in advance for the merges and the plan's PC builds/runs; check `game-mode status` first (`off` at 21:27).
+4. Track B can rebase on `main` now (B2 gpui probe, B3 bench scripts in worktree `/data/scratch/s2/wt-b1`).
+5. Final whole-branch review of Track A, triaging the deferred list above; then A3 user checklist, B4, the 16-run matrix.
+
 ## 2026-10-10 — S2 resumed: Task 0 on main, A1 `s2-core` built (review pending), B1 image deps
+
+*(superseded by the entry above: the review's must-fix list is fixed and merged; NEXT 1–2 here are done.)*
 
 The 10-08 "NEXT" list below is stale: its steps 1–2 were already done (`8eaf614` fix wave, merge `cfd0164`). The
 project was paused on 10-09 and resumed today on the user's decision (PLAN header). The user uses Python tmls
