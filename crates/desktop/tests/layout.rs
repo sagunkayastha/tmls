@@ -574,6 +574,20 @@ fn a_window_with_too_few_columns_right_of_the_list_has_no_panel() {
 }
 
 #[test]
+fn what_the_app_says_of_a_click_in_a_window_with_no_room_for_the_panel() {
+    // `app` opens the panel, lays the window out and looks at `side.w`: nothing there means
+    // no panel is kept and the status line says why, in one line.
+    let l = panel_of(40 + SIDEBAR_COLS as u32 * 10, 726, 40);
+    assert_eq!((l.side.w, l.side_cols), (0.0, 0));
+    assert_eq!(
+        desktop::viewer::TOO_NARROW,
+        "window too narrow for the file panel"
+    );
+    // With room for both there is a panel, and nothing of the kind to say.
+    assert!(panel_of(1281, 726, 40).side.w > 0.0);
+}
+
+#[test]
 fn a_panel_opens_with_half_the_columns_right_of_the_list() {
     for scale in SCALES {
         let (window, m) = display(scale);
@@ -640,4 +654,61 @@ fn the_divider_and_a_few_pixels_either_side_of_it_are_its_handle() {
     }
     // No panel, no handle.
     assert_eq!(at(1281, 726).hit(875.0, 300.0, 1), Hit::Terminal);
+}
+
+#[test]
+fn a_drag_keeps_the_pixel_of_the_handle_that_was_pressed() {
+    // 40 columns: the divider is the pixel column 875, its handle 870 to 880.
+    let l = panel_of(1281, 726, 40);
+    for offset in [-5.0, -3.0, 0.0, 0.5, 5.9] {
+        let pressed = l.side_divider.x + offset;
+        assert_eq!(
+            l.hit(pressed, 300.0, 1),
+            Hit::SideDivider,
+            "offset {offset}"
+        );
+        // Not moved, or by less than half a column: the width that is.
+        for moved in [0.0, 1.0, -1.0, 4.9, -4.9] {
+            assert_eq!(
+                l.divider_cols(pressed + moved, offset),
+                40,
+                "offset {offset}, moved {moved}"
+            );
+        }
+        // A column to the right is one fewer for the panel, to the left one more.
+        assert_eq!(
+            l.divider_cols(pressed + 10.0, offset),
+            39,
+            "offset {offset}"
+        );
+        assert_eq!(
+            l.divider_cols(pressed - 10.0, offset),
+            41,
+            "offset {offset}"
+        );
+        assert_eq!(
+            l.divider_cols(pressed - 206.0, offset),
+            61,
+            "offset {offset}"
+        );
+    }
+    // Past the window's edges: no columns, or all there could be. The layout says what fits.
+    assert_eq!(l.divider_cols(5000.0, 0.0), 0);
+    assert_eq!(l.divider_cols(-5000.0, 0.0), 628);
+    assert_eq!(l.divider_cols(0.0, 0.0), 128, "(1281 - 6) / 10, rounded");
+    // At another scale the handle and the columns are wider.
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let l = layout_with(window, scale, &m, &Theme::default(), Some(40));
+        for offset in [-l.grab, 0.0, l.grab] {
+            let pressed = l.side_divider.x + offset;
+            assert_eq!(l.divider_cols(pressed, offset), 40, "scale {scale}");
+            assert_eq!(l.divider_cols(pressed + 1.0, offset), 40, "scale {scale}");
+            assert_eq!(
+                l.divider_cols(pressed - 3.0 * m.width, offset),
+                43,
+                "scale {scale}"
+            );
+        }
+    }
 }

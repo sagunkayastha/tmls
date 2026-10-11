@@ -489,14 +489,15 @@ if click 300 11; then
     fail "dragged far to the left the divider stops where the terminal has 20 columns" "columns $COLS_DRAGGED -> $(pane_cols)"
   fi
   check "screenshot 12e-divider-far-left" shot 12e-divider-far-left
-  # And from there (the divider is the pixel column 395 now) to where it was dragged first; a
-  # click on it without a move changes nothing.
+  # And from there (the divider is the pixel column 395 now) to where it was dragged first.
+  # Then a press on the handle's outermost pixel (it is 4 px either side of the divider) and
+  # a pixel's move: the divider keeps its distance from the pointer, so no column changes.
   click drag 395 400 955
-  click 955 400
+  click drag 951 400 950
   if wait_for 8 as_wide_as "$COLS_DRAGGED" && wait_for 3 ui_has "panel_cols=40"; then
-    pass "dragged back the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40 again"
+    pass "dragged back, and pressed on the handle's edge, the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40"
   else
-    fail "dragged back the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40 again" \
+    fail "dragged back, and pressed on the handle's edge, the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40" \
       "columns $(pane_cols); ui: $(tr '\n' '|' <"$UI" 2>&1)"
   fi
   keys -M alt -M shift -k x -m shift -m alt

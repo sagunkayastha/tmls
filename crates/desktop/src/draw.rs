@@ -602,6 +602,17 @@ impl Layout {
         }
     }
 
+    /// The columns the file panel is asked to have while its divider is dragged: the pointer
+    /// is at `x` and was `offset` pixels right of the divider's left edge when the button
+    /// went down, so the divider stays under the pixel of the handle that was pressed.
+    /// Rounded to whole columns and not kept within any limits: `layout_with` does that.
+    pub fn divider_cols(&self, x: f32, offset: f32) -> usize {
+        // Right of the divider: the line, the padding, the columns.
+        let edge = self.side_body.x - self.side.x;
+        let cols = (self.window.0 - (x - offset) - edge) / self.cell.0.max(1.0);
+        cols.round().max(0.0) as usize
+    }
+
     /// Whether a click at this column of a host's header is on its `+`.
     pub fn on_add(&self, col: usize) -> bool {
         col + ADD_COLS >= self.list_cols

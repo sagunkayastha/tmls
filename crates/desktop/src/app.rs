@@ -384,8 +384,9 @@ struct Running {
     quit: bool,
     /// The list's right edge is being dragged.
     dragging_separator: bool,
-    /// The file panel's divider is being dragged.
-    dragging_divider: bool,
+    /// The file panel's divider is being dragged: how far right of the divider's left edge
+    /// the pointer was when the button went down (the handle is wider than the line).
+    dragging_divider: Option<f32>,
     /// The file panel's width in columns, once its divider was dragged (now or in an earlier
     /// run); until then a panel opens with `draw::default_panel_cols`.
     panel_cols: Option<usize>,
@@ -566,7 +567,7 @@ impl Running {
             retry_at: None,
             quit: false,
             dragging_separator: false,
-            dragging_divider: false,
+            dragging_divider: None,
             panel_cols: ui.panel_cols,
             ui,
             ui_path,
@@ -629,16 +630,11 @@ impl Running {
     /// The file panel's divider follows the pointer, a whole column at a time; the layout
     /// keeps `PANEL_MIN_COLS` columns on both sides of it. The terminals get their new size at
     /// once.
-    fn drag_divider(&mut self, x: f32) {
-        let l = &self.layout;
-        if self.side.is_none() || l.side.w <= 0.0 {
+    fn drag_divider(&mut self, x: f32, offset: f32) {
+        if self.side.is_none() || self.layout.side.w <= 0.0 {
             return;
         }
-        // Right of the divider at `x`: the line, the padding, the columns.
-        let edge = l.side_body.x - l.side.x;
-        let asked = ((l.window.0 - x - edge) / l.cell.0.max(1.0))
-            .round()
-            .max(0.0) as usize;
+        let asked = self.layout.divider_cols(x, offset);
         // As many of them as the layout gives.
         let cols = self.layout_for(Some(asked)).side_cols;
         if cols != 0 && cols != self.layout.side_cols {
@@ -667,10 +663,11 @@ impl Running {
         };
         let saved = uistate::save(&path, &dragged)
             .with_context(|| format!("the widths were not saved: {}", path.display()));
-        if saved.is_ok() {
-            self.ui = dragged;
+        // Saved: nothing to say, and what the status line says of something else stays.
+        match saved {
+            Ok(()) => self.ui = dragged,
+            Err(_) => self.report(saved),
         }
-        self.report(saved);
     }
 
     /// The layout of the window as it is, with a file panel of `side` columns or none.
@@ -1118,10 +1115,10 @@ impl Running {
         });
     }
 
-    /// The answer to a click on a file: text opens in the panel (in place of what it showed),
-    /// anything else is started in the desktop's app. An answer to a click that is not the
-    /// latest is dropped (tmls: a newer click cancels the load). What went wrong shows in the
-    /// status line until the next key.
+    /// The answer to a click on a file: text opens in the panel (in place of what it showed)
+    /// if the window has room for one, anything else is started in the desktop's app. An
+    /// answer to a click that is not the latest is dropped (tmls: a newer click cancels the
+    /// load). What went wrong shows in the status line until the next key.
     fn viewed(&mut self, click: u64, result: Result<Opened, String>) {
         if click != self.views.load(Ordering::SeqCst) {
             return;
@@ -1136,6 +1133,13 @@ impl Running {
                 self.side = Some(SidePanel::text(&document, &self.cfg.local_name));
                 if !was_open {
                     self.relayout();
+                }
+                // No room for a panel beside `PANEL_MIN_COLS` columns of terminal: none is
+                // kept (the layout is the one without), and the click is answered. A note
+                // like the other answers here, gone with the next key: nothing is broken.
+                if self.layout.side.w <= 0.0 {
+                    self.side = None;
+                    return self.say(Ok(viewer::TOO_NARROW.to_string()));
                 }
                 let lines = self.layout.side_lines;
                 if let Some(side) = &mut self.side {
@@ -1640,10 +1644,10 @@ impl Running {
         if self.dragging_separator {
             self.drag_separator(x);
         }
-        if self.dragging_divider {
-            self.drag_divider(x);
+        if let Some(offset) = self.dragging_divider {
+            self.drag_divider(x, offset);
         }
-        let dragging = self.dragging_separator || self.dragging_divider;
+        let dragging = self.dragging_separator || self.dragging_divider.is_some();
         let on_handle = matches!(hit, Hit::Separator | Hit::SideDivider);
         let resize = dragging || (self.modal.is_none() && on_handle);
         if resize != self.resize_cursor {
@@ -1677,7 +1681,7 @@ impl Running {
         };
         if state == ElementState::Released {
             let separator = std::mem::take(&mut self.dragging_separator);
-            if separator || std::mem::take(&mut self.dragging_divider) {
+            if separator || self.dragging_divider.take().is_some() {
                 return self.save_widths();
             }
             if let Some(button) = terminal_button {
@@ -1711,7 +1715,7 @@ impl Running {
         }
         match hit {
             Hit::Separator => self.dragging_separator = true,
-            Hit::SideDivider => self.dragging_divider = true,
+            Hit::SideDivider => self.dragging_divider = Some(x - self.layout.side.x),
             Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);
@@ -1753,7 +1757,7 @@ impl Running {
                 self.sidebar.scroll(rows);
                 self.invalidate();
             }
-            Hit::Side | Hit::SideOpen | Hit::SideClose => {
+            Hit::Side | Hit::SideDivider | Hit::SideOpen | Hit::SideClose => {
                 let lines = self.layout.side_lines;
                 if self
                     .side

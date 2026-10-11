@@ -50,6 +50,10 @@ pub const OUTSIDE: [&str; 35] = [
 ];
 /// Columns between tab stops (Textual's `TextArea`, which tmls shows files in).
 pub const TAB_COLS: usize = 4;
+/// What the status line says of a click on a text file when the window cannot give the panel
+/// and the terminal `PANEL_MIN_COLS` columns each (`draw::layout_with` lays out no panel then):
+/// the file was fetched, nothing opened.
+pub const TOO_NARROW: &str = "window too narrow for the file panel";
 
 /// How long locating and reading text may take (ssh's own connect limit is 5 s), and how long
 /// a copy of up to `MAX_OUTSIDE_BYTES` (tmls: 60 s for an image).
