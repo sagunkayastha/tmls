@@ -192,11 +192,22 @@ of its own. tmls's `sound` switch is ignored: the app plays no sound.
 Not built: approvals (tmls's Yes / No on a Claude permission prompt). Nothing in the alerts
 sends a key to a session.
 
+## Claude outside tmux
+
+This machine's Claude Code sessions that run in no tmux pane (started straight in a terminal
+window) are listed under a rule `── not in tmux ──`, right below this machine's tmux sessions,
+with their status mark and what they wait for. The section is there only while there is such a
+session. They cannot be attached, pinned, renamed or killed from here and have no menu; Enter
+or a click asks kitty to bring their window to the front (kitty needs `allow_remote_control`
+and `listen_on` — the same as tmls). In another terminal the status line says the window was
+not found. Other hosts' sessions outside tmux are not shown, as in tmls. They raise no alert.
+
 ## Mouse
 
 | Action | Does |
 | --- | --- |
 | click a session in the list | attach it |
+| click a session under `── not in tmux ──` | bring its kitty window to the front (it cannot be attached) |
 | middle-click a session | pin or unpin it |
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |

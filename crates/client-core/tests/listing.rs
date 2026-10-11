@@ -365,3 +365,41 @@ fn script_output_parses_with_a_stub_tmux() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn claude_outside_tmux_is_listed_under_kitty() {
+    // One Claude in tmux, then four status files with no tmux pane: named, unnamed (its folder
+    // names it), the same name again (its process is added), and a helper that is not
+    // interactive (left out). One without a pid cannot be found again: left out too.
+    let output = concat!(
+        "1000\nwork:1:0:990\ntool work:claude\n---\n",
+        r#"{"pid":11,"kind":"interactive","status":"idle","statusUpdatedAt":900000,"name":"work","tmux":"work:@1.%1"}"#,
+        "\n",
+        r#"{"pid":21,"kind":"interactive","status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":900000,"name":"notes","cwd":"/home/u/notes"}"#,
+        "\nusage \"model\":\"claude-opus-5-5\" \"input_tokens\":250000\n",
+        r#"{"pid":22,"kind":"interactive","status":"busy","statusUpdatedAt":900000,"cwd":"/home/u/code/thing/"}"#,
+        "\n",
+        r#"{"pid":23,"kind":"interactive","status":"idle","statusUpdatedAt":900000,"name":"notes","cwd":"/tmp"}"#,
+        "\nfailed\n",
+        r#"{"pid":24,"kind":"background","status":"busy","statusUpdatedAt":900000,"cwd":"/home/u"}"#,
+        "\n",
+        r#"{"kind":"interactive","status":"busy","statusUpdatedAt":900000,"cwd":"/home/u/nopid"}"#,
+        "\n",
+    );
+    let snap = parse_listing("nas", output);
+    assert_eq!(names(&snap), ["work", "notes", "thing", "notes (23)"]);
+    let outside: Vec<&SessionInfo> = snap.sessions.iter().filter(|s| s.key.host == client_core::KITTY).collect();
+    assert_eq!(outside.len(), 3, "the tmux session keeps its host");
+    assert_eq!(session(&snap, "work").pid, None);
+    let said: Vec<_> = outside.iter().map(|s| (s.status, s.pid, s.tool, s.context_pct)).collect();
+    assert_eq!(
+        said,
+        [
+            (Status::Waiting, Some(21), Tool::Claude, Some(25)),
+            (Status::Running, Some(22), Tool::Claude, None),
+            (Status::Error, Some(23), Tool::Claude, None),
+        ]
+    );
+    assert_eq!(outside[0].reason.as_deref(), Some("permission prompt"));
+    assert!(outside.iter().all(|s| s.title.is_none() && s.attached == 0 && s.last_output_age_s.is_none()));
+}

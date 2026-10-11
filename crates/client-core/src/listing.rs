@@ -6,8 +6,16 @@
 //! then Claude Code's status file of every live Claude session, each followed by `failed` (its
 //! newest reply is an API error) and `usage …` (model and token counts of its newest real reply).
 //! When tmux cannot list, the window lines are replaced by one `tmux-error MESSAGE` line.
+//!
+//! A Claude session whose status file names no tmux pane runs outside tmux (in a terminal
+//! window of its own). The snapshot has those too, after the tmux sessions, under the host
+//! name [`KITTY`] as in tmls (`local.py`): they have a status but nothing to attach to.
 
 use serde_json::Value;
+
+/// The `host` of a Claude session that runs outside tmux (tmls `hosts.KITTY`). Such a session
+/// is in the snapshot of the machine it runs on; its [`SessionInfo::pid`] is Claude's process.
+pub const KITTY: &str = "kitty";
 
 /// Seconds without output before a session that is not Claude counts as idle.
 const QUIET_S: u64 = 30;
@@ -98,6 +106,8 @@ pub struct SessionInfo {
     pub attached: u32,
     /// Seconds since the session's newest window output, by the host's own clock.
     pub last_output_age_s: Option<u64>,
+    /// Claude's process, for a session outside tmux ([`KITTY`]); `None` for a tmux session.
+    pub pid: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -166,6 +176,11 @@ struct Claude {
     title: Option<String>,
     model: Option<String>,
     context: u64,
+    pid: Option<u32>,
+    /// `kind` is `interactive`: a person's session, not a helper Claude started itself.
+    interactive: bool,
+    /// The last part of its working directory: its name when it has none.
+    folder: Option<String>,
 }
 
 impl Claude {
@@ -187,6 +202,9 @@ impl Claude {
             title: text("name"),
             model: None,
             context: 0,
+            pid: file.get("pid").and_then(Value::as_u64).and_then(|pid| u32::try_from(pid).ok()),
+            interactive: file.get("kind").and_then(Value::as_str) == Some("interactive"),
+            folder: text("cwd").and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()).map(str::to_string)),
         })
     }
 
@@ -366,8 +384,36 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
                 context_pct: claude.and_then(Claude::context_pct),
                 attached: w.attached,
                 last_output_age_s: Some(age),
+                pid: None,
             }
         })
         .collect();
+    let mut sessions: Vec<SessionInfo> = sessions;
+    // Claude outside tmux (tmls `local.to_sessions`): named by Claude, else by its folder, else
+    // by its process; a name taken already gets the process added.
+    for file in files.iter().filter(|f| f.session.is_empty() && f.interactive) {
+        let Some(pid) = file.pid else { continue };
+        let mut name = file.title.clone().or_else(|| file.folder.clone()).unwrap_or_else(|| pid.to_string());
+        if sessions.iter().any(|s| s.key.host == KITTY && s.key.name == name) {
+            name = format!("{name} ({pid})");
+        }
+        let status = match () {
+            () if file.waits() => Status::Waiting,
+            () if file.running() => Status::Running,
+            () if file.failed => Status::Error,
+            () => Status::Idle,
+        };
+        sessions.push(SessionInfo {
+            key: SessionKey { host: KITTY.to_string(), name },
+            status,
+            reason: file.waiting.clone().filter(|_| status == Status::Waiting),
+            tool: Tool::Claude,
+            title: None, // its name is Claude's title already
+            context_pct: file.context_pct(),
+            attached: 0,
+            last_output_age_s: None,
+            pid: Some(pid),
+        });
+    }
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }
 }

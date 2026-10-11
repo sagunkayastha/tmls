@@ -38,6 +38,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         context_pct: None,
         attached: 0,
         last_output_age_s: None,
+        pid: None,
     }
 }
 

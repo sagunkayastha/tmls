@@ -36,7 +36,7 @@
 
 use std::borrow::Cow;
 
-use client_core::{SessionInfo, SessionKey, Tool};
+use client_core::{KITTY, SessionInfo, SessionKey, Tool};
 use s2_wgpu::gfx::atlas::{Atlas, CellMetrics, FontStyle};
 use s2_wgpu::gfx::grid::{self, Instance, Scene, clusters, push_text, solid};
 use s2_wgpu::ui::draw::fit;
@@ -608,6 +608,24 @@ pub fn header_spans(host: &str, online: bool, cols: usize, theme: &Theme) -> Vec
     ]
 }
 
+/// What the rule above the sessions outside tmux says.
+pub const OUTSIDE_LABEL: &str = "not in tmux";
+
+/// A dim rule across the list with `label` in it: `── label ─────────`.
+pub fn rule_spans(label: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let end = cols.saturating_sub(1);
+    let label_col = 4;
+    let after = label_col + columns(label) + 1;
+    if after >= end {
+        return vec![Span::whole(0, 1, "─".repeat(end.saturating_sub(1))).colour(theme.dim_fg)];
+    }
+    vec![
+        Span::whole(0, 1, "──").colour(theme.dim_fg),
+        Span::whole(0, label_col, label.to_string()).colour(theme.dim_fg),
+        Span::whole(0, after, "─".repeat(end - after)).colour(theme.dim_fg),
+    ]
+}
+
 fn opaque(c: [u8; 3]) -> [u8; 4] {
     [c[0], c[1], c[2], 255]
 }
@@ -765,6 +783,13 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                 online,
                 color,
             } => {
+                if host == KITTY {
+                    // No machine: a rule above this machine's Claude sessions outside tmux.
+                    for span in rule_spans(OUTSIDE_LABEL, l.list_cols, theme) {
+                        p.span((r.x, r.y), &span);
+                    }
+                    continue;
+                }
                 // tmls: a full-width line in the host's colour above each machine (line 908).
                 p.rect(
                     Rect {
