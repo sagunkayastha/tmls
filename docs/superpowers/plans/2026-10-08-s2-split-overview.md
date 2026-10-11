@@ -88,7 +88,8 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
 - `Frame::row_text(y)`. When the slot replaces an unread frame, the new frame inherits its `keys` and dirty rows.
 - `latency::Log`: `create(dir)`, `key(id, t_key_ns)`, `write(id, t_write_ns)` (called by the core), `frame(…)`,
   `frame_with_work_done(…, Option<t_work_done_ns>)`, `frame_with_marks(…, Option<t_work_done_ns>, Option<t_redraw_ns>)`
-  (added in A2, see below), `event(&Event)` for `meta`, `flush()`. `latency::Event` is the serde
+  (added in A2, see below), `event(&Event)` for `meta`, `meta_with(&Event, &MetaExtra)` for a `meta` line with the
+  optional fields `ui` / `hz_source` (added in A3, see below), `flush()`. `latency::Event` is the serde
   type of a log line. Times are written as unsigned 64-bit ns; `frame` may carry an optional `t_work_done_ns`.
 - **Key attribution is `frame.keys`, not the timestamps.** The core assigns a key to the first frame *with PTY output*
   whose output was read at or after the key's PTY write *began*: the tty echo can be read before `write()` returns, so
@@ -163,11 +164,15 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
 - **`S2_WGPU_NO_UI=1`** *(A3 fix round; environment, not a flag — the CLI above is unchanged)*: runs `s2-wgpu`
   without its sidebar / form / menu: the terminal alone at the window's corner, every key a terminal key. For A/B
   runs that measure what the UI costs per frame. Unset, empty, `0` or `false` = UI on.
-- **Planned extra `meta` fields, NOT in the log yet:** `"ui": true|false` (the switch above) and `"hz_source":
-  "current_monitor"|"only_monitor"|"unknown"`. `latency::Event::Meta` has no place for them and `s2-core` was out of
-  bounds for the round that added the values, so `s2-wgpu` prints them on stderr only, in one line:
-  `s2-wgpu: meta hz <f64> hz_source <source> ui <bool> (after <ms> ms)`. Until the fields exist, a run's variant is
-  known from its log directory name / captured stderr. `analyze.py` must not expect the fields.
+- **Optional `meta` fields `ui` and `hz_source`** *(contract change, additive, 2026-10-11)*: `"ui": true|false`
+  (false = `S2_WGPU_NO_UI`) and `"hz_source": "current_monitor"|"only_monitor"|"unknown"`, written after the fixed
+  fields. `s2-wgpu` writes both on every `meta` line; a front-end that does not know them omits them (`s2-gpui` may),
+  and a line without them is byte for byte what it was — the golden pair and `latency::report` are unchanged.
+  `analyze.py` must treat both as optional (a missing `ui` means "not recorded", not "on").
+  New `s2-core` API: `latency::MetaExtra { ui: Option<bool>, hz_source: Option<String> }` and
+  `Log::meta_with(&Event, &MetaExtra)`. `latency::Event::Meta` and `Log::event` are unchanged: code that builds or
+  destructures `Event::Meta` needs no edit; reading a `meta` line as `Event` ignores the extras, reading the same
+  line as `MetaExtra` yields them (both `None` for an old line).
 - **`t_work_done_ns` is an upper bound.** The callback runs inside `device.poll`, which the app calls on the main thread
   after `present()` has returned (then every 500 µs while a line waits), so it is never earlier than `t_present_ns` and
   is later when the main thread is busy. The line is written without the field if the callback has not run within

@@ -35,6 +35,20 @@ pub enum Event {
     Sample { t_ns: u64, cpu_pct: f64, rss_kb: u64, fps: f64, gpu_util: Option<f64>, gpu_w: Option<f64> },
 }
 
+/// Optional fields of the `meta` line that only some front-ends write, after the fixed ones
+/// (`Log::meta_with`). A field that is `None` is left out of the line, so a line without any is
+/// byte for byte what `Log::event` writes. `Event::Meta` itself is unchanged and ignores them
+/// when a line is read as an `Event`; read the same line as a `MetaExtra` to get them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaExtra {
+    /// Whether the front-end's non-terminal UI was on (`s2-wgpu`: `S2_WGPU_NO_UI` not set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<bool>,
+    /// Where `hz` came from: `current_monitor` | `only_monitor` | `unknown` (`s2-wgpu`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hz_source: Option<String>,
+}
+
 struct Inner {
     out: BufWriter<File>,
     /// Frames the front-end took and no `frame` line covers yet: seq → (t_output_ns, keys).
@@ -72,6 +86,23 @@ impl Log {
 
     pub fn event(&self, ev: &Event) {
         self.inner.lock().unwrap().write(ev);
+    }
+
+    /// Writes a `meta` line with the optional fields of `extra` after the fixed ones; with no
+    /// extras it is `event(meta)`. For any other event the extras are ignored.
+    pub fn meta_with(&self, meta: &Event, extra: &MetaExtra) {
+        let (Event::Meta { .. }, Ok(mut line), Ok(extra)) = (meta, serde_json::to_string(meta), serde_json::to_string(extra)) else {
+            return self.event(meta);
+        };
+        // `extra` is `{}` or `{"ui":…,…}`: its fields go before the line's closing brace.
+        if extra.len() > 2 && line.ends_with('}') {
+            line.pop();
+            line.push(',');
+            line.push_str(&extra[1..]);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let _ = inner.out.write_all(line.as_bytes());
+        let _ = inner.out.write_all(b"\n");
     }
 
     pub fn key(&self, id: u64, t_key_ns: u128) {
@@ -318,5 +349,51 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].1, 10_000);
         assert_eq!(lines[0].2, (1..=10_000).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn meta_extras_are_on_the_line_only_when_given() {
+        let dir = scratch("latency_meta_extra");
+        let log = Log::create(&dir).unwrap();
+        let meta = Event::Meta {
+            app: "wgpu".into(),
+            git: "abc1234".into(),
+            profile: "release".into(),
+            hz: 165.0,
+            scale: 1.25,
+            present_mode: "fifo".into(),
+            load: "quiet".into(),
+        };
+        let both = MetaExtra { ui: Some(false), hz_source: Some("current_monitor".into()) };
+        let ui_only = MetaExtra { ui: Some(true), hz_source: None };
+        log.event(&meta);
+        log.meta_with(&meta, &MetaExtra::default());
+        log.meta_with(&meta, &both);
+        log.meta_with(&meta, &ui_only);
+        log.flush();
+        let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        // The line as it has always been: fixed fields only.
+        let plain = r#"{"ev":"meta","app":"wgpu","git":"abc1234","profile":"release","hz":165.0,"scale":1.25,"present_mode":"fifo","load":"quiet"}"#;
+        assert_eq!(lines[0], plain);
+        assert_eq!(lines[1], plain, "no extras: byte for byte the old line");
+        // Extras come after the fixed fields; an absent one is not written at all.
+        assert_eq!(lines[2], format!(r#"{},"ui":false,"hz_source":"current_monitor"}}"#, &plain[..plain.len() - 1]));
+        assert_eq!(lines[3], format!(r#"{},"ui":true}}"#, &plain[..plain.len() - 1]));
+        assert_eq!(lines.len(), 4);
+        // Every line still reads as the same `Event` (old readers lose nothing they had), and
+        // the extras read back from the same line; an old line has none.
+        let extras = [MetaExtra::default(), MetaExtra::default(), both, ui_only];
+        for (line, extra) in lines.iter().zip(extras) {
+            assert_eq!(serde_json::from_str::<Event>(line).unwrap(), meta);
+            assert_eq!(serde_json::from_str::<MetaExtra>(line).unwrap(), extra);
+        }
+        // Only a `meta` line takes extras.
+        let key = Event::Key { id: 1, t_key_ns: 5 };
+        let log = Log::create(&scratch("latency_meta_extra_key")).unwrap();
+        log.meta_with(&key, &MetaExtra { ui: Some(true), hz_source: None });
+        log.flush();
+        let text = std::fs::read_to_string(scratch("latency_meta_extra_key").join("latency.jsonl")).unwrap();
+        assert_eq!(text, "{\"ev\":\"key\",\"id\":1,\"t_key_ns\":5}\n");
     }
 }
