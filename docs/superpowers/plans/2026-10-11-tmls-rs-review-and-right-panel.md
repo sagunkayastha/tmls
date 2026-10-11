@@ -12,6 +12,15 @@
 
 **Starting point:** branch `feat/viewer-panel` at `568949a` (text panel works; headless e2e 122/122). Work continues on that branch. Nothing is merged to `main` or pushed.
 
+## Who does the work (the user's instruction, 2026-10-11)
+
+"Use one main fable agent and multiple opus subagents."
+
+- **One main agent, model `fable`:** owns this plan from Task 1 to Task 7, keeps the ledger, makes the rulings, runs the verification itself (tests, clippy, fmt, e2e, looks at the screenshots) and reports. It writes no feature code itself.
+- **Opus subagents (`model: opus`), dispatched by the main agent:** one implementer per task (Tasks 1, 2, 3 and the fixes of Task 4, one after another, never two at once: they share `draw.rs` and `app.rs`); one task reviewer after each; one whole-branch reviewer for Task 6. Reviewers get the diff as a file, not the main agent's conclusions.
+- The main agent does not build on the PC, merge, push, delete or message anyone. It stops and reports for: a destructive step, a merge or push, anything on the PC, and Task 4 step 2 / Task 5 (they need the user).
+- The session that wrote this plan (TMLS) starts the main agent only after the user has answered the open questions at the end, checks its report against the repo, builds on the PC and tells the user.
+
 ## What was asked
 
 1. A plan for a proper review of the app.
@@ -171,7 +180,7 @@ Nothing below has been run in a real window by me; all of it is only unit- and h
 
 ### Task 6: Code pass
 
-- [ ] **Step 1 (needs the user's yes to spawn an agent):** one fresh Opus reviewer over `git diff main..feat/viewer-panel`, given the diff as a file and this focus list, not my conclusions: threads and stale answers (`views` counter); quoting of host paths into ssh/sh (`files.rs`); what is written under `~/.cache/tmls-rs/view` and whether a remote path can escape it; every timeout; memory bounds (text 2 MB, image 25 MB / 50 MP / 4096 px); panics on tiny windows and zero sizes; anything drawn or computed per frame that could be per change.
+- [ ] **Step 1:** one fresh Opus reviewer over `git diff main..feat/viewer-panel`, given the diff as a file and this focus list, not my conclusions: threads and stale answers (`views` counter); quoting of host paths into ssh/sh (`files.rs`); what is written under `~/.cache/tmls-rs/view` and whether a remote path can escape it; every timeout; memory bounds (text 2 MB, image 25 MB / 50 MP / 4096 px); panics on tiny windows and zero sizes; anything drawn or computed per frame that could be per change.
 - [ ] **Step 2:** known debts to rule on, each "fix now / later / never": `client-core` not rustfmt-clean; window code copied from `s2-wgpu` (MORNING-TEST "Known gaps" 12); no ssh keepalive; `--bench` logs only the first tab; untracked `crates/desktop/tests/tabs.rs.new`.
 - [ ] **Step 3:** findings into the review file, most severe first; fix the confirmed ones, one commit each, test first.
 
@@ -224,5 +233,4 @@ Not planned in detail; each gets its own small plan once picked. Cost is my esti
 2. D2: is "every image this session mentioned that still exists" the right list, or only images made after the session started?
 3. D6: `Files` at the tab bar's right end and `Alt+Shift+F` — fine?
 4. Task 2 adds the Rust crate `image` (compiled into the binary; nothing installed on any host). Fine?
-5. Task 6: may one Opus reviewer agent read the diff?
-6. Task 4 step 2: will you mark the alignment issues you see on a screenshot?
+5. Task 4 step 2: will you mark the alignment issues you see on a screenshot?
