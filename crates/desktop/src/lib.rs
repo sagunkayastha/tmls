@@ -10,5 +10,8 @@
 //! The terminal itself (emulator, glyph atlas, renderer, latency marks) is `s2-core` and
 //! `s2-wgpu`, used as libraries.
 
+pub mod app;
+pub mod draw;
 pub mod keys;
 pub mod tabs;
+pub mod theme;
