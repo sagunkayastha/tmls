@@ -17,11 +17,15 @@ project was paused on 10-09 and resumed today on the user's decision (PLAN heade
   Tests and code were written together, not failing-tests-first.
 - **B1** — `37d949b` on `spike/s2-gpui` (worktree `/data/scratch/s2/wt-b1`): GUI build libs in `Dockerfile.build`.
   Image built on archbox in 53 s (3.13 GB) to validate it; the PC image is not rebuilt yet (needs the user's yes).
-- An opus review of `5f34f6b` was started but the session was restarted before it reported: **run it again**.
+- **Review done** (opus): `docs/reviews/2026-10-10-opus-s2-core.md` — merge with fixes. Verified must-fix bugs: paste
+  ≥ 160 KiB deadlocks the emulator thread (B1), reader thread leak under flood (B2), resize steals key attribution
+  (B3), Ctrl+punctuation sends nothing (B4), control-char text mis-encoded (B5), wake-ups before `set_waker` lost
+  (B7), taken-but-unlogged frames lose keys (B8). Dirty-row handling was fuzzed and found correct. **None fixed yet.**
 
 ### NEXT (in order)
-1. Review `5f34f6b` (opus, read-only, brief: contract in the split overview + Track A plan §A1; look for races, key
-   attribution, dirty rows, shutdown, timing-dependent tests). Fix findings, merge `spike/s2-wgpu` → `main`.
+1. Fix the must-fix list in `docs/reviews/2026-10-10-opus-s2-core.md` (B1–B5, B7, B8), add the missing tests it
+   names, update the contract notes (and remove the stale attribution sentence), short re-review, then merge
+   `spike/s2-wgpu` → `main`. Add an `InputMsg` for viewport scrolling (needed by A2).
 2. Merge B1 (`37d949b`) to `main`.
 3. A2 `s2-wgpu` on `spike/s2-wgpu` (Track A plan). Smoke-test on archbox first: build in the Docker image, render
    offscreen and compare pixels, and try a headless Wayland compositor inside a container for the window + key path
