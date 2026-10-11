@@ -9,14 +9,18 @@
 //! listing moves rows (a session started above, one renamed or killed elsewhere, a host gone
 //! offline) the cursor stays on its session. When that session itself is gone, the cursor goes
 //! to the row that took its place on the same host, else to the nearest session; never to a
-//! header or a gap. With no session at all nothing is selected.
+//! header or a gap. With no session at all nothing is selected. A host that does not answer
+//! loses its rows, but its sessions are likely still there: when the cursor was on one of
+//! them it is remembered and goes back to it when that session is listed again — unless the
+//! user moved the cursor in the meantime, or the host came back without the session.
 //!
 //! **Lines.** A row is one line of the list, a session with a summary (`summary`) two; the
 //! view and the hit test count in lines (`view`, `row_at`). The view follows the cursor
 //! whenever the cursor moves; the wheel (`scroll`) moves the view alone.
 //!
 //! **Pins** are tmls's: slugs in `~/.config/tmls/pins`, the one file this app writes
-//! (`toggle_pin`). Slugs of sessions that are not listed now are kept.
+//! (`toggle_pin`). Slugs of sessions that are not listed now are kept. A pin that could not be
+//! written is not shown as one: the ★ means "saved" (`take_pin_error` says what went wrong).
 
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
@@ -96,6 +100,11 @@ pub struct Sidebar {
     listed: HashMap<SessionKey, (usize, bool)>,
     /// The row of the selected session.
     cursor: Option<usize>,
+    /// Why the last `toggle_pin` changed nothing, until `take_pin_error` is asked.
+    pin_error: Option<anyhow::Error>,
+    /// The session the cursor was on when its host stopped answering, until the host is back
+    /// or the user moves the cursor.
+    wanted: Option<SessionKey>,
     /// The first row in view. `view` settles it for the height it is given.
     top: Cell<usize>,
     /// The view has to show the cursor: it moved after the wheel last did.
@@ -125,6 +134,8 @@ impl Sidebar {
             rows,
             listed: HashMap::new(),
             cursor: None,
+            pin_error: None,
+            wanted: None,
             top: Cell::new(0),
             follow: Cell::new(true),
         }
@@ -156,9 +167,28 @@ impl Sidebar {
             .splice(first..section.end, sessions.into_iter().map(Row::Session));
         self.sort(first..first + count);
 
-        let kept = before
-            .as_ref()
-            .and_then(|(_, key)| self.position(key.as_ref()?));
+        // The host is back: the cursor returns to the session it was on, or that one is gone.
+        let back = match &self.wanted {
+            Some(wanted) if wanted.host == snap.host && snap.online => {
+                let at = self.position(wanted);
+                self.wanted = None;
+                at
+            }
+            _ => None,
+        };
+        let kept = back.or_else(|| {
+            before
+                .as_ref()
+                .and_then(|(_, key)| self.position(key.as_ref()?))
+        });
+        if !snap.online
+            && self.wanted.is_none()
+            && kept.is_none()
+            && let Some((at, Some(key))) = &before
+            && section.contains(at)
+        {
+            self.wanted = Some(key.clone());
+        }
         self.cursor = kept.or_else(|| match before {
             // Its session went with this listing: the row that took its place, else the last
             // of the host.
@@ -168,7 +198,7 @@ impl Sidebar {
             Some((at, _)) => self.nearest_session(at),
             None => self.nearest_session(0),
         });
-        if kept.is_none() {
+        if kept.is_none() || back.is_some() {
             self.follow.set(true);
         }
     }
@@ -283,20 +313,24 @@ impl Sidebar {
     }
 
     /// Pins the selected session, or unpins it, and writes tmls's `pins` file. Returns whether
-    /// it is pinned now. A file that cannot be written is reported and the pin holds for this
-    /// run, as in tmls.
+    /// it is pinned now. When the file cannot be written nothing changes — the session is as
+    /// pinned as it was, in the list and after a restart — and `take_pin_error` has the reason.
     pub fn toggle_pin(&mut self) -> bool {
         let Some(key) = self.selected().cloned() else {
             return false;
         };
         let slug = tmls_slug(&key, &self.local_name);
-        let pinned = !self.pins.remove(&slug);
+        let mut pins = self.pins.clone();
+        let pinned = !pins.remove(&slug);
         if pinned {
-            self.pins.insert(slug);
+            pins.insert(slug);
         }
-        if let Err(e) = Config::save_pins(&self.config_dir, &self.pins) {
-            eprintln!("tmls-rs: pins not saved: {e:#}");
+        if let Err(e) = Config::save_pins(&self.config_dir, &pins) {
+            let what = if pinned { "pin" } else { "unpin" };
+            self.pin_error = Some(e.context(format!("{what} of {} not saved", key.name)));
+            return !pinned;
         }
+        self.pins = pins;
         if let Some(entry) = self.listed.get_mut(&key) {
             entry.1 = pinned;
         }
@@ -305,6 +339,11 @@ impl Sidebar {
         }
         self.select_key(&key);
         pinned
+    }
+
+    /// What went wrong at the last `toggle_pin`, once; `Ok` when nothing did.
+    pub fn take_pin_error(&mut self) -> anyhow::Result<()> {
+        self.pin_error.take().map_or(Ok(()), Err)
     }
 
     /// The next session that needs the user after `after` in the list, wrapping round: one
@@ -386,7 +425,9 @@ impl Sidebar {
         })
     }
 
+    /// The user (or the tab in front) puts the cursor somewhere: that is where it stays.
     fn set_cursor(&mut self, row: usize) {
+        self.wanted = None;
         self.cursor = Some(row);
         self.follow.set(true);
     }

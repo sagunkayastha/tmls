@@ -22,10 +22,11 @@ fn config(hosts: &[&str]) -> Config {
     }
 }
 
-/// A config directory of this test's own; never `~/.config/tmls`.
+/// A config directory of this test's own under cargo's target tmp dir; never
+/// `~/.config/tmls`, never /tmp.
 fn scratch(test: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("tmlsrs-test-sidebar-{}-{test}", std::process::id()));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("tmlsrs-test-sidebar-{}-{test}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -164,6 +165,64 @@ fn offline_host_keeps_its_header_and_drops_sessions() {
     s.apply(idle("nas", &["media"]));
     assert_eq!(shape(&s), ["[laptop]", "work", "-", "[nas]", "media"]);
     assert_eq!(s.click(3), Some(Action::NewSessionOn("nas".to_string())));
+    assert_eq!(
+        selected(&s),
+        at(LOCAL, "work"),
+        "the host is back without the session: the cursor stays where it went"
+    );
+
+    // Offline for one poll, then back with the same sessions: the cursor returns to the
+    // session the user had selected, whatever arrived in between.
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    s.apply(idle(LOCAL, &["work"]));
+    s.apply(idle("nas", &["media", "backup"]));
+    s.select_key(&key("nas", "backup"));
+    s.apply(offline("nas"));
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+    s.apply(idle(LOCAL, &["other", "work"]));
+    s.apply(offline("nas"));
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+    s.apply(idle("nas", &["backup", "media"]));
+    assert_eq!(
+        selected(&s),
+        at("nas", "backup"),
+        "back on the session the user chose"
+    );
+    assert_eq!(s.activate(), Some(Action::Attach(key("nas", "backup"))));
+    // Once only: it is an ordinary selection again.
+    s.move_by(-1);
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+    s.apply(idle("nas", &["backup", "media", "new"]));
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+
+    // The user moved the cursor while the host was away: it stays where the user put it.
+    for explicit in ["move", "select", "click", "menu"] {
+        let mut s = sidebar(&[LOCAL, "nas"]);
+        s.apply(idle(LOCAL, &["a", "b", "c"]));
+        s.apply(idle("nas", &["media", "backup"]));
+        s.select_key(&key("nas", "backup"));
+        s.apply(offline("nas"));
+        assert_eq!(selected(&s), at(LOCAL, "c"));
+        match explicit {
+            "move" => s.move_by(-1),
+            "select" => s.select_key(&key(LOCAL, "b")),
+            "click" => assert_eq!(s.click(2), Some(Action::Attach(key(LOCAL, "b")))),
+            _ => assert_eq!(s.menu(2), Some(Action::Menu(key(LOCAL, "b")))),
+        }
+        s.apply(idle("nas", &["media", "backup"]));
+        assert_eq!(selected(&s), at(LOCAL, "b"), "after an explicit {explicit}");
+    }
+
+    // A session killed on a host that answers is not waited for: one of that name started
+    // later does not take the cursor.
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    s.apply(idle(LOCAL, &["work"]));
+    s.apply(idle("nas", &["media", "backup"]));
+    s.select_key(&key("nas", "backup"));
+    s.apply(idle("nas", &["media"]));
+    assert_eq!(selected(&s), at("nas", "media"));
+    s.apply(idle("nas", &["media", "backup"]));
+    assert_eq!(selected(&s), at("nas", "media"));
 
     // The only host with sessions goes away: nothing is selected, and nothing can be opened.
     let mut s = sidebar(&["nas"]);
@@ -174,6 +233,12 @@ fn offline_host_keeps_its_header_and_drops_sessions() {
     assert_eq!(s.activate(), None);
     s.move_by(1);
     assert_eq!(s.selected(), None);
+    assert!(
+        !s.toggle_pin(),
+        "nothing selected: nothing is pinned, nothing is written"
+    );
+    s.apply(idle("nas", &["first", "media"]));
+    assert_eq!(selected(&s), at("nas", "media"), "and back");
 }
 
 #[test]
@@ -326,6 +391,55 @@ fn pins_sort_and_persist() {
     s.apply(idle("nas", &["k", "m", "Agent Thing"]));
     assert_eq!(shape(&s)[5..], ["[nas]", "Agent Thing", "k", "m"]);
 
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_pin_that_cannot_be_saved_is_not_shown() {
+    let dir = scratch("pins-unwritable");
+    // A regular file where the config directory should be: nothing can be written into it.
+    let not_a_dir = dir.join("config");
+    std::fs::write(&not_a_dir, "in the way").unwrap();
+    let mut cfg = config(&[LOCAL]);
+    let saved_before = tmls_slug(&key(LOCAL, "old"), LOCAL);
+    cfg.pins.insert(saved_before);
+    let mut s = Sidebar::new(&cfg, not_a_dir.clone());
+    s.apply(idle(LOCAL, &["new", "old"]));
+    assert_eq!(shape(&s), ["[laptop]", "old", "new"]);
+    assert!(s.take_pin_error().is_ok(), "nothing went wrong yet");
+
+    // Pinning fails: no ★, no reordering, and the reason is there to show, once.
+    s.select_key(&key(LOCAL, "new"));
+    assert!(!s.toggle_pin());
+    assert!(!s.is_pinned(&key(LOCAL, "new")));
+    assert_eq!(shape(&s), ["[laptop]", "old", "new"]);
+    let problem = format!("{:#}", s.take_pin_error().unwrap_err());
+    assert!(problem.starts_with("pin of new not saved: "), "{problem}");
+    assert!(problem.contains("config"), "names the path: {problem}");
+    assert!(s.take_pin_error().is_ok(), "reported once");
+
+    // Unpinning fails: it stays pinned, as it will be after a restart.
+    s.select_key(&key(LOCAL, "old"));
+    assert!(s.toggle_pin());
+    assert!(s.is_pinned(&key(LOCAL, "old")));
+    assert_eq!(shape(&s), ["[laptop]", "old", "new"]);
+    let problem = format!("{:#}", s.take_pin_error().unwrap_err());
+    assert!(problem.starts_with("unpin of old not saved: "), "{problem}");
+    assert_eq!(std::fs::read_to_string(&not_a_dir).unwrap(), "in the way");
+
+    // The directory is fine again: the pin is saved, with the one from before and no other.
+    let mut s = Sidebar::new(&cfg, dir.join("real"));
+    s.apply(idle(LOCAL, &["new", "old"]));
+    s.select_key(&key(LOCAL, "new"));
+    assert!(s.toggle_pin());
+    assert!(s.take_pin_error().is_ok());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("real/pins"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
