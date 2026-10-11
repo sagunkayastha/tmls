@@ -14,9 +14,11 @@
 //! ```
 //!
 //! With a file open (`viewer::SidePanel`) the terminal's area is split: the terminal keeps the
-//! left half, a line divides, and the panel has the right half — a header of one row (the
+//! left part, a line divides, and the panel has the right part — a header of one row (the
 //! path, `Open in app`, `×`) over the file's text with its line numbers. `layout_with` lays
-//! that out, and `Layout::grid` is then the smaller terminal.
+//! that out, and `Layout::grid` is then the smaller terminal. The panel opens with half the
+//! columns (`default_panel_cols`); dragging the divider gives it more or fewer, never under
+//! `PANEL_MIN_COLS` for it or for the terminal.
 //!
 //! ```text
 //! +-- sidebar --+s+-- tab bar ---------------------------------------+
@@ -65,8 +67,8 @@ use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
-    OFFLINE, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
-    tool_letter,
+    OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
+    mark_rgb, tool_letter,
 };
 use crate::viewer::{SideBody, SideView, TextRow};
 
@@ -203,12 +205,14 @@ pub struct Layout {
     pub grid: (u16, u16),
     /// Width of the host colour bar at a tab's left edge.
     pub host_bar: f32,
-    /// The file panel, its divider included: the right half of what the terminal has
-    /// without one. Empty, like the four below, when no panel is open or the window is too
+    /// The file panel, its divider included: the right part of what the terminal has
+    /// without one. Empty, like the five below, when no panel is open or the window is too
     /// narrow for one.
     pub side: Rect,
     /// The line between the terminal and the panel.
     pub side_divider: Rect,
+    /// The divider and `grab` pixels either side of it: its handle for dragging.
+    pub side_grab: Rect,
     /// The panel's header: one row, as high as the tab bar.
     pub side_header: Rect,
     /// The panel's text: `side_lines` lines of `side_cols` columns, half a cell right of the
@@ -241,8 +245,11 @@ pub enum Hit {
     /// The tab bar right of the last tab.
     TabBar,
     Terminal,
-    /// The file panel, where nothing is to click: its text, its divider, the path.
+    /// The file panel, where nothing is to click: its text, the path.
     Side,
+    /// The line left of the file panel and a few pixels either side of it: dragging it makes
+    /// the panel wider or narrower.
+    SideDivider,
     /// `Open in app` in the file panel's header.
     SideOpen,
     /// The `×` of the file panel.
@@ -281,46 +288,126 @@ pub fn side_header(cols: usize) -> SideHeader {
 /// Lays the window out with no file panel. `window` is the surface size in physical pixels,
 /// `m` the cell box of the atlas at the current scale and font size.
 pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) -> Layout {
-    layout_with(window, scale, m, theme, false)
+    layout_with(window, scale, m, theme, None)
 }
 
-/// `layout`, and with `side_open` the terminal's area split for the file panel.
+/// What is right of the session list, across: the sizes the terminal and the file panel are
+/// made from, in physical pixels.
+struct Across {
+    cell_w: f32,
+    /// Thickness of a line.
+    line: f32,
+    /// Width of the session list.
+    list_w: f32,
+    /// Width of the line right of it.
+    sep_w: f32,
+    /// Everything right of that line.
+    right_w: f32,
+    /// Left of the terminal's text and of the panel's.
+    /// (tmls's terminal is a kitty window with kitty's own padding; half a cell here.)
+    pad: f32,
+}
+
+impl Across {
+    fn new(win_w: f32, scale: f32, m: &CellMetrics, theme: &Theme) -> Across {
+        let cell_w = m.width.max(1.0);
+        let line = (theme.border * scale).round().max(1.0);
+        // The sidebar never takes more than half the window.
+        let list_w = (theme.sidebar_cols as f32 * cell_w).min((win_w / 2.0).floor());
+        let sep_w = line.min((win_w - list_w).max(0.0));
+        let right_w = (win_w - list_w - sep_w).max(0.0);
+        Across {
+            cell_w,
+            line,
+            list_w,
+            sep_w,
+            right_w,
+            pad: (cell_w / 2.0).round().min((right_w - cell_w).max(0.0)),
+        }
+    }
+
+    /// What a panel takes beside its columns: the divider and the padding.
+    fn panel_edge(&self) -> f32 {
+        self.line + self.pad
+    }
+
+    /// The most columns a panel can have: the terminal keeps its padding and
+    /// `PANEL_MIN_COLS` columns. `None` when that is less than `PANEL_MIN_COLS` itself: no
+    /// panel fits.
+    fn panel_most(&self) -> Option<usize> {
+        let least = PANEL_MIN_COLS as f32 * self.cell_w;
+        let room = self.right_w - self.pad - least - self.panel_edge();
+        let most = (room / self.cell_w).floor();
+        (most >= PANEL_MIN_COLS as f32).then_some(most as usize)
+    }
+
+    /// Width of a panel asked to be `cols` columns wide, its divider and padding included;
+    /// zero when none fits.
+    fn panel_w(&self, cols: usize) -> f32 {
+        match self.panel_most() {
+            Some(most) => cols.clamp(PANEL_MIN_COLS, most) as f32 * self.cell_w + self.panel_edge(),
+            None => 0.0,
+        }
+    }
+}
+
+/// The columns a file panel opens with while the user has not dragged its divider: what fits
+/// in half of the area right of the session list, beside the divider and the padding — and,
+/// like any width, never fewer than `PANEL_MIN_COLS` nor so many that the terminal has fewer.
+/// Zero when the window has no room for a panel. Arguments as for `layout_with`, whose `side`
+/// the result is meant for; it follows the window's size, so the app asks again at every
+/// layout until a width is chosen.
+pub fn default_panel_cols(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) -> usize {
+    let a = Across::new(window.0 as f32, sane_scale(scale), m, theme);
+    let Some(most) = a.panel_most() else {
+        return 0;
+    };
+    let half = (a.right_w / 2.0).floor() - a.panel_edge();
+    ((half.max(0.0) / a.cell_w).floor() as usize).clamp(PANEL_MIN_COLS, most)
+}
+
+fn sane_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// `layout`, and with `side` the terminal's area split for the file panel: `Some(cols)` is
+/// the panel's width in columns of text, `None` no panel.
+///
+/// The panel gets the columns asked for, its padding and the divider, but never fewer than
+/// `PANEL_MIN_COLS` columns, and never so many that the terminal is left with fewer than
+/// `PANEL_MIN_COLS`. A window that cannot give both that much has no panel: `Layout::side`
+/// is empty and the layout is the one for `None`. There is no "default" value of `cols`:
+/// a caller with no width of its own passes `default_panel_cols`.
 pub fn layout_with(
     window: (u32, u32),
     scale: f32,
     m: &CellMetrics,
     theme: &Theme,
-    side_open: bool,
+    side: Option<usize>,
 ) -> Layout {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
+    let scale = sane_scale(scale);
     let px = |logical: f32| (logical * scale).round().max(0.0);
     let (win_w, win_h) = (window.0 as f32, window.1 as f32);
     let (cell_w, cell_h) = (m.width.max(1.0), m.height.max(1.0));
     let inset = px(theme.inset);
-    let line = px(theme.border).max(1.0);
-
-    // The sidebar never takes more than half the window.
-    let side_w = (theme.sidebar_cols as f32 * cell_w).min((win_w / 2.0).floor());
-    let sep_w = line.min((win_w - side_w).max(0.0));
+    let across = Across::new(win_w, scale, m, theme);
+    let Across {
+        line,
+        list_w: side_w,
+        sep_w,
+        right_w,
+        pad,
+        ..
+    } = across;
     let right_x = side_w + sep_w;
-    let right_w = (win_w - right_x).max(0.0);
 
     // The tab bar and the status line never take more than a third of the height each.
     let bar_h = (cell_h + 2.0 * inset).min((win_h / 3.0).floor());
-    // (tmls's terminal is a kitty window with kitty's own padding; half a cell here.)
-    let pad = (cell_w / 2.0).round().min((right_w - cell_w).max(0.0));
-    // The file panel: the right half, if that leaves a column each for the terminal and for
-    // the panel's text beside the divider and the padding.
-    let half = (right_w / 2.0).floor();
-    let panel_w = if side_open && half >= line + pad + cell_w && right_w - half >= pad + cell_w {
-        half
-    } else {
-        0.0
-    };
+    let panel_w = side.map_or(0.0, |cols| across.panel_w(cols));
     let terminal = Rect {
         x: right_x + pad,
         y: bar_h,
@@ -353,7 +440,7 @@ pub fn layout_with(
     let buttons_y = terminal.y + (term_rows - BUTTONS.len() as f32) * cell_h;
     let legend_y = buttons_y - LEGEND_LINES as f32 * cell_h;
     let foot = legend_y - line - inset >= MIN_LIST_LINES as f32 * cell_h;
-    let across = Rect {
+    let below = Rect {
         x: 0.0,
         y: win_h,
         w: side_w,
@@ -364,18 +451,21 @@ pub fn layout_with(
             Rect {
                 y: legend_y,
                 h: LEGEND_LINES as f32 * cell_h,
-                ..across
+                ..below
             },
             Rect {
                 y: buttons_y,
                 h: BUTTONS.len() as f32 * cell_h,
-                ..across
+                ..below
             },
         ),
-        false => (across, across),
+        false => (below, below),
     };
     let list_bottom = if foot { legend_y - line } else { win_h };
     let list_lines = ((list_bottom - inset).max(0.0) / cell_h).floor() as usize;
+    // Not into the terminal's cells left of the list's line: the padding there at most.
+    let grab = px(6.0).min(pad);
+    let side_grab = if panel_w > 0.0 { grab } else { 0.0 };
     Layout {
         window: (win_w, win_h),
         cell: (cell_w, cell_h),
@@ -385,8 +475,7 @@ pub fn layout_with(
             w: side_w,
             h: win_h,
         },
-        // Not into the terminal's cells: the padding left of them at most.
-        grab: px(6.0).min(pad),
+        grab,
         separator: Rect {
             x: side_w,
             y: 0.0,
@@ -396,7 +485,7 @@ pub fn layout_with(
         list: Rect {
             y: inset,
             h: list_lines as f32 * cell_h,
-            ..across
+            ..below
         },
         list_lines,
         list_cols: (side_w / cell_w).floor() as usize,
@@ -420,6 +509,11 @@ pub fn layout_with(
         side,
         side_divider: Rect {
             w: side_line,
+            ..side
+        },
+        side_grab: Rect {
+            x: side.x - side_grab,
+            w: side_line + 2.0 * side_grab,
             ..side
         },
         side_header,
@@ -538,6 +632,10 @@ impl Layout {
                 .find(|(_, _, at, start, cols)| *at == row && (*start..start + cols).contains(&col))
                 .filter(|_| self.buttons.contains(x, y));
             return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
+        }
+        // Before the panel and the terminal: the handle is over the edge of both.
+        if self.side_grab.contains(x, y) {
+            return Hit::SideDivider;
         }
         if self.side.contains(x, y) {
             return self.side_hit(x, y);

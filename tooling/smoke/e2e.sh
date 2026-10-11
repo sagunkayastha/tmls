@@ -458,6 +458,47 @@ if click 300 11; then
   check "screenshot 12b-file-panel" shot 12b-file-panel
   click 1100 400 wheel-down 3
   check "screenshot 12c-file-panel-scrolled" shot 12c-file-panel-scrolled
+  # The divider. Right of the list (28 cells and its line: 225 px) are 1055 px; the panel opens
+  # with what fits in half of them, the line, 4 px of padding and 65 columns: 525 px, so the
+  # divider is the pixel column 755. Dragged 200 px to the right it leaves the panel 40 columns
+  # (1280 - 955 - 5 = 320 px) and the terminal 25 more; the width is saved when the button
+  # comes up. Nothing was saved before: the panel opened with the default.
+  UI="$HOME/.config/tmls-rs/ui"
+  wider_than() { [ "$(pane_cols)" -gt "$1" ]; }
+  ui_has() { grep -qxF -- "$1" "$UI" 2>/dev/null; }
+  check "before a drag there is no ~/.config/tmls-rs/ui" test ! -e "$UI"
+  COLS_PANEL=$(pane_cols)
+  click drag 755 400 955
+  if wait_for 8 wider_than "$COLS_PANEL"; then
+    pass "dragging the panel's divider to the right widens the pane ($COLS_PANEL -> $(pane_cols) columns)"
+  else
+    fail "dragging the panel's divider to the right widens the pane" "columns $COLS_PANEL -> $(pane_cols)"
+  fi
+  if wait_for 3 ui_has "panel_cols=40"; then
+    pass "after the drag ~/.config/tmls-rs/ui holds panel_cols=40"
+  else
+    fail "after the drag ~/.config/tmls-rs/ui holds panel_cols=40" "ui: $(tr '\n' '|' <"$UI" 2>&1)"
+  fi
+  check "screenshot 12d-divider-dragged" shot 12d-divider-dragged
+  COLS_DRAGGED=$(pane_cols)
+  # Back to the left, past what the terminal can give: it keeps its 20 columns.
+  click drag 955 400 240
+  if wait_for 8 as_wide_as 20; then
+    pass "dragged far to the left the divider stops where the terminal has 20 columns"
+  else
+    fail "dragged far to the left the divider stops where the terminal has 20 columns" "columns $COLS_DRAGGED -> $(pane_cols)"
+  fi
+  check "screenshot 12e-divider-far-left" shot 12e-divider-far-left
+  # And from there (the divider is the pixel column 395 now) to where it was dragged first; a
+  # click on it without a move changes nothing.
+  click drag 395 400 955
+  click 955 400
+  if wait_for 8 as_wide_as "$COLS_DRAGGED" && wait_for 3 ui_has "panel_cols=40"; then
+    pass "dragged back the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40 again"
+  else
+    fail "dragged back the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40 again" \
+      "columns $(pane_cols); ui: $(tr '\n' '|' <"$UI" 2>&1)"
+  fi
   keys -M alt -M shift -k x -m shift -m alt
   if wait_for 8 as_wide_as "$COLS_BEFORE"; then
     pass "Alt+Shift+X closes the panel: the pane has its $COLS_BEFORE columns again"

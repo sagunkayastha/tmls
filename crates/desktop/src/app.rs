@@ -79,7 +79,8 @@ use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
-use crate::theme::{SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
+use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
+use crate::uistate::{self, UiState};
 use crate::viewer::{self, Opened, SidePanel};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
@@ -383,6 +384,14 @@ struct Running {
     quit: bool,
     /// The list's right edge is being dragged.
     dragging_separator: bool,
+    /// The file panel's divider is being dragged.
+    dragging_divider: bool,
+    /// The file panel's width in columns, once its divider was dragged (now or in an earlier
+    /// run); until then a panel opens with `draw::default_panel_cols`.
+    panel_cols: Option<usize>,
+    /// The dragged widths as they are in `ui_path`, and where that is (`uistate`).
+    ui: UiState,
+    ui_path: Option<PathBuf>,
     /// The pointer is drawn as the resize arrows.
     resize_cursor: bool,
     /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
@@ -455,7 +464,16 @@ impl Running {
         config.desired_maximum_frame_latency = 1;
         surface.configure(&gpu.device, &config);
 
-        let theme = Theme::default();
+        // The widths dragged in an earlier run. The layout keeps them within the window.
+        let ui_path = uistate::path(
+            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+        );
+        let ui = ui_path.as_deref().map(uistate::load).unwrap_or_default();
+        let mut theme = Theme::default();
+        if let Some(cols) = ui.sidebar_cols {
+            theme.sidebar_cols = cols.max(SIDEBAR_MIN_COLS);
+        }
         let mut atlas = Atlas::new(theme.font.clone(), window.scale_factor() as f32);
         atlas.set_max_height(gpu.device.limits().max_texture_dimension_2d);
         let layout = draw::layout(
@@ -548,6 +566,10 @@ impl Running {
             retry_at: None,
             quit: false,
             dragging_separator: false,
+            dragging_divider: false,
+            panel_cols: ui.panel_cols,
+            ui,
+            ui_path,
             resize_cursor: false,
             sketchpad: Config::sketchpad(config_dir),
             side: None,
@@ -604,16 +626,80 @@ impl Running {
         }
     }
 
-    /// Window size, scale factor, font size or the list's width changed, or the file panel
-    /// opened or closed: lays the window out again and tells the tabs how many cells fit now.
-    fn relayout(&mut self) {
-        self.layout = draw::layout_with(
+    /// The file panel's divider follows the pointer, a whole column at a time; the layout
+    /// keeps `PANEL_MIN_COLS` columns on both sides of it. The terminals get their new size at
+    /// once.
+    fn drag_divider(&mut self, x: f32) {
+        let l = &self.layout;
+        if self.side.is_none() || l.side.w <= 0.0 {
+            return;
+        }
+        // Right of the divider at `x`: the line, the padding, the columns.
+        let edge = l.side_body.x - l.side.x;
+        let asked = ((l.window.0 - x - edge) / l.cell.0.max(1.0))
+            .round()
+            .max(0.0) as usize;
+        // As many of them as the layout gives.
+        let cols = self.layout_for(Some(asked)).side_cols;
+        if cols != 0 && cols != self.layout.side_cols {
+            self.panel_cols = Some(cols);
+            self.relayout();
+        }
+    }
+
+    /// A drag of the list's edge or of the panel's divider ended: the widths that were
+    /// dragged, now or before, are written to `~/.config/tmls-rs/ui` if the drag changed one
+    /// (a click on a handle does not). A file that cannot be written shows in the status line.
+    fn save_widths(&mut self) {
+        let list = self.theme.sidebar_cols;
+        let dragged = UiState {
+            sidebar_cols: match list == self.ui.sidebar_cols.unwrap_or(SIDEBAR_COLS) {
+                true => self.ui.sidebar_cols,
+                false => Some(list),
+            },
+            panel_cols: self.panel_cols,
+        };
+        if dragged == self.ui {
+            return;
+        }
+        let Some(path) = self.ui_path.clone() else {
+            return;
+        };
+        let saved = uistate::save(&path, &dragged)
+            .with_context(|| format!("the widths were not saved: {}", path.display()));
+        if saved.is_ok() {
+            self.ui = dragged;
+        }
+        self.report(saved);
+    }
+
+    /// The layout of the window as it is, with a file panel of `side` columns or none.
+    fn layout_for(&self, side: Option<usize>) -> Layout {
+        draw::layout_with(
             (self.config.width, self.config.height),
             self.atlas.scale(),
             &self.atlas.metrics(),
             &self.theme,
-            self.side.is_some(),
-        );
+            side,
+        )
+    }
+
+    /// Window size, scale factor, font size, the list's width or the panel's changed, or the
+    /// file panel opened or closed: lays the window out again and tells the tabs how many
+    /// cells fit now.
+    fn relayout(&mut self) {
+        // A panel whose divider was never dragged has half the columns, whatever the window.
+        let side = self.side.is_some().then(|| {
+            self.panel_cols.unwrap_or_else(|| {
+                draw::default_panel_cols(
+                    (self.config.width, self.config.height),
+                    self.atlas.scale(),
+                    &self.atlas.metrics(),
+                    &self.theme,
+                )
+            })
+        });
+        self.layout = self.layout_for(side);
         self.tabs.resize_all(self.layout.grid);
         self.invalidate();
     }
@@ -1554,7 +1640,12 @@ impl Running {
         if self.dragging_separator {
             self.drag_separator(x);
         }
-        let resize = self.dragging_separator || (self.modal.is_none() && hit == Hit::Separator);
+        if self.dragging_divider {
+            self.drag_divider(x);
+        }
+        let dragging = self.dragging_separator || self.dragging_divider;
+        let on_handle = matches!(hit, Hit::Separator | Hit::SideDivider);
+        let resize = dragging || (self.modal.is_none() && on_handle);
         if resize != self.resize_cursor {
             self.resize_cursor = resize;
             self.window.set_cursor(match resize {
@@ -1562,7 +1653,7 @@ impl Running {
                 false => CursorIcon::Default,
             });
         }
-        if self.dragging_separator {
+        if dragging {
             return;
         }
         let over_terminal = self.modal.is_none() && hit == Hit::Terminal;
@@ -1585,8 +1676,9 @@ impl Running {
             _ => None,
         };
         if state == ElementState::Released {
-            if std::mem::take(&mut self.dragging_separator) {
-                return;
+            let separator = std::mem::take(&mut self.dragging_separator);
+            if separator || std::mem::take(&mut self.dragging_divider) {
+                return self.save_widths();
             }
             if let Some(button) = terminal_button {
                 let acts = self
@@ -1619,6 +1711,7 @@ impl Running {
         }
         match hit {
             Hit::Separator => self.dragging_separator = true,
+            Hit::SideDivider => self.dragging_divider = true,
             Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);

@@ -12,6 +12,7 @@
 //!   beside the terminal or given to the desktop's app.
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
+//! - `uistate` — the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
 //! - `draw`  — the layout of the window and everything but the terminal's cells as quads.
 //! - `app`   — the winit event loop and the wgpu surface: wiring only.
 //!
@@ -29,6 +30,7 @@ pub mod mouse;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme;
+pub mod uistate;
 pub mod viewer;
 
 /// Writes one line to stderr. Unlike `eprintln!` it cannot panic: the terminal the app was

@@ -1,7 +1,9 @@
 //! The window's layout and what a click hits. No atlas: the cell box is given.
 
-use desktop::draw::{Button, Hit, Layout, Rect, SideHeader, layout, layout_with, side_header};
-use desktop::theme::{SIDEBAR_COLS, TAB_MAX_COLS, Theme};
+use desktop::draw::{
+    Button, Hit, Layout, Rect, SideHeader, default_panel_cols, layout, layout_with, side_header,
+};
+use desktop::theme::{PANEL_MIN_COLS, SIDEBAR_COLS, TAB_MAX_COLS, Theme};
 use s2_wgpu::gfx::atlas::CellMetrics;
 
 /// A 10 x 20 pixel cell.
@@ -255,8 +257,16 @@ fn the_list_is_as_wide_as_the_theme_says() {
 
 // --- the file panel -----------------------------------------------------------------------------
 
+/// The panel as it opens: no width was chosen yet.
 fn with_panel(width: u32, height: u32) -> Layout {
-    layout_with((width, height), 1.0, &cell(), &Theme::default(), true)
+    let (m, theme) = (cell(), Theme::default());
+    let cols = default_panel_cols((width, height), 1.0, &m, &theme);
+    layout_with((width, height), 1.0, &m, &theme, Some(cols))
+}
+
+/// A panel asked to be `cols` columns wide.
+fn panel_of(width: u32, height: u32, cols: usize) -> Layout {
+    layout_with((width, height), 1.0, &cell(), &Theme::default(), Some(cols))
 }
 
 #[test]
@@ -265,12 +275,13 @@ fn without_a_panel_nothing_is_laid_out_for_one() {
         let l = at(width, height);
         assert_eq!(
             l,
-            layout_with((width, height), 1.0, &cell(), &Theme::default(), false)
+            layout_with((width, height), 1.0, &cell(), &Theme::default(), None)
         );
         assert_eq!(
             (l.side.w, l.side_divider.w, l.side_cols, l.side_lines),
             (0.0, 0.0, 0, 0)
         );
+        assert_eq!(l.side_grab.w, 0.0);
         assert_eq!(
             (l.side_header.w, l.side_body.w, l.side_body.h),
             (0.0, 0.0, 0.0)
@@ -278,7 +289,7 @@ fn without_a_panel_nothing_is_laid_out_for_one() {
         for (x, y) in [(width as f32 - 1.0, 30.0), (width as f32 - 1.0, 60.0)] {
             assert!(!matches!(
                 l.hit(x, y, 1),
-                Hit::Side | Hit::SideOpen | Hit::SideClose
+                Hit::Side | Hit::SideOpen | Hit::SideClose | Hit::SideDivider
             ));
         }
     }
@@ -308,11 +319,16 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
             closed.buttons
         )
     );
-    // 1000 px right of the list's line: the panel has 500 of them, its divider included.
+    // 1000 px right of the list's line. Half of them hold the divider, the padding and 49
+    // whole columns: the panel is 1 + 5 + 490 px and the terminal has the rest.
+    assert_eq!(
+        default_panel_cols((1281, 726), 1.0, &cell(), &Theme::default()),
+        49
+    );
     let rect = |x, y, w, h| Rect { x, y, w, h };
-    assert_eq!(l.side, rect(781.0, 26.0, 500.0, 674.0));
-    assert_eq!(l.side_divider, rect(781.0, 26.0, 1.0, 674.0));
-    assert_eq!(l.terminal, rect(286.0, 26.0, 495.0, 674.0));
+    assert_eq!(l.side, rect(785.0, 26.0, 496.0, 674.0));
+    assert_eq!(l.side_divider, rect(785.0, 26.0, 1.0, 674.0));
+    assert_eq!(l.terminal, rect(286.0, 26.0, 499.0, 674.0));
     assert_eq!(
         l.terminal.right(),
         l.side_divider.x,
@@ -325,10 +341,15 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
     );
     assert_eq!(closed.grid, (99, 33));
     // The header is a row like the tab bar; the text is half a cell right of the divider.
-    assert_eq!(l.side_header, rect(782.0, 26.0, 499.0, 26.0));
-    assert_eq!(l.side_body, rect(787.0, 52.0, 490.0, 640.0));
+    assert_eq!(l.side_header, rect(786.0, 26.0, 495.0, 26.0));
+    assert_eq!(l.side_body, rect(791.0, 52.0, 490.0, 640.0));
     assert_eq!((l.side_cols, l.side_lines), (49, 32));
-    assert!(l.side_body.right() <= 1281.0 && l.side_body.bottom() <= l.status.y);
+    assert_eq!(
+        l.side_body.right(),
+        1281.0,
+        "the last column ends the window"
+    );
+    assert!(l.side_body.bottom() <= l.status.y);
 }
 
 #[test]
@@ -352,16 +373,16 @@ fn the_header_has_the_path_then_open_in_app_then_the_close_mark() {
 #[test]
 fn clicks_hit_the_panels_close_mark_and_open_in_app() {
     let l = with_panel(1281, 726);
-    // The divider is the panel's; left of it is the terminal.
-    assert_eq!(l.hit(780.9, 300.0, 1), Hit::Terminal);
-    assert_eq!(l.hit(781.0, 300.0, 1), Hit::Side);
+    // The divider (x 785) and five pixels either side of it are the handle for dragging.
+    assert_eq!(l.hit(779.9, 300.0, 1), Hit::Terminal);
+    assert_eq!(l.hit(780.0, 300.0, 1), Hit::SideDivider);
     assert_eq!(l.hit(1000.0, 300.0, 1), Hit::Side, "the text");
     assert_eq!(l.hit(1270.0, 699.0, 1), Hit::Side, "under the last line");
-    // The header's columns start at x 787, ten pixels each.
-    let col = |col: usize| 787.0 + col as f32 * 10.0;
+    // The header's columns start at x 791, ten pixels each.
+    let col = |col: usize| 791.0 + col as f32 * 10.0;
     for (x, hit) in [
-        (781.0, Hit::Side),
-        (786.0, Hit::Side),
+        (785.0, Hit::SideDivider),
+        (790.0, Hit::SideDivider),
         (col(0), Hit::Side),
         (col(33) + 9.0, Hit::Side),
         (col(34), Hit::SideOpen),
@@ -369,12 +390,15 @@ fn clicks_hit_the_panels_close_mark_and_open_in_app() {
         (col(45), Hit::Side),
         (col(46), Hit::SideClose),
         (col(48) + 9.0, Hit::SideClose),
-        // The four pixels right of the last column.
         (1280.0, Hit::SideClose),
     ] {
         assert_eq!(l.hit(x, 30.0, 1), hit, "header, x {x}");
         assert_eq!(l.hit(x, 51.9, 1), hit, "header's last pixel row, x {x}");
-        assert_eq!(l.hit(x, 52.0, 1), Hit::Side, "first line of text, x {x}");
+        let text = match hit {
+            Hit::SideDivider => hit,
+            _ => Hit::Side,
+        };
+        assert_eq!(l.hit(x, 52.0, 1), text, "first line of text, x {x}");
     }
     // Above and below it the window is as before.
     assert_eq!(l.hit(1270.0, 10.0, 0), Hit::TabBar);
@@ -387,46 +411,233 @@ fn clicks_hit_the_panels_close_mark_and_open_in_app() {
 
 #[test]
 fn a_narrow_window_has_a_narrow_panel_or_none() {
-    // 159 px right of the list: 79 for the panel, seven columns each side.
-    let l = with_panel(320, 200);
-    assert_eq!((l.side.x, l.side.w), (241.0, 79.0));
-    assert_eq!((l.grid.0, l.side_cols), (7, 7));
+    // The least that has a panel: right of the list's line the terminal's padding and
+    // `PANEL_MIN_COLS` columns, then the divider, the panel's padding and as many columns.
+    let least = 280 + 1 + 5 + 200 + 1 + 5 + 200;
+    let l = with_panel(least, 300);
+    assert_eq!((l.side.x, l.side.w), (486.0, 206.0));
     assert_eq!(
-        side_header(7),
-        SideHeader {
-            title_cols: 2,
-            open: None,
-            close: Some(5)
-        }
+        (l.grid.0, l.side_cols),
+        (PANEL_MIN_COLS as u16, PANEL_MIN_COLS)
     );
-    assert_eq!(l.hit(300.0, 30.0, 0), Hit::SideClose);
-    assert_eq!(l.hit(260.0, 30.0, 0), Hit::Side);
-    // No room for a column of text on both sides: no panel, and the terminal keeps it all.
-    for (width, height) in [(1, 1), (40, 30), (56, 300)] {
+    assert_eq!(l.hit(680.0, 30.0, 0), Hit::SideClose);
+    assert_eq!(l.hit(500.0, 30.0, 0), Hit::Side);
+    // A pixel less, or much less: no panel, and the terminal keeps it all.
+    for (width, height) in [(1, 1), (40, 30), (56, 300), (320, 200), (least - 1, 300)] {
         let (closed, l) = (at(width, height), with_panel(width, height));
         assert_eq!(l, closed, "{width}x{height}");
+        assert_eq!(l, panel_of(width, height, 40), "{width}x{height}");
     }
     // Any size lays out, with whole pixels and nothing negative.
-    for width in (1..700).step_by(7) {
+    for width in (1..1400).step_by(7) {
         for height in [1, 50, 400] {
-            let l = with_panel(width, height);
-            for r in [
-                l.terminal,
-                l.side,
-                l.side_divider,
-                l.side_header,
-                l.side_body,
-            ] {
-                assert!(r.w >= 0.0 && r.h >= 0.0, "{width}x{height}: {r:?}");
-                assert_eq!(
-                    (r.x.fract(), r.w.fract()),
-                    (0.0, 0.0),
-                    "{width}x{height}: {r:?}"
+            for l in [with_panel(width, height), panel_of(width, height, 33)] {
+                for r in [
+                    l.terminal,
+                    l.side,
+                    l.side_divider,
+                    l.side_grab,
+                    l.side_header,
+                    l.side_body,
+                ] {
+                    assert!(r.w >= 0.0 && r.h >= 0.0, "{width}x{height}: {r:?}");
+                    assert_eq!(
+                        (r.x.fract(), r.w.fract()),
+                        (0.0, 0.0),
+                        "{width}x{height}: {r:?}"
+                    );
+                }
+                assert!(l.side_body.right() <= width as f32 || l.side.w == 0.0);
+                assert!(l.terminal.right() <= l.side.x, "{width}x{height}");
+                assert!(l.grid.0 >= 1);
+                assert!(
+                    l.side.w == 0.0
+                        || (l.side_cols >= PANEL_MIN_COLS && l.grid.0 as usize >= PANEL_MIN_COLS),
+                    "{width}x{height}: {} and {} columns",
+                    l.grid.0,
+                    l.side_cols
                 );
             }
-            assert!(l.side_body.right() <= width as f32 || l.side.w == 0.0);
-            assert!(l.terminal.right() <= l.side.x, "{width}x{height}");
-            assert!(l.grid.0 >= 1);
         }
     }
+}
+
+// --- the panel's width ------------------------------------------------------------------------
+
+/// The window, the scale and the cell of a display at `scale`: 1281 x 726 and 10 x 20 logical
+/// pixels.
+fn display(scale: f32) -> ((u32, u32), CellMetrics) {
+    let px = |logical: f32| (logical * scale).round();
+    let m = CellMetrics {
+        width: px(10.0),
+        height: px(20.0),
+        baseline: px(15.0),
+        underline_y: px(17.0),
+        strike_y: px(10.0),
+        stroke: px(1.0),
+    };
+    ((px(1281.0) as u32, px(726.0) as u32), m)
+}
+
+const SCALES: [f32; 4] = [1.0, 1.25, 1.5, 2.0];
+
+#[test]
+fn the_panel_is_as_wide_as_asked_when_that_fits() {
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let theme = Theme::default();
+        let closed = layout_with(window, scale, &m, &theme, None);
+        let l = layout_with(window, scale, &m, &theme, Some(40));
+        assert_eq!(l.side_cols, 40, "scale {scale}");
+        // The divider, the padding left of the text, the columns.
+        let (line, pad) = (l.side_divider.w, l.side_body.x - l.side_header.x);
+        assert!(line >= 1.0 && pad > 0.0, "scale {scale}");
+        assert_eq!(l.side.w, line + pad + 40.0 * m.width, "scale {scale}");
+        assert_eq!(l.side.right(), window.0 as f32, "scale {scale}");
+        assert_eq!(l.side_body.right(), window.0 as f32, "scale {scale}");
+        assert_eq!(l.terminal.right(), l.side.x, "scale {scale}");
+        assert_eq!(l.terminal.x, closed.terminal.x, "scale {scale}");
+        assert_eq!(
+            l.grid.0,
+            ((closed.terminal.w - l.side.w) / m.width).floor() as u16,
+            "scale {scale}"
+        );
+        // One column more for the panel is one less for the terminal, or the same pixels.
+        let wider = layout_with(window, scale, &m, &theme, Some(41));
+        assert_eq!(wider.side.x, l.side.x - m.width, "scale {scale}");
+    }
+}
+
+#[test]
+fn a_panel_asked_too_wide_leaves_the_terminal_its_least_columns() {
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let theme = Theme::default();
+        for asked in [80, 500, usize::MAX] {
+            let l = layout_with(window, scale, &m, &theme, Some(asked));
+            assert_eq!(
+                l.grid.0, PANEL_MIN_COLS as u16,
+                "scale {scale}, asked {asked}"
+            );
+            assert!(
+                l.terminal.w >= PANEL_MIN_COLS as f32 * m.width,
+                "scale {scale}"
+            );
+            assert!(l.side_cols >= PANEL_MIN_COLS && l.side_cols < asked);
+            // The widest that fits: a column more would take one of the terminal's.
+            assert!(
+                l.terminal.w - m.width < PANEL_MIN_COLS as f32 * m.width,
+                "scale {scale}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_panel_asked_too_narrow_gets_its_least_columns() {
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let theme = Theme::default();
+        let least = layout_with(window, scale, &m, &theme, Some(PANEL_MIN_COLS));
+        assert_eq!(least.side_cols, PANEL_MIN_COLS, "scale {scale}");
+        for asked in [0, 1, PANEL_MIN_COLS - 1] {
+            let l = layout_with(window, scale, &m, &theme, Some(asked));
+            assert_eq!(l, least, "scale {scale}, asked {asked}");
+        }
+    }
+}
+
+#[test]
+fn a_window_with_too_few_columns_right_of_the_list_has_no_panel() {
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let theme = Theme::default();
+        // The list and one column short of `PANEL_MIN_COLS` twice; and exactly twice, which
+        // the divider and the padding do not fit beside.
+        for cols in [2 * PANEL_MIN_COLS - 1, 2 * PANEL_MIN_COLS] {
+            let width = ((SIDEBAR_COLS + cols) as f32 * m.width) as u32;
+            let closed = layout_with((width, window.1), scale, &m, &theme, None);
+            assert_eq!(closed.sidebar.w, SIDEBAR_COLS as f32 * m.width);
+            for asked in [0, PANEL_MIN_COLS, 40, 500] {
+                let l = layout_with((width, window.1), scale, &m, &theme, Some(asked));
+                assert_eq!(l.side.w, 0.0, "scale {scale}, {cols} columns");
+                assert_eq!(l.grid, closed.grid, "scale {scale}, {cols} columns");
+                assert_eq!(l, closed, "scale {scale}, {cols} columns");
+            }
+            assert_eq!(
+                default_panel_cols((width, window.1), scale, &m, &theme),
+                0,
+                "scale {scale}: nothing to open with"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_panel_opens_with_half_the_columns_right_of_the_list() {
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let theme = Theme::default();
+        let cols = default_panel_cols(window, scale, &m, &theme);
+        let l = layout_with(window, scale, &m, &theme, Some(cols));
+        assert_eq!(l.side_cols, cols, "scale {scale}");
+        // The terminal has as many, or the one column that is left over.
+        assert!(
+            l.grid.0 as usize == cols || l.grid.0 as usize == cols + 1,
+            "scale {scale}: {} and {cols}",
+            l.grid.0
+        );
+    }
+    // Half of 411 px has 19 columns beside the divider and the padding: the least it is.
+    let width = 280 + 1 + 5 + 200 + 1 + 5 + 200;
+    assert_eq!(
+        default_panel_cols((width, 400), 1.0, &cell(), &Theme::default()),
+        PANEL_MIN_COLS
+    );
+}
+
+#[test]
+fn the_divider_and_a_few_pixels_either_side_of_it_are_its_handle() {
+    let l = panel_of(1281, 726, 40);
+    // 406 px of panel: the divider is the pixel column 875, the handle five more each way.
+    let rect = |x, y, w, h| Rect { x, y, w, h };
+    assert_eq!(l.side_divider, rect(875.0, 26.0, 1.0, 674.0));
+    assert_eq!(l.grab, 5.0);
+    assert_eq!(l.side_grab, rect(870.0, 26.0, 11.0, 674.0));
+    for y in [26.0, 30.0, 300.0, 699.9] {
+        assert_eq!(l.hit(869.9, y, 1), Hit::Terminal, "y {y}");
+        assert_eq!(l.hit(870.0, y, 1), Hit::SideDivider, "y {y}");
+        assert_eq!(l.hit(875.0, y, 1), Hit::SideDivider, "y {y}");
+        assert_eq!(l.hit(880.9, y, 1), Hit::SideDivider, "y {y}");
+        assert_eq!(l.hit(881.0, y, 1), Hit::Side, "y {y}");
+    }
+    // Not above or below the panel.
+    assert_eq!(l.hit(875.0, 25.9, 1), Hit::TabBar);
+    assert_eq!(l.hit(875.0, 700.0, 1), Hit::Status);
+    // The handle follows the scale, and the divider is in the middle of it.
+    for scale in SCALES {
+        let (window, m) = display(scale);
+        let l = layout_with(window, scale, &m, &Theme::default(), Some(40));
+        let (x, w, grab) = (l.side_divider.x, l.side_divider.w, l.grab);
+        assert!(grab >= 1.0, "scale {scale}");
+        assert_eq!(
+            (l.side_grab.x, l.side_grab.w),
+            (x - grab, w + 2.0 * grab),
+            "scale {scale}"
+        );
+        assert_eq!(l.hit(x - grab, 300.0, 1), Hit::SideDivider, "scale {scale}");
+        assert_eq!(
+            l.hit(x + w + grab - 0.1, 300.0, 1),
+            Hit::SideDivider,
+            "scale {scale}"
+        );
+        assert_eq!(
+            l.hit(x - grab - 0.1, 300.0, 1),
+            Hit::Terminal,
+            "scale {scale}"
+        );
+        assert_eq!(l.hit(x + w + grab, 300.0, 1), Hit::Side, "scale {scale}");
+    }
+    // No panel, no handle.
+    assert_eq!(at(1281, 726).hit(875.0, 300.0, 1), Hit::Terminal);
 }

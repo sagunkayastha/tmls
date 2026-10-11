@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use client_core::Config;
 use desktop::draw::{
-    Chrome, Layout, OPEN_IN_APP, Rect, Span, View, keep_end, layout_with, side_header,
-    side_header_spans, side_text_spans,
+    Chrome, Layout, OPEN_IN_APP, Rect, Span, View, default_panel_cols, keep_end, layout_with,
+    side_header, side_header_spans, side_text_spans,
 };
 use desktop::sidebar::Sidebar;
 use desktop::theme::{CLOSE_MARK, COPY_RGB, CURSOR_RGB, Theme};
@@ -202,7 +202,8 @@ fn built(
 ) -> (Vec<Instance>, Vec<Instance>, Layout) {
     let theme = Theme::default();
     let mut atlas = atlas();
-    let l = layout_with(WINDOW, 1.0, &atlas.metrics(), &theme, open);
+    let cols = default_panel_cols(WINDOW, 1.0, &atlas.metrics(), &theme);
+    let l = layout_with(WINDOW, 1.0, &atlas.metrics(), &theme, open.then_some(cols));
     let view = View {
         side: side(&l),
         ..View::default()
@@ -382,7 +383,7 @@ fn no_panel_no_quads() {
     // A panel and a window too narrow for it: nothing is drawn over the terminal.
     let theme = Theme::default();
     let mut atlas = atlas();
-    let l = layout_with((40, 200), 1.0, &atlas.metrics(), &theme, true);
+    let l = layout_with((40, 200), 1.0, &atlas.metrics(), &theme, Some(40));
     assert_eq!(l.side.w, 0.0);
     let view = View {
         side: Some(SideView {
