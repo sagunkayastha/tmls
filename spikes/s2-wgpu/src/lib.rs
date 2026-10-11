@@ -5,6 +5,7 @@
 //! - `input`   — winit keys, IME commits and the wheel → `s2-core` input.
 //! - `select`  — mouse selection in cell coordinates and the text it copies.
 //! - `marks`   — the submit / present / work-done timestamps of the latency log.
+//! - `meta`    — refresh rate and its source for the `meta` line; the `S2_WGPU_NO_UI` switch.
 //! - `session` — one terminal: emulator, key ids, overlays; everything but the window.
 //! - `surface` — what to do when the surface gives no texture; when the app may exit.
 //! - `ui`      — the non-terminal UI: sidebar list, text field, focus, context menu, theme tokens.
@@ -15,6 +16,7 @@ pub mod cli;
 pub mod gfx;
 pub mod input;
 pub mod marks;
+pub mod meta;
 pub mod select;
 pub mod session;
 pub mod surface;

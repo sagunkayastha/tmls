@@ -761,3 +761,218 @@ fn keys_reach_the_child_and_the_log_only_while_the_terminal_has_the_focus() {
     assert_eq!(keys.len(), 4, "a, Tab, b, the commit: {keys:?}");
     assert_eq!(writes, keys, "every logged key was written to the PTY");
 }
+
+/// `ui::key_event` with a real session, as the window calls it.
+fn key_ev(
+    ui: &mut Ui,
+    rig: &mut Rig,
+    key: &WKey,
+    text: Option<&str>,
+    mods: ModifiersState,
+    pressed: bool,
+    repeat: bool,
+) -> Effect {
+    let l = ui.layout((1280, 800), 1.0, &rig.atlas.metrics());
+    ui::key_event(
+        ui,
+        &mut rig.session,
+        &l,
+        now_ns(),
+        key,
+        text,
+        mods,
+        pressed,
+        repeat,
+    )
+}
+
+fn key_and_write_ids(dir: &std::path::Path) -> (Vec<u64>, Vec<u64>) {
+    let events = events(dir);
+    let keys = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Key { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let writes = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Write { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    (keys, writes)
+}
+
+#[test]
+fn a_key_held_while_the_focus_moves_to_the_terminal_types_nothing_there() {
+    // Tab in the field moves the focus to the terminal. The key is still down: its repeats
+    // now arrive with the terminal focused. They are not terminal keys — no `key` line (the
+    // core drops repeats after a focus change, so the line would never get a frame) and no
+    // bytes for the child.
+    let dir = scratch("session_held_key");
+    let log = Log::create(&dir).unwrap();
+    let mut rig = Rig::raw(Some(log.clone()));
+    let mut ui = Ui::new();
+    let none = ModifiersState::empty();
+    let tab = WKey::Named(NamedKey::Tab);
+    let enter = WKey::Named(NamedKey::Enter);
+    let a = WKey::Character("a".into());
+
+    // As the app does on a focus change: the core is told (this is what makes it drop repeats).
+    let told = |ui: &mut Ui, rig: &mut Rig| {
+        if let Some(on) = ui.sync_focus(true).tell_core {
+            rig.session.focus(on);
+        }
+    };
+    told(&mut ui, &mut rig);
+    ui.set_focus(Focus::Field);
+    told(&mut ui, &mut rig);
+
+    assert_eq!(
+        key_ev(&mut ui, &mut rig, &tab, Some("\t"), none, true, false),
+        Effect::Redraw
+    );
+    assert_eq!(ui.focus, Focus::Terminal);
+    told(&mut ui, &mut rig);
+    for _ in 0..5 {
+        assert_eq!(
+            key_ev(&mut ui, &mut rig, &tab, Some("\t"), none, true, true),
+            Effect::None
+        );
+    }
+    key_ev(&mut ui, &mut rig, &tab, None, none, false, false);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        rig.writer.recorded().is_empty(),
+        "{:?}",
+        rig.writer.recorded()
+    );
+    log.flush();
+    assert_eq!(
+        key_and_write_ids(&dir).0,
+        Vec::<u64>::new(),
+        "no key line for the held Tab"
+    );
+
+    // Enter held on a list item: the same.
+    ui.set_focus(Focus::List);
+    told(&mut ui, &mut rig);
+    key_ev(&mut ui, &mut rig, &enter, Some("\r"), none, true, false);
+    assert_eq!(ui.focus, Focus::Terminal);
+    told(&mut ui, &mut rig);
+    key_ev(&mut ui, &mut rig, &enter, Some("\r"), none, true, true);
+    key_ev(&mut ui, &mut rig, &enter, None, none, false, false);
+
+    // A fresh press: the terminal takes keys again, repeats included, as far as this
+    // front-end and the core are concerned.
+    let b = WKey::Character("b".into());
+    key_ev(&mut ui, &mut rig, &b, Some("b"), none, true, false);
+    key_ev(&mut ui, &mut rig, &b, None, none, false, false);
+    rig.until_recorded(b"b");
+
+    // The menu over a focused terminal: Enter picks an item, any other key closes it; held,
+    // neither types into the terminal (no focus change is involved here: the core would
+    // have passed these repeats on).
+    let l = ui.layout((1280, 800), 1.0, &rig.atlas.metrics());
+    ui.context(l.terminal.x + 50.0, 50.0, &l);
+    key_ev(
+        &mut ui,
+        &mut rig,
+        &WKey::Named(NamedKey::ArrowDown),
+        None,
+        none,
+        true,
+        false,
+    );
+    assert_eq!(
+        key_ev(&mut ui, &mut rig, &enter, Some("\r"), none, true, false),
+        Effect::TermCopy
+    );
+    assert!(ui.menu.is_none());
+    key_ev(&mut ui, &mut rig, &enter, Some("\r"), none, true, true);
+    key_ev(&mut ui, &mut rig, &enter, None, none, false, false);
+    ui.context(l.terminal.x + 50.0, 50.0, &l);
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, false);
+    assert!(ui.menu.is_none());
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, true);
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, true);
+    key_ev(&mut ui, &mut rig, &a, None, none, false, false);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        rig.writer.recorded(),
+        b"b",
+        "nothing from the keys that closed the menu"
+    );
+
+    // A fresh press ends it: the key and its own repeats are terminal keys again.
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, false);
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, true);
+    key_ev(&mut ui, &mut rig, &a, Some("a"), none, true, true);
+    key_ev(&mut ui, &mut rig, &a, None, none, false, false);
+    rig.until_recorded(b"baaa");
+    rig.until("the echo", |s| row(s, 0).contains("baaa"));
+    log.flush();
+    let (keys, writes) = key_and_write_ids(&dir);
+    assert_eq!(keys.len(), 4, "b, then a and its two repeats: {keys:?}");
+    assert_eq!(writes, keys, "every key line has its write line");
+}
+
+#[test]
+fn without_the_ui_every_key_is_a_terminal_key() {
+    // `S2_WGPU_NO_UI=1`: the app's shortcuts for the UI do not exist; routing is
+    // `input::key_action` alone, as before the UI.
+    let mut rig = Rig::raw(None);
+    let mut ui = Ui::with_ui(false);
+    let none = ModifiersState::empty();
+    let ctrl = ModifiersState::CONTROL;
+    let tab = WKey::Named(NamedKey::Tab);
+    assert_eq!(
+        key_ev(&mut ui, &mut rig, &tab, None, ctrl, true, false),
+        Effect::None
+    );
+    assert_eq!(ui.focus, Focus::Terminal, "Ctrl+Tab did not move the focus");
+    assert_eq!(
+        key_ev(
+            &mut ui,
+            &mut rig,
+            &WKey::Character("=".into()),
+            None,
+            ctrl,
+            true,
+            false
+        ),
+        Effect::None,
+        "no zoom"
+    );
+    key_ev(
+        &mut ui,
+        &mut rig,
+        &WKey::Character("x".into()),
+        Some("x"),
+        none,
+        true,
+        false,
+    );
+    key_ev(
+        &mut ui,
+        &mut rig,
+        &WKey::Character("x".into()),
+        Some("x"),
+        none,
+        true,
+        true,
+    );
+    // Ctrl+Tab reaches the child (the core encodes it as CSI 27;5;9~), Ctrl+= has no legacy
+    // encoding and sends nothing, then the two x.
+    rig.until("the echo", |s| row(s, 0).contains("xx"));
+    assert_eq!(rig.writer.recorded(), b"\x1b[27;5;9~xx");
+    // The copy / paste chords are still the app's.
+    let c = WKey::Character("C".into());
+    let chord = ctrl | ModifiersState::SHIFT;
+    assert_eq!(
+        key_ev(&mut ui, &mut rig, &c, None, chord, true, false),
+        Effect::TermCopy
+    );
+}

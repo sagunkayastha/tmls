@@ -5,7 +5,7 @@
 //!
 //! Key scheme (in this order):
 //! 1. An open context menu takes every key (arrows, Enter; anything else closes it).
-//! 2. Ctrl+= / Ctrl++ zoom in, Ctrl+− / Ctrl+_ zoom out — everywhere.
+//! 2. Ctrl+= / Ctrl++ zoom in, Ctrl+− zooms out — everywhere.
 //! 3. Ctrl+Tab / Ctrl+Shift+Tab move the focus forwards / backwards — everywhere.
 //!    Plain Tab / Shift+Tab do the same **only outside the terminal**: with the terminal
 //!    focused they are the program's (completion), like every other key.
@@ -142,7 +142,8 @@ pub fn route(
         let shortcut = match logical {
             WinitKey::Character(s) => match s.as_str() {
                 "=" | "+" => Some(Route::Zoom(ZoomDir::In)),
-                "-" | "_" => Some(Route::Zoom(ZoomDir::Out)),
+                // Not "_": Ctrl+_ is 0x1f, undo in readline and Emacs, and stays the terminal's.
+                "-" => Some(Route::Zoom(ZoomDir::Out)),
                 _ => None,
             },
             WinitKey::Named(NamedKey::Tab) => Some(Route::Focus(traversal(shift))),

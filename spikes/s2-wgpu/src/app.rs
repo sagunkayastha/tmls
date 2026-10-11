@@ -41,11 +41,11 @@ use crate::gfx::grid::Scene;
 use crate::gfx::render::{Gpu, Renderer};
 use crate::input;
 use crate::marks::{Marks, PresentPath, WorkDone};
+use crate::meta::{self, Refresh};
 use crate::session::Session;
 use crate::surface::{self, Acquired, Next};
 use crate::ui::draw::{self, UiLayers};
-use crate::ui::focus::Focus;
-use crate::ui::layout::{self, Layout};
+use crate::ui::layout::Layout;
 use crate::ui::theme::{ZoomDir, zoom_step};
 use crate::ui::{self, Effect, Ui};
 
@@ -188,11 +188,20 @@ impl ApplicationHandler<UserEvent> for App {
             running.retry_at = None;
             running.invalidate();
         }
+        if running.meta.first_try.is_some() {
+            // The window may have entered its monitor since the first present.
+            running.write_meta(false);
+        }
         let poll = running.settle_marks().then_some(now + WORK_DONE_POLL);
-        let next = [poll, running.exit_by, running.retry_at]
-            .into_iter()
-            .flatten()
-            .min();
+        let next = [
+            poll,
+            running.exit_by,
+            running.retry_at,
+            running.meta_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
@@ -217,6 +226,8 @@ struct Meta {
     present_mode: &'static str,
     load: &'static str,
     written: bool,
+    /// When `write_meta` first ran: the refresh rate is waited for from then (`meta::META_WAIT`).
+    first_try: Option<Instant>,
 }
 
 struct Running {
@@ -254,10 +265,7 @@ struct Running {
     ime_at: Option<(f32, f32)>,
     /// The window has the keyboard focus.
     window_focused: bool,
-    /// What the session was last told about focus: window focused and terminal focused in it.
-    term_focused: Option<bool>,
-    /// Focus stop and "menu open" at the last `sync_focus`.
-    ui_seen: (Focus, bool),
+
     /// The child has exited: leave at this time at the latest.
     exit_by: Option<Instant>,
     /// `seq` of the frame presented last.
@@ -343,14 +351,16 @@ impl Running {
         surface.configure(&gpu.device, &config);
 
         let scale = window.scale_factor();
-        let ui = Ui::new();
+        // `S2_WGPU_NO_UI=1`: the terminal alone, to measure what the UI costs per frame.
+        let ui = Ui::with_ui(meta::ui_enabled(
+            std::env::var(meta::NO_UI_ENV).ok().as_deref(),
+        ));
         let mut atlas = Atlas::new(ui.theme.font.clone(), scale as f32);
         atlas.set_max_height(gpu.device.limits().max_texture_dimension_2d);
-        let layout = layout::layout(
+        let layout = ui.layout(
             (config.width, config.height),
             atlas.scale(),
             &atlas.metrics(),
-            &ui.theme,
         );
         let (cols, rows) = layout.grid;
         let mut scene = Scene::new();
@@ -383,7 +393,9 @@ impl Running {
             info.driver_info,
             config.format,
             present.as_str(),
-            refresh_rate_millihertz(&window),
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz()),
         );
         Ok(Running {
             marks: log.clone().map(Marks::new),
@@ -392,6 +404,7 @@ impl Running {
                 present_mode: present.as_str(),
                 load: args.load_label.as_str(),
                 written: false,
+                first_try: None,
             },
             paced: present == Present::Fifo,
             window,
@@ -401,7 +414,6 @@ impl Running {
             renderer,
             atlas,
             scene,
-            ui_seen: (ui.focus, false),
             ui,
             layout,
             layers: UiLayers::new(),
@@ -416,7 +428,6 @@ impl Running {
             dirty: true,
             ime_at: None,
             window_focused: false,
-            term_focused: None,
             exit_by: None,
             shown_seq: None,
             retry_at: None,
@@ -459,11 +470,10 @@ impl Running {
     /// Window size, scale factor or font size changed: lays the window out again, moves the
     /// grid and tells the emulator how many cells fit now (`InputMsg::Resize` if that changed).
     fn relayout(&mut self) {
-        self.layout = layout::layout(
+        self.layout = self.ui.layout(
             (self.config.width, self.config.height),
             self.atlas.scale(),
             &self.atlas.metrics(),
-            &self.ui.theme,
         );
         self.scene
             .set_origin(self.layout.terminal.x, self.layout.terminal.y);
@@ -525,27 +535,21 @@ impl Running {
         self.sync_focus();
     }
 
-    /// After anything that may have moved the keyboard focus or opened / closed the menu:
-    /// redraws if so, and tells the session whether the terminal has the focus (window
-    /// focused and terminal focused in it). `false` is the contract's focus-lost marker.
+    /// After anything that may have moved the keyboard focus, opened or closed the menu, or
+    /// changed the window's focus: does what `Ui::sync_focus` says (the decisions are there).
     fn sync_focus(&mut self) {
-        let seen = (self.ui.focus, self.ui.menu.is_some());
-        if seen != self.ui_seen {
-            if seen.0 != self.ui_seen.0 {
-                if seen.0 != Focus::Terminal {
-                    // A composition in the terminal ends when the focus leaves it.
-                    self.session.set_preedit("");
-                }
-                // The list takes keys, not text: j / k must not start a composition.
-                self.window.set_ime_allowed(seen.0 != Focus::List);
-            }
-            self.ui_seen = seen;
-            self.invalidate();
+        let sync = self.ui.sync_focus(self.window_focused);
+        if sync.end_terminal_preedit {
+            self.session.set_preedit("");
         }
-        let on = self.window_focused && self.ui.focus == Focus::Terminal;
-        if self.term_focused != Some(on) {
-            self.term_focused = Some(on);
-            self.session.focus(on);
+        if let Some(allowed) = sync.ime_allowed {
+            self.window.set_ime_allowed(allowed);
+        }
+        if let Some(focused) = sync.tell_core {
+            self.session.focus(focused);
+        }
+        if sync.redraw {
+            self.invalidate();
         }
     }
 
@@ -727,7 +731,7 @@ impl Running {
         let seq = frame.seq;
         let cursor = frame.cursor.map(|cursor| (cursor.col, cursor.row));
 
-        self.write_meta();
+        self.write_meta(false);
         let mut path = SurfacePath {
             queue: &self.gpu.queue,
             window: self.paced.then_some(&*self.window),
@@ -769,16 +773,42 @@ impl Running {
         marks.settle() > 0
     }
 
-    /// The `meta` line, written once, right before the first presented frame: by then the
-    /// window is on its monitor and has its real scale factor.
-    fn write_meta(&mut self) {
-        if std::mem::replace(&mut self.meta.written, true) {
+    /// The monitor's refresh rate as far as winit knows it now (`meta::refresh` picks).
+    fn refresh(&self) -> Refresh {
+        let current = self
+            .window
+            .current_monitor()
+            .map(|monitor| monitor.refresh_rate_millihertz());
+        let available: Vec<Option<u32>> = self
+            .window
+            .available_monitors()
+            .map(|monitor| monitor.refresh_rate_millihertz())
+            .collect();
+        meta::refresh(current, &available)
+    }
+
+    /// The `meta` line, written once. Tried before every present and after every batch of
+    /// events, from the first present on: by then the window has its real scale factor, but
+    /// on Wayland it is on no monitor until after that present, so the line waits (at most
+    /// `meta::META_WAIT`, or until exit) for a refresh rate — see `meta`.
+    fn write_meta(&mut self, exiting: bool) {
+        if self.meta.written {
             return;
         }
         let Some(log) = &self.log else {
+            self.meta.written = true;
             return;
         };
-        let millihertz = refresh_rate_millihertz(&self.window);
+        let refresh = self.refresh();
+        let waited = self
+            .meta
+            .first_try
+            .get_or_insert_with(Instant::now)
+            .elapsed();
+        if !meta::write_now(&refresh, waited, exiting) {
+            return;
+        }
+        self.meta.written = true;
         log.event(&Event::Meta {
             app: "wgpu".to_string(),
             git: env!("S2_GIT").to_string(),
@@ -788,12 +818,30 @@ impl Running {
                 "release"
             }
             .to_string(),
-            // 0.0: the window system did not report a refresh rate.
-            hz: millihertz.map_or(0.0, |mhz| mhz as f64 / 1000.0),
+            // 0.0: unknown (`hz_source: unknown`).
+            hz: refresh.hz(),
             scale: self.window.scale_factor(),
             present_mode: self.meta.present_mode.to_string(),
             load: self.meta.load.to_string(),
         });
+        // `s2_core::latency::Event::Meta` has no field for these two; until it has, they are
+        // on stderr only.
+        eprintln!(
+            "s2-wgpu: meta hz {} hz_source {} ui {} (after {} ms)",
+            refresh.hz(),
+            refresh.source.as_str(),
+            self.ui.enabled(),
+            waited.as_millis(),
+        );
+    }
+
+    /// When `write_meta` has to be tried again at the latest; `None` once it is written or
+    /// before the first present.
+    fn meta_deadline(&self) -> Option<Instant> {
+        match (self.meta.written, self.meta.first_try) {
+            (false, Some(first)) => Some(first + meta::META_WAIT),
+            _ => None,
+        }
     }
 
     /// Keeps the input method's candidate window at the text cursor: the terminal's cursor
@@ -818,7 +866,7 @@ impl Running {
     fn shutdown(mut self) {
         // Stops the sampler thread first, so its last line is in before the final flush.
         drop(self.sampler.take());
-        self.write_meta();
+        self.write_meta(true);
         let _ = self.gpu.device.poll(wgpu::PollType::Poll);
         if let Some(marks) = &mut self.marks {
             marks.finish();
@@ -827,10 +875,6 @@ impl Running {
             log.flush();
         }
     }
-}
-
-fn refresh_rate_millihertz(window: &Window) -> Option<u32> {
-    window.current_monitor()?.refresh_rate_millihertz()
 }
 
 /// The real `PresentPath`: `queue.submit` with the work-done callback, then `present`.

@@ -9,7 +9,7 @@ use s2_wgpu::ui::list::List;
 use s2_wgpu::ui::menu::{ITEMS, Menu, MenuItem, Outcome, clear_key};
 use s2_wgpu::ui::textfield::TextField;
 use s2_wgpu::ui::theme::{UiTheme, ZOOM_MAX, ZOOM_MIN, ZoomDir, zoom_step};
-use s2_wgpu::ui::{Effect, Ui};
+use s2_wgpu::ui::{Effect, FocusSync, Ui};
 use winit::event::Ime;
 use winit::keyboard::{Key as WKey, ModifiersState as Mods, NamedKey};
 
@@ -192,7 +192,6 @@ fn zoom_keys_work_everywhere() {
             ("=", CTRL, ZoomDir::In),
             ("+", CTRL | SHIFT, ZoomDir::In),
             ("-", CTRL, ZoomDir::Out),
-            ("_", CTRL | SHIFT, ZoomDir::Out),
         ] {
             assert_eq!(
                 press(focus, false, &ch(key), None, mods),
@@ -1460,4 +1459,214 @@ fn the_ime_candidate_window_follows_the_focus() {
     // List: no text input.
     ui.set_focus(Focus::List);
     assert_eq!(ui.ime_anchor(&l, Some((3, 2))), None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fix round 1
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn ctrl_underscore_is_the_terminals() {
+    // 0x1f: undo in readline and Emacs. Only Ctrl+= / Ctrl++ / Ctrl+− zoom.
+    let key = ch("_");
+    for mods in [CTRL | SHIFT, CTRL] {
+        for (pressed, repeat) in [(true, false), (true, true), (false, false)] {
+            assert_eq!(
+                route(Focus::Terminal, false, &key, None, mods, pressed, repeat),
+                Route::Terminal(key_action(&key, None, mods, pressed, repeat)),
+                "{mods:?} pressed={pressed} repeat={repeat}"
+            );
+        }
+        for focus in [Focus::List, Focus::Field] {
+            assert_eq!(press(focus, false, &key, None, mods), Route::Ignore);
+        }
+    }
+    match press(Focus::Terminal, false, &key, None, CTRL | SHIFT) {
+        Route::Terminal(Action::Send(ev)) => assert!(ev.mods.ctrl && ev.text.is_none()),
+        other => panic!("Ctrl+_ went to {other:?}"),
+    }
+}
+
+#[test]
+fn a_click_in_the_field_while_composing_changes_nothing() {
+    // The click's column would have to be mapped through the composition's columns; instead
+    // the caret stays where the composition is until it ends.
+    let l = plain_layout();
+    let mut ui = Ui::new();
+    ui.set_focus(Focus::Field);
+    ui.field.insert("abcdef");
+    ui.field.set_preedit("ni");
+    let t = l.field_text;
+    assert_eq!(ui.press(t.x + 10.0, t.y + 5.0, &l), Effect::None);
+    assert_eq!((ui.field.caret(), ui.field.preedit()), (6, "ni"));
+    assert_eq!(ui.field.selection(), None);
+    // No drag starts either.
+    assert_eq!(ui.pointer(t.x + 40.0, t.y + 5.0, &l), Effect::None);
+    assert_eq!(ui.field.selection(), None);
+    ui.release();
+    // Once the composition is over, clicks work again.
+    ui.field.commit("你");
+    assert_eq!(ui.press(t.x + 10.0, t.y + 5.0, &l), Effect::Redraw);
+    assert_eq!(ui.field.caret(), 1);
+    // A click from elsewhere while the field is not composing focuses it as before.
+    ui.release();
+    ui.set_focus(Focus::List);
+    assert_eq!(ui.press(t.x + 20.0, t.y + 5.0, &l), Effect::Redraw);
+    assert_eq!((ui.focus, ui.field.caret()), (Focus::Field, 2));
+}
+
+#[test]
+fn what_the_app_does_after_a_focus_change_is_decided_here() {
+    let l = plain_layout();
+    let nothing = FocusSync::default();
+    let mut ui = Ui::new();
+    // First call, window not focused yet: the core hears "not focused" once; nothing to draw.
+    assert_eq!(
+        ui.sync_focus(false),
+        FocusSync {
+            tell_core: Some(false),
+            ..nothing
+        }
+    );
+    assert_eq!(ui.sync_focus(false), nothing, "nothing changed");
+    // The window gets the focus, the terminal has it inside: the core hears it.
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            tell_core: Some(true),
+            ..nothing
+        }
+    );
+    assert_eq!(ui.sync_focus(true), nothing);
+
+    // Terminal -> list: redraw, the terminal's composition ends, no IME on the list, and the
+    // core gets the focus-lost marker although the window still has the focus.
+    ui.set_focus(Focus::List);
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            redraw: true,
+            end_terminal_preedit: true,
+            ime_allowed: Some(false),
+            tell_core: Some(false),
+        }
+    );
+    assert_eq!(ui.sync_focus(true), nothing);
+    // List -> field: IME back on; the terminal is still without focus (nothing for the core).
+    ui.set_focus(Focus::Field);
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            redraw: true,
+            end_terminal_preedit: true,
+            ime_allowed: Some(true),
+            tell_core: None,
+        }
+    );
+    // The window loses the focus while the field has it: the core already knows.
+    assert_eq!(ui.sync_focus(false), nothing);
+    assert_eq!(ui.sync_focus(true), nothing);
+    // Field -> terminal: the core hears "focused"; the IME stays allowed.
+    ui.set_focus(Focus::Terminal);
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            redraw: true,
+            end_terminal_preedit: false,
+            ime_allowed: Some(true),
+            tell_core: Some(true),
+        }
+    );
+    // Window focus alone, terminal focused inside: only the core is told, as before the UI.
+    assert_eq!(
+        ui.sync_focus(false),
+        FocusSync {
+            tell_core: Some(false),
+            ..nothing
+        }
+    );
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            tell_core: Some(true),
+            ..nothing
+        }
+    );
+
+    // The menu opening or closing is a redraw and nothing else.
+    ui.context(l.terminal.x + 50.0, 50.0, &l);
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            redraw: true,
+            ..nothing
+        }
+    );
+    ui.press(l.terminal.x + 5.0, 5.0, &l);
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            redraw: true,
+            ..nothing
+        }
+    );
+    assert_eq!(ui.sync_focus(true), nothing);
+}
+
+#[test]
+fn without_the_ui_the_window_is_the_terminal_alone() {
+    // `S2_WGPU_NO_UI=1`: the A/B variant for the latency bench.
+    let m = metrics(10.0, 21.0);
+    let mut ui = Ui::with_ui(false);
+    assert!(!ui.enabled());
+    assert!(Ui::new().enabled() && Ui::with_ui(true).enabled());
+    assert_eq!(ui.focus, Focus::Terminal);
+
+    // Layout: no sidebar, the grid at the window's corner with every cell that fits — what
+    // the app had before the UI existed.
+    let l = ui.layout((1600, 1000), 1.25, &m);
+    assert_eq!(
+        l.terminal,
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1600.0,
+            h: 1000.0
+        }
+    );
+    assert_eq!(l.grid, m.grid_for(1600, 1000));
+    for (name, r) in rects(&l) {
+        if name != "terminal" {
+            assert_eq!((r.w, r.h), (0.0, 0.0), "{name}: {r:?}");
+        }
+    }
+    assert_eq!((l.visible_rows, l.field_cols, l.label_cols), (0, 0, 0));
+    // With the UI, `Ui::layout` is `layout::layout`.
+    let with = Ui::new();
+    assert_eq!(
+        with.layout((1600, 1000), 1.25, &m),
+        layout((1600, 1000), 1.25, &m, &with.theme)
+    );
+
+    // Pointer: every press is the terminal's, there is no menu, the wheel is the terminal's.
+    for (x, y) in [(5.0, 5.0), (100.0, 900.0), (1500.0, 500.0)] {
+        assert_eq!(ui.press(x, y, &l), Effect::TermPress);
+        assert_eq!(ui.context(x, y, &l), Effect::None);
+        assert_eq!(ui.wheel(x, y, 3, &l), None);
+        assert_eq!(ui.pointer(x, y, &l), Effect::None);
+    }
+    assert!(ui.menu.is_none());
+    // The focus cannot leave the terminal.
+    assert!(!ui.set_focus(Focus::List));
+    assert!(!ui.set_focus(Focus::Field));
+    assert_eq!(ui.focus, Focus::Terminal);
+    // Window focus is passed to the core as before the UI: nothing else ever changes.
+    assert_eq!(
+        ui.sync_focus(true),
+        FocusSync {
+            tell_core: Some(true),
+            ..FocusSync::default()
+        }
+    );
+    assert_eq!(ui.ime_anchor(&l, Some((3, 2))), Some((30.0, 42.0)));
 }

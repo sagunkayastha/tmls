@@ -208,6 +208,37 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &UiTheme) 
     }
 }
 
+/// The window without any UI (`S2_WGPU_NO_UI`): the terminal fills it from the top-left
+/// corner, as before the UI existed; every other rectangle is empty.
+pub fn terminal_only(window: (u32, u32), m: &CellMetrics) -> Layout {
+    let empty = Rect::default();
+    let (win_w, win_h) = (window.0 as f32, window.1 as f32);
+    Layout {
+        window: (win_w, win_h),
+        cell: (m.width.max(1.0), m.height.max(1.0)),
+        sidebar: empty,
+        separator: empty,
+        list: empty,
+        row_h: m.height.max(1.0),
+        visible_rows: 0,
+        label_cols: 0,
+        form_rule: empty,
+        form_label: empty,
+        field: empty,
+        field_text: empty,
+        field_cols: 0,
+        create: empty,
+        cancel: empty,
+        terminal: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: win_w,
+            h: win_h,
+        },
+        grid: m.grid_for(window.0, window.1),
+    }
+}
+
 impl Layout {
     pub fn hit(&self, x: f32, y: f32) -> Hit {
         let window = Rect {

@@ -635,3 +635,44 @@ fn the_window_through_the_gpu_has_the_layers_in_order() {
         "ends there"
     );
 }
+
+#[test]
+fn without_the_ui_no_quads_are_added() {
+    let mut ui = Ui::with_ui(false);
+    let mut atlas = atlas(1.0);
+    let layout = ui.layout((1280, 800), 1.0, &atlas.metrics());
+    let stats = atlas.stats();
+    let mut layers = UiLayers::new();
+    layers.update(&mut ui, &layout, &mut atlas);
+    assert!(layers.base().is_empty() && layers.top().is_empty());
+    assert_eq!(atlas.stats(), stats, "no glyph was looked up");
+
+    // The draw order then is the terminal's three layers, as before the UI.
+    let frame = text_frame(&["abc"], 20);
+    let mut scene = Scene::new();
+    scene.set_origin(layout.terminal.x, layout.terminal.y);
+    scene.update_cells(&frame, &mut atlas, &ui.theme.terminal);
+    compose(
+        &mut scene,
+        &frame,
+        &mut atlas,
+        &Overlays::default(),
+        &mut ui,
+        &layout,
+        &mut layers,
+    );
+    let order = layer_order(&scene, &layers);
+    let all: Vec<Instance> = order.iter().flat_map(|l| l.iter().copied()).collect();
+    let plain: Vec<Instance> = scene
+        .layers()
+        .iter()
+        .flat_map(|l| l.iter().copied())
+        .collect();
+    assert_eq!(all, plain);
+    assert_eq!(glyphs(&all).len(), 3);
+    assert_eq!(glyphs(&all)[0].pos[0].floor(), glyphs(&all)[0].pos[0]);
+    assert!(
+        glyphs(&all)[0].pos[0] < atlas.metrics().width,
+        "the grid starts at x = 0"
+    );
+}

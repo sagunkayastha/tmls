@@ -169,6 +169,10 @@ impl UiLayers {
             let generation = atlas.generation();
             self.base.clear();
             self.top.clear();
+            if !ui.enabled() {
+                // `S2_WGPU_NO_UI`: nothing but the terminal's own layers is drawn.
+                break;
+            }
             build_base(&mut self.base, ui, layout, atlas);
             build_top(&mut self.top, ui, atlas);
             if atlas.generation() == generation {

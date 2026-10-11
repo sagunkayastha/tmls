@@ -26,7 +26,8 @@ pub mod theme;
 use winit::event::Ime;
 use winit::keyboard::{Key as WinitKey, ModifiersState};
 
-use crate::input::Action;
+use crate::gfx::atlas::CellMetrics;
+use crate::input::{self, Action};
 use crate::session::Session;
 use focus::{FieldKey, Focus, ListKey, Route};
 use layout::{Hit, Layout};
@@ -67,6 +68,32 @@ pub struct Ui {
     pub menu: Option<Menu>,
     /// The left button went down in the field and is still held.
     field_drag: bool,
+    /// `false`: `S2_WGPU_NO_UI` — no sidebar, no menu, the focus stays on the terminal.
+    enabled: bool,
+    /// Focus stop and "menu open" at the last `sync_focus`.
+    seen: (Focus, bool),
+    /// What `sync_focus` last said the core should hear.
+    told_core: Option<bool>,
+    /// The terminal just got the keys back (focus moved to it, or the menu over it closed)
+    /// by a key that may still be held: repeats are not terminal keys until a fresh press.
+    hold_repeats: bool,
+}
+
+/// What the app has to do after the keyboard focus may have moved (`Ui::sync_focus`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusSync {
+    /// The focus stop changed, or the menu opened or closed: draw again.
+    pub redraw: bool,
+    /// The focus stop changed and is not the terminal: a composition in the terminal ends
+    /// (`Session::set_preedit("")`).
+    pub end_terminal_preedit: bool,
+    /// The focus stop changed: `Window::set_ime_allowed` with this. `false` on the list,
+    /// which takes keys, not text — `j` / `k` must not start a composition.
+    pub ime_allowed: Option<bool>,
+    /// `Session::focus` with this: whether the terminal has the keyboard focus (the window
+    /// has it and the terminal has it inside the window). Only when that changed, and on the
+    /// first call. `false` is the contract's focus-lost marker.
+    pub tell_core: Option<bool>,
 }
 
 impl Default for Ui {
@@ -85,13 +112,63 @@ impl Ui {
             field: TextField::new(),
             menu: None,
             field_drag: false,
+            enabled: true,
+            seen: (Focus::Terminal, false),
+            told_core: None,
+            hold_repeats: false,
         }
+    }
+
+    /// `enabled: false` is the window without the UI (`meta::ui_enabled`): the terminal
+    /// alone, as before the UI existed. The focus then never leaves the terminal, no pointer
+    /// event is the UI's, nothing is drawn, and `key_event` is `input::key_action` alone.
+    pub fn with_ui(enabled: bool) -> Ui {
+        Ui {
+            enabled,
+            ..Ui::new()
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The layout for a window of `window` physical pixels: `layout::layout`, or the terminal
+    /// alone when the UI is off.
+    pub fn layout(&self, window: (u32, u32), scale: f32, m: &CellMetrics) -> Layout {
+        if self.enabled {
+            layout::layout(window, scale, m, &self.theme)
+        } else {
+            layout::terminal_only(window, m)
+        }
+    }
+
+    /// Call after every event that may have moved the keyboard focus, opened or closed the
+    /// menu, or changed the window's focus (`window_focused`). Says what the app has to do
+    /// about it; each change is reported once.
+    pub fn sync_focus(&mut self, window_focused: bool) -> FocusSync {
+        let mut sync = FocusSync::default();
+        let now = (self.focus, self.menu.is_some());
+        if now != self.seen {
+            sync.redraw = true;
+            if now.0 != self.seen.0 {
+                sync.end_terminal_preedit = now.0 != Focus::Terminal;
+                sync.ime_allowed = Some(now.0 != Focus::List);
+            }
+            self.seen = now;
+        }
+        let terminal_focused = window_focused && self.focus == Focus::Terminal;
+        if self.told_core != Some(terminal_focused) {
+            self.told_core = Some(terminal_focused);
+            sync.tell_core = Some(terminal_focused);
+        }
+        sync
     }
 
     /// Moves the keyboard focus. A composition in the field ends when the field loses it.
     /// Returns whether the focus changed.
     pub fn set_focus(&mut self, focus: Focus) -> bool {
-        if focus == self.focus {
+        if focus == self.focus || !self.enabled {
             return false;
         }
         if self.focus == Focus::Field {
@@ -99,6 +176,9 @@ impl Ui {
             self.field_drag = false;
         }
         self.focus = focus;
+        // The key that brought the focus here may still be held (Tab in the field, Enter in
+        // the list): see `hold_repeats`.
+        self.hold_repeats |= focus == Focus::Terminal;
         true
     }
 
@@ -126,7 +206,7 @@ impl Ui {
                 match menu.key(key) {
                     Outcome::Stay => Effect::Redraw,
                     Outcome::Close => {
-                        self.menu = None;
+                        self.close_menu();
                         Effect::Redraw
                     }
                     Outcome::Pick(item) => self.pick(item),
@@ -177,9 +257,28 @@ impl Ui {
         Effect::Redraw
     }
 
+    /// Closes the menu. The key that did it may still be held, and the terminal under the
+    /// menu takes keys again from now on: see `hold_repeats`.
+    fn close_menu(&mut self) -> bool {
+        self.hold_repeats = true;
+        self.menu.take().is_some()
+    }
+
+    /// Whether a key event routed to the terminal is really sent there. Auto-repeats of a key
+    /// that was pressed while something else had the keys are not: they would be typed into
+    /// the terminal by a key the user pressed for the list, the field or the menu — and after
+    /// a focus change the core drops them, which would leave `key` lines without a frame.
+    /// A fresh press of any key ends this.
+    fn terminal_takes(&mut self, pressed: bool, repeat: bool) -> bool {
+        if pressed && !repeat {
+            self.hold_repeats = false;
+        }
+        !(pressed && repeat && self.hold_repeats)
+    }
+
     /// A menu item was chosen: the menu closes and the app does the rest.
     fn pick(&mut self, item: MenuItem) -> Effect {
-        self.menu = None;
+        self.close_menu();
         match item {
             MenuItem::Copy => Effect::TermCopy,
             MenuItem::Paste => Effect::TermPaste,
@@ -189,6 +288,9 @@ impl Ui {
 
     /// The left button went down at a window pixel.
     pub fn press(&mut self, x: f32, y: f32, layout: &Layout) -> Effect {
+        if !self.enabled {
+            return Effect::TermPress;
+        }
         if let Some(menu) = self.menu.take() {
             // A click outside only closes the menu; it is not also a click on what is under.
             return menu
@@ -200,6 +302,9 @@ impl Ui {
                 let focused = self.set_focus(Focus::List);
                 Self::redraw_if(self.list.click_row(row) || focused)
             }
+            // While composing, a click in the field changes nothing: its column would have
+            // to be mapped through the composition, and the caret belongs to the IME.
+            Hit::Field { .. } if !self.field.preedit().is_empty() => Effect::None,
             Hit::Field { col } => {
                 self.set_focus(Focus::Field);
                 self.field.click(col);
@@ -235,6 +340,9 @@ impl Ui {
     /// The right button went down: the context menu opens on the terminal (which gets the
     /// focus); anywhere else an open menu closes.
     pub fn context(&mut self, x: f32, y: f32, layout: &Layout) -> Effect {
+        if !self.enabled {
+            return Effect::None;
+        }
         if layout.hit(x, y) == Hit::Terminal {
             self.menu = Some(Menu::open((x, y), layout.window, layout.cell));
             self.set_focus(Focus::Terminal);
@@ -246,6 +354,9 @@ impl Ui {
     /// The wheel turned by `rows` (`input::wheel_rows`) with the pointer at a window pixel.
     /// `None`: not over the sidebar, the terminal scrolls.
     pub fn wheel(&mut self, x: f32, y: f32, rows: i32, layout: &Layout) -> Option<Effect> {
+        if !self.enabled {
+            return None;
+        }
         match layout.hit(x, y) {
             Hit::Terminal | Hit::Outside => None,
             _ => Some(Self::redraw_if(self.list.scroll(rows, layout.visible_rows))),
@@ -322,6 +433,18 @@ pub fn key_event(
     pressed: bool,
     repeat: bool,
 ) -> Effect {
+    if !ui.enabled {
+        // No UI: no focus to route by and no shortcuts of the UI's — the path before A3.
+        return match input::key_action(logical, text, mods, pressed, repeat) {
+            Action::Send(key) => {
+                session.key(t_key_ns, key);
+                Effect::None
+            }
+            Action::Copy => Effect::TermCopy,
+            Action::Paste => Effect::TermPaste,
+            Action::Ignore => Effect::None,
+        };
+    }
     let to = focus::route(
         ui.focus,
         ui.menu.is_some(),
@@ -333,7 +456,9 @@ pub fn key_event(
     );
     match to {
         Route::Terminal(Action::Send(key)) => {
-            session.key(t_key_ns, key);
+            if ui.terminal_takes(key.pressed, key.repeat) {
+                session.key(t_key_ns, key);
+            }
             Effect::None
         }
         Route::Terminal(Action::Copy) => Effect::TermCopy,
