@@ -200,7 +200,8 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   to the program** (shell completion) and never move the focus. `s2-gpui` must bind the same keys the same way, or
   the two checklists and bench runs are not comparable. Ctrl+Tab and Ctrl+Shift+Tab get no `key` line.
 - **`InputMsg::Focus(false)` is sent to the core when the keyboard focus leaves the terminal inside the window**
-  (to the list, the field or an open menu), not only when the window loses focus; `Focus(true)` when it comes back.
+  (to the list or the field; an open context menu does not change what the core is told), not only when the window
+  loses focus; `Focus(true)` when it comes back.
   What the core is sent is "window focused AND terminal focused". Consequences: under mode 1004 the program sees
   focus-out when the user tabs to the sidebar, and queued key repeats are dropped then.
 - **Ctrl+Space is sent with `text: None`** (`Key::Char(' ')`, `mods.ctrl`), like every key with Ctrl held; the core

@@ -122,7 +122,9 @@ System Settings → Display → scale 125 %, then start the app (and once more: 
       `s2-wgpu: scale factor 1.25`. Neither shows 1 or 2: ________
       (The `meta` line exists only in a `--bench` run: read it from the two 125 % runs below. On stderr it
       reads `s2-wgpu: meta scale 1.25 hz … hz_source … ui …`; `cat ~/s2-logs/wgpu-scale125-quiet-ui.stderr`
-      shows it. The `scale factor` line is printed in every run, in the terminal the app was started from.
+      shows it. The `scale factor` line is printed whenever the scale the app is given changes (at 125 %
+      normally once at start); in a bench run it is in `~/s2-logs/<run>.stderr`. No such line on the
+      other-monitor run means both monitors have the same scale.
       If either shows 2: the compositor is giving integer scale + downscaling — record that, it is the
       blurry case.)
 - [ ] Terminal glyphs are crisp (compare with Konsole at the same scale): ________
