@@ -1,2 +1,3 @@
 target/
 target-docker/
+tooling/smoke/__pycache__/
