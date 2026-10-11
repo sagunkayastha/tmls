@@ -27,6 +27,13 @@
 //! gives (`UserEvent::Derived`) and what runs in a session about to be killed
 //! (`UserEvent::Running`) come the same way.
 //!
+//! File path: a Ctrl+click on a path in the terminal (`mouse::Effect::File`) runs
+//! `viewer::open_link` on a thread of its own, which asks the session's host where the file
+//! is and reads it → `UserEvent::Viewed` → text opens the panel beside the terminal
+//! (`viewer::SidePanel`; the layout is made again and the tabs get the narrower grid, as on a
+//! window resize), anything else goes to `xdg-open`. Only the answer to the newest click
+//! counts. The panel's `Open in app` comes the same way (`viewer::open_in_app`).
+//!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
 //! builds quads, submits and presents. Tabs in the back wake the loop too (that is how a tab
@@ -67,11 +74,12 @@ use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
-use crate::links;
+use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
+use crate::viewer::{self, Opened, SidePanel};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -111,6 +119,8 @@ pub enum UserEvent {
     },
     /// What runs in a session the user is asked about killing.
     Running(SessionKey, Vec<String>),
+    /// A clicked file was found and read, or not; the number is the click's (`Running::views`).
+    Viewed(u64, Result<Opened, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -186,6 +196,7 @@ impl ApplicationHandler<UserEvent> for App {
                     running.invalidate();
                 }
             }
+            UserEvent::Viewed(click, result) => running.viewed(click, result),
         }
     }
 
@@ -372,6 +383,12 @@ struct Running {
     resize_cursor: bool,
     /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
     sketchpad: Option<String>,
+    /// The file panel beside the terminal, while one is open.
+    side: Option<SidePanel>,
+    /// Counts the clicks on files: the answer to the latest is the only one taken.
+    views: Arc<AtomicU64>,
+    /// Where copies of other hosts' files go to be opened here.
+    view_cache: Option<PathBuf>,
 }
 
 impl Running {
@@ -529,6 +546,12 @@ impl Running {
             dragging_separator: false,
             resize_cursor: false,
             sketchpad: Config::sketchpad(config_dir),
+            side: None,
+            views: Arc::new(AtomicU64::new(0)),
+            view_cache: viewer::cache_dir(
+                std::env::var_os("XDG_CACHE_HOME").as_deref(),
+                std::env::var_os("HOME").as_deref(),
+            ),
         })
     }
 
@@ -577,14 +600,15 @@ impl Running {
         }
     }
 
-    /// Window size, scale factor, font size or the list's width changed: lays the window out
-    /// again and tells the tabs how many cells fit now.
+    /// Window size, scale factor, font size or the list's width changed, or the file panel
+    /// opened or closed: lays the window out again and tells the tabs how many cells fit now.
     fn relayout(&mut self) {
-        self.layout = draw::layout(
+        self.layout = draw::layout_with(
             (self.config.width, self.config.height),
             self.atlas.scale(),
             &self.atlas.metrics(),
             &self.theme,
+            self.side.is_some(),
         );
         self.tabs.resize_all(self.layout.grid);
         self.invalidate();
@@ -661,6 +685,10 @@ impl Running {
             panel,
             sketch: self.sketchpad.is_some(),
             unread: self.alerts.unread(),
+            side: self
+                .side
+                .as_ref()
+                .map(|side| side.view(self.layout.side_lines, self.layout.side_cols)),
         }
     }
 
@@ -960,6 +988,91 @@ impl Running {
         self.invalidate();
     }
 
+    /// A Ctrl+click on a file path in the front tab: its host is asked for the file on a
+    /// thread; the answer comes back as `UserEvent::Viewed`.
+    fn open_file(&mut self, link: FileLink) {
+        let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
+            return;
+        };
+        self.say(Ok(format!("opening {} on {} …", link.path, key.host)));
+        self.view(move |local, cache| viewer::open_link(&key, &link, local, cache, &viewer::run));
+    }
+
+    /// `Open in app` in the panel's header: the panel's file goes to the desktop's app.
+    fn open_side_in_app(&mut self) {
+        let Some((host, path)) = self
+            .side
+            .as_ref()
+            .map(|side| (side.host.clone(), side.path.clone()))
+        else {
+            return;
+        };
+        self.say(Ok(format!("opening {path} in its app …")));
+        self.view(move |local, cache| {
+            viewer::open_in_app(&host, &path, local, cache, &viewer::run)
+        });
+    }
+
+    /// Runs `work` (this machine's name, the cache directory) on a thread of its own and
+    /// delivers what it gives as the answer to a new click.
+    fn view(
+        &mut self,
+        work: impl FnOnce(&str, Option<&std::path::Path>) -> Result<Opened, String> + Send + 'static,
+    ) {
+        let click = self.views.fetch_add(1, Ordering::SeqCst) + 1;
+        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+        let cache = self.view_cache.clone();
+        std::thread::spawn(move || {
+            let result = work(&local, cache.as_deref());
+            let _ = proxy.send_event(UserEvent::Viewed(click, result));
+        });
+    }
+
+    /// The answer to a click on a file: text opens in the panel (in place of what it showed),
+    /// anything else is started in the desktop's app. An answer to a click that is not the
+    /// latest is dropped (tmls: a newer click cancels the load). What went wrong shows in the
+    /// status line until the next key.
+    fn viewed(&mut self, click: u64, result: Result<Opened, String>) {
+        if click != self.views.load(Ordering::SeqCst) {
+            return;
+        }
+        match result {
+            Ok(Opened::Text(document)) => {
+                let said = match &document.line {
+                    Some(line) => format!("opened {} at line {line}", document.path),
+                    None => format!("opened {}", document.path),
+                };
+                let was_open = self.side.is_some();
+                self.side = Some(SidePanel::text(&document, &self.cfg.local_name));
+                if !was_open {
+                    self.relayout();
+                }
+                let lines = self.layout.side_lines;
+                if let Some(side) = &mut self.side {
+                    side.reveal(lines);
+                }
+                self.say(Ok(said));
+            }
+            Ok(Opened::Outside { target, said }) => {
+                let said = links::open_path(&target).map(|()| said);
+                self.say(Ok(said.unwrap_or_else(|problem| problem)));
+            }
+            Err(problem) => {
+                crate::errln(format_args!("tmls-rs: {problem}"));
+                self.say(Ok(problem));
+            }
+        }
+    }
+
+    /// Closes the file panel: the terminal has its full width again.
+    fn close_side(&mut self) {
+        // An answer still on its way would open it again.
+        self.views.fetch_add(1, Ordering::SeqCst);
+        if self.side.take().is_some() {
+            self.relayout();
+        }
+    }
+
     /// Copies the command that attaches `key`.
     fn copy_attach(&mut self, key: &SessionKey) {
         let local = self.cfg.local_name.clone();
@@ -1043,6 +1156,7 @@ impl Running {
                     self.close_tab(active);
                 }
             }
+            Global::ClosePanel => self.close_side(),
             Global::NextWaiting => self.next_waiting(),
             Global::ZoomIn => self.zoom(ZoomDir::In),
             Global::ZoomOut => self.zoom(ZoomDir::Out),
@@ -1360,6 +1474,7 @@ impl Running {
                     let said = links::open(&url).map(|()| format!("opened {url}"));
                     self.say(said);
                 }
+                Some(Effect::File(link)) => self.open_file(link),
                 None => {}
             }
         }
@@ -1471,7 +1586,10 @@ impl Running {
                 self.tab_changed();
             }
             Hit::TabClose(index) => self.close_tab(index),
+            Hit::SideClose => self.close_side(),
+            Hit::SideOpen => self.open_side_in_app(),
             Hit::List { .. }
+            | Hit::Side
             | Hit::Sidebar
             | Hit::TabBar
             | Hit::Terminal
@@ -1481,7 +1599,7 @@ impl Running {
     }
 
     /// The wheel scrolls what the pointer is over: the front tab (its program's history or the
-    /// scrollback here, `mouse::Pointer::wheel`), or the session list.
+    /// scrollback here, `mouse::Pointer::wheel`), the file panel, or the session list.
     fn wheel(&mut self, delta: &MouseScrollDelta) {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
@@ -1502,6 +1620,16 @@ impl Running {
             Hit::List { .. } | Hit::Button(_) | Hit::Sidebar if rows != 0 => {
                 self.sidebar.scroll(rows);
                 self.invalidate();
+            }
+            Hit::Side | Hit::SideOpen | Hit::SideClose => {
+                let lines = self.layout.side_lines;
+                if self
+                    .side
+                    .as_mut()
+                    .is_some_and(|side| side.scroll(rows, lines))
+                {
+                    self.invalidate();
+                }
             }
             _ => {}
         }

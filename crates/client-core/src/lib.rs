@@ -2,6 +2,7 @@
 //! and what they are doing, the tmux commands that act on them, and the user's tmls configuration.
 
 pub mod config;
+pub mod files;
 pub mod listing;
 pub mod poll;
 pub mod seen;

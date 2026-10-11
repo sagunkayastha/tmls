@@ -397,3 +397,31 @@ fn a_rename_or_kill_asked_from_the_list_leaves_the_keys_in_the_list() {
         }
     }
 }
+
+#[test]
+fn alt_shift_x_closes_the_file_panel_from_the_terminal_and_the_list() {
+    for ev in [ch('X', ALT_SHIFT), ch('x', ALT_SHIFT)] {
+        assert_eq!(global(&ev, Focus::Terminal), Some(Global::ClosePanel));
+        assert_eq!(global(&ev, Focus::Sidebar), Some(Global::ClosePanel));
+        assert_eq!(global(&ev, Focus::Form), None, "a form keeps its keys");
+        // Bound: it is not typed into the session, and holding it does it once.
+        assert_eq!(
+            route(&ev, Focus::Terminal, Some(TabState::Live)),
+            Route::Global(Global::ClosePanel)
+        );
+        assert_eq!(
+            route(&repeat(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+        assert_eq!(
+            route(&release(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+    }
+    // Alone, x is the session's.
+    let plain = ch('x', Mods::default());
+    assert_eq!(
+        route(&plain, Focus::Terminal, Some(TabState::Live)),
+        Route::Terminal
+    );
+}
