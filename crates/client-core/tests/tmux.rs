@@ -299,6 +299,20 @@ fn run_returns_stdout_and_puts_stderr_in_the_error() {
 }
 
 #[test]
+fn run_keeps_output_when_a_pipe_stays_open() {
+    // the background sleep inherits stdout and stderr and holds them after the shell is gone,
+    // as a persisting ssh connection master does
+    let sh = |script: &str| {
+        let started = Instant::now();
+        let result = run(&v(&["sh", "-c", script]), Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_secs(2), "returned after {:?}", started.elapsed());
+        result
+    };
+    assert_eq!(sh("echo out; echo err >&2; sleep 3 &").unwrap(), "out\n");
+    assert_eq!(sh("echo out; echo err >&2; sleep 3 & exit 1").unwrap_err().to_string(), "err");
+}
+
+#[test]
 fn run_kills_a_command_that_takes_too_long() {
     let marker = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tmux-run-{}", std::process::id()));
     let started = Instant::now();

@@ -10,10 +10,11 @@
 //! Nothing here strips `TMUX` from the environment. A caller that attaches from a process which
 //! itself runs inside tmux has to remove it for the attach child (tmux refuses to nest).
 
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -27,8 +28,8 @@ pub const MAX_NAME_CHARS: usize = 100;
 /// How often [`run`] checks its command for exit and timeout.
 const TICK: Duration = Duration::from_millis(2);
 
-/// How long [`run`] waits for the output of a command that has exited (something it started may
-/// still hold the pipe).
+/// How long [`run`] waits for the pipes of a command that has exited to close (something it
+/// started may still hold them); what was read by then is the output.
 const OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 /// A new tmux session to create.
@@ -236,21 +237,41 @@ pub fn valid_session_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads `pipe` to its end on a thread of its own.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
-    let (tx, rx) = channel();
-    if let Some(mut pipe) = pipe {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            let _ = tx.send(bytes);
-        });
-    }
-    rx
+/// What a pipe has given so far, and a channel that closes when the pipe does.
+struct Output {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    ended: Receiver<()>,
 }
 
-fn text(output: &Receiver<Vec<u8>>) -> String {
-    String::from_utf8_lossy(&output.recv_timeout(OUTPUT_GRACE).unwrap_or_default()).into_owned()
+/// Reads `pipe` on a thread of its own, into a buffer the caller can take from at any time.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Output {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let (end, ended) = channel::<()>();
+    if let Some(mut pipe) = pipe {
+        let bytes = bytes.clone();
+        std::thread::spawn(move || {
+            let _end = end; // dropped, and so `ended` closed, when the pipe is at its end
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => bytes.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(&chunk[..n]),
+                    Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    Output { bytes, ended }
+}
+
+impl Output {
+    /// Everything read by the time the pipe closes, or by `deadline` when something the command
+    /// started still holds it open (an ssh connection master, a background job).
+    fn text(&self, deadline: Instant) -> String {
+        let _ = self.ended.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        String::from_utf8_lossy(&self.bytes.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
+    }
 }
 
 /// Runs a command one of the builders made and returns what it printed. Blocks for up to
@@ -283,7 +304,8 @@ pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
         }
         std::thread::sleep(TICK);
     };
-    let (stdout, stderr) = (text(&stdout), text(&stderr));
+    let grace = Instant::now() + OUTPUT_GRACE;
+    let (stdout, stderr) = (stdout.text(grace), stderr.text(grace));
     if status.success() {
         return Ok(stdout);
     }
