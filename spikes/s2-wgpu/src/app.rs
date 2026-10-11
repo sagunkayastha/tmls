@@ -145,6 +145,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => running.rescaled(scale_factor),
             WindowEvent::Occluded(false) => running.invalidate(),
             WindowEvent::Focused(focused) => {
+                // For a test driver: it sends keys only to the window that has the focus.
+                eprintln!("s2-wgpu: focus {focused}");
                 running.window_focused = focused;
                 running.sync_focus();
             }

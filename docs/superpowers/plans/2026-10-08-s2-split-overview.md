@@ -251,6 +251,12 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   a redraw is due). `s2-wgpu`'s own app is unchanged: its wheel still scrolls the viewport and its drag still selects,
   whatever the program asked for. The rules for who gets a mouse event are `crates/desktop/src/mouse.rs`.
 
+**Contract note from desktop v0, Task 8 fix round (2026-10-11; additive):**
+- `s2-wgpu` (binary) and `tmls-rs` print one stderr line per `WindowEvent::Focused`: `s2-wgpu: focus true` /
+  `s2-wgpu: focus false` (`tmls-rs: focus true` / `false`). A test driver reads the last such line and injects keys
+  only while it says `true`. Nothing else changed: no signature, no behaviour, and the line is written inside the
+  `Focused` arm, after the event's time stamp was taken.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:
