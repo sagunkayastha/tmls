@@ -149,7 +149,25 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   variant must name it (or use `..`).
 - **Re-presents:** presenting an already logged frame again (selection, preedit, resize repaint) writes a `frame` line
   with the same `seq`, `t_output_ns: 0` and no keys. Per-frame analysis must skip lines with `t_output_ns == 0`.
-- **`meta.hz` is `0.0` when the window system reports no refresh rate.** Treat it as unknown; never divide by it.
+- **`meta.hz` is `0.0` when the refresh rate is unknown.** Treat it as unknown; never divide by it.
+  *(A3 fix round, 2026-10-11)* How `s2-wgpu` finds it, in this order, never a guess: the monitor the window is on
+  (winit `Window::current_monitor()`); else, if exactly one monitor is connected, that one; else unknown. With several
+  monitors and no current one the rate stays unknown (the fastest is not a safe guess). On Wayland a window is on no
+  monitor until the compositor has mapped it, i.e. until after its first present — a front-end that asks before
+  that gets nothing (this is why `hz` was `0.0` on the PC; `s2-gpui` should check the same). `spikes/s2-wgpu/src/meta.rs`.
+- **When `s2-wgpu` writes `meta`** *(A3 fix round)*: exactly once, at the first of these: before the first present
+  if the rate is known then; else as soon as it becomes known (checked before every present and after every batch of
+  window events); else 1 s after the first present, or at exit, with `hz: 0.0`. So **`meta` is not necessarily the
+  first line and can come after the first `frame` lines** (`key`, `write` and `sample` lines could precede it
+  before, too). Readers must find it by `"ev":"meta"`, not by position. It is never rewritten.
+- **`S2_WGPU_NO_UI=1`** *(A3 fix round; environment, not a flag — the CLI above is unchanged)*: runs `s2-wgpu`
+  without its sidebar / form / menu: the terminal alone at the window's corner, every key a terminal key. For A/B
+  runs that measure what the UI costs per frame. Unset, empty, `0` or `false` = UI on.
+- **Planned extra `meta` fields, NOT in the log yet:** `"ui": true|false` (the switch above) and `"hz_source":
+  "current_monitor"|"only_monitor"|"unknown"`. `latency::Event::Meta` has no place for them and `s2-core` was out of
+  bounds for the round that added the values, so `s2-wgpu` prints them on stderr only, in one line:
+  `s2-wgpu: meta hz <f64> hz_source <source> ui <bool> (after <ms> ms)`. Until the fields exist, a run's variant is
+  known from its log directory name / captured stderr. `analyze.py` must not expect the fields.
 - **`t_work_done_ns` is an upper bound.** The callback runs inside `device.poll`, which the app calls on the main thread
   after `present()` has returned (then every 500 µs while a line waits), so it is never earlier than `t_present_ns` and
   is later when the main thread is busy. The line is written without the field if the callback has not run within
