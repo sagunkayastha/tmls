@@ -1,9 +1,10 @@
 //! tmls-rs desktop v0, the part with no UI: which hosts to show, what tmux sessions each has
-//! and what they are doing, and the user's tmls configuration.
+//! and what they are doing, the tmux commands that act on them, and the user's tmls configuration.
 
 pub mod config;
 pub mod listing;
 pub mod poll;
+pub mod tmux;
 
 pub use config::{Config, HostColor, default_color};
 pub use listing::{
@@ -11,3 +12,4 @@ pub use listing::{
     parse_listing,
 };
 pub use poll::Poller;
+pub use tmux::{NewSession, Start};
