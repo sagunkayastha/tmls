@@ -96,6 +96,10 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   (generator `make-golden.py` beside them computes the report independently of the Rust code).
 
 **Contract changes from the A1 fix wave (2026-10-10, review `docs/reviews/2026-10-10-opus-s2-core.md`):**
+- **`log.frame(seq, …)` covers every frame taken up to `seq` (B8):** the line carries the keys of all frames taken from
+  the slot with a seq ≤ `seq` that no earlier `frame` line covered, and the `t_output_ns` of the newest of them. So a
+  front-end may take several frames and present only the last; call `log.frame` once per *presented* frame with the seq
+  that was drawn. Frames taken but not yet covered are bounded (256 entries; older ones merge, keys kept).
 - **Keys:** with Ctrl held, pass `text: None` or the control character the toolkit reports (winit's `"\x03"`); control
   characters in `text` are ignored and key + modifiers decide. Ctrl+`[ \ ] / _ @ ^ ?` and Ctrl+`i`/`m` send their C0
   byte in legacy mode. *Printable* text with Ctrl (`text: Some("[")`) is passed to libghostty-vt as is, which then uses
@@ -113,8 +117,8 @@ One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns
 {"ev":"sample","t_ns":0,"cpu_pct":0.0,"rss_kb":0,"fps":0.0,"gpu_util":null,"gpu_w":null}
 ```
 
-Key attribution: a key belongs to the **first frame whose `t_output_ns` ≥ its `t_write_ns`** (emulator fills `keys`).
-`present_kind` must be honest: `present()` return ≠ photon; gpui may only offer a frame callback.
+Key attribution is the `keys` array of the `frame` line (the emulator fills it; rule in "Contract notes from A1" and
+"A1 fix wave" above) — do not re-derive it from the timestamps. `present_kind` must be honest: `present()` return ≠ photon; gpui may only offer a frame callback.
 
 ### App CLI (identical for `s2-wgpu` and `s2-gpui`, so `run.sh` is shared)
 

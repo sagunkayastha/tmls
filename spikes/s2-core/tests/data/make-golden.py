@@ -3,11 +3,16 @@
 
 50 keys, 100 ms apart. For key i the stage times are
   key->write     (i % 5 + 1) * 10 us
-  write->output  (i % 7 + 1) * 100 us
+  write->output  (i % 7 + 1) * 100 us if i % 3 == 0, else -(i % 7 + 1) us
   output->submit (i % 3 + 1) * 1 ms
   submit->present(i % 4 + 1) * 2 ms
 with two exceptions: keys 10 and 11 land in one frame (key 11's), and key 49 is never
 presented. Percentiles are nearest-rank: sorted[ceil(p/100 * n) - 1].
+
+A negative write->output is real: the tty echo can be read before write() returns, so a frame's
+t_output_ns may be a little earlier than the key's t_write_ns. Such a span counts as 0. Two keys
+in three are like that here, so the median of write_to_output is 0 and an analysis that does not
+clamp reports a negative p50.
 The report here is computed independently of the Rust code that the test checks against it.
 """
 import json
@@ -20,7 +25,7 @@ keys, frames = {}, []
 for i in range(50):
     t_key = 1_000 * MS + i * 100 * MS
     t_write = t_key + (i % 5 + 1) * 10 * US
-    t_output = t_write + (i % 7 + 1) * 100 * US
+    t_output = t_write + (i % 7 + 1) * 100 * US if i % 3 == 0 else t_write - (i % 7 + 1) * US
     t_submit = t_output + (i % 3 + 1) * MS
     t_present = t_submit + (i % 4 + 1) * 2 * MS
     keys[i] = (t_key, t_write)
@@ -45,7 +50,7 @@ for f in frames:
     for k in f["keys"]:
         t_key, t_write = keys[k]
         stages["key_to_write"].append(t_write - t_key)
-        stages["write_to_output"].append(f["t_output_ns"] - t_write)
+        stages["write_to_output"].append(max(0, f["t_output_ns"] - t_write))
         stages["output_to_submit"].append(f["t_submit_ns"] - f["t_output_ns"])
         stages["submit_to_present"].append(f["t_present_ns"] - f["t_submit_ns"])
         stages["key_to_present"].append(f["t_present_ns"] - t_key)

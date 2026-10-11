@@ -2,7 +2,7 @@
 //! One JSON object per line with an `"ev"` discriminator; all times are ns from `now_ns()`.
 //! Schema: `docs/superpowers/plans/2026-10-08-s2-split-overview.md`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -33,10 +33,22 @@ pub enum Event {
 
 struct Inner {
     out: BufWriter<File>,
-    /// Frames the front-end took but has not presented yet: seq → (t_output_ns, keys).
-    taken: HashMap<u64, (u64, Vec<u64>)>,
+    /// Frames the front-end took and no `frame` line covers yet: seq → (t_output_ns, keys).
+    /// At most `MAX_TAKEN` entries.
+    taken: BTreeMap<u64, (u64, Vec<u64>)>,
     frames_logged: u64,
 }
+
+impl Inner {
+    fn write(&mut self, ev: &Event) {
+        if serde_json::to_writer(&mut self.out, ev).is_ok() {
+            let _ = self.out.write_all(b"\n");
+        }
+    }
+}
+
+/// How many taken frames wait for a `frame` line before the oldest are merged.
+const MAX_TAKEN: usize = 256;
 
 /// Clone + Send; the front-end and the emulator thread share one log.
 #[derive(Clone)]
@@ -50,15 +62,12 @@ impl Log {
         std::fs::create_dir_all(dir)?;
         let path = dir.join("latency.jsonl");
         let file = File::create(&path).with_context(|| format!("create {}", path.display()))?;
-        let inner = Inner { out: BufWriter::new(file), taken: HashMap::new(), frames_logged: 0 };
+        let inner = Inner { out: BufWriter::new(file), taken: BTreeMap::new(), frames_logged: 0 };
         Ok(Log { inner: Arc::new(Mutex::new(inner)) })
     }
 
     pub fn event(&self, ev: &Event) {
-        let mut inner = self.inner.lock().unwrap();
-        if serde_json::to_writer(&mut inner.out, ev).is_ok() {
-            let _ = inner.out.write_all(b"\n");
-        }
+        self.inner.lock().unwrap().write(ev);
     }
 
     pub fn key(&self, id: u64, t_key_ns: u128) {
@@ -70,11 +79,23 @@ impl Log {
     }
 
     pub(crate) fn frame_taken(&self, seq: u64, t_output_ns: u128, keys: &[u64]) {
-        self.inner.lock().unwrap().taken.insert(seq, (t_output_ns as u64, keys.to_vec()));
+        let mut inner = self.inner.lock().unwrap();
+        inner.taken.insert(seq, (t_output_ns as u64, keys.to_vec()));
+        // A front-end that takes frames and never logs one must not grow this map: past the cap
+        // the oldest entry's keys move into the next one, so no key is dropped.
+        while inner.taken.len() > MAX_TAKEN {
+            let (_, (_, mut keys)) = inner.taken.pop_first().expect("non-empty");
+            if let Some(mut next) = inner.taken.first_entry() {
+                keys.append(&mut next.get_mut().1);
+                next.get_mut().1 = keys;
+            }
+        }
     }
 
-    /// One line per rendered frame. `seq` is the taken `Frame::seq`; its output time and keys
-    /// were recorded when the front-end took it from the slot.
+    /// One line per presented frame. `seq` is the `Frame::seq` that was drawn. The line carries
+    /// that frame's output time and the keys of every frame taken up to and including `seq` that
+    /// no earlier line covered: a front-end that takes two frames and presents only the second
+    /// still gets the first one's keys, on the frame that showed them.
     pub fn frame(&self, seq: u64, t_submit_ns: u128, t_present_ns: u128, t_present_kind: &str) {
         self.frame_with_work_done(seq, t_submit_ns, t_present_ns, t_present_kind, None);
     }
@@ -87,8 +108,15 @@ impl Log {
         t_present_kind: &str,
         t_work_done_ns: Option<u128>,
     ) {
-        let (t_output_ns, keys) = self.inner.lock().unwrap().taken.remove(&seq).unwrap_or_default();
-        self.event(&Event::Frame {
+        let mut inner = self.inner.lock().unwrap();
+        let newer = inner.taken.split_off(&seq.saturating_add(1));
+        let covered = std::mem::replace(&mut inner.taken, newer);
+        let (mut t_output_ns, mut keys) = (0, Vec::new());
+        for (_, (t, mut frame_keys)) in covered {
+            t_output_ns = t;
+            keys.append(&mut frame_keys);
+        }
+        let line = Event::Frame {
             seq,
             t_output_ns,
             t_submit_ns: t_submit_ns as u64,
@@ -96,8 +124,9 @@ impl Log {
             present_kind: t_present_kind.to_string(),
             keys,
             t_work_done_ns: t_work_done_ns.map(|t| t as u64),
-        });
-        self.inner.lock().unwrap().frames_logged += 1;
+        };
+        inner.write(&line);
+        inner.frames_logged += 1;
     }
 
     pub fn frames_logged(&self) -> u64 {
@@ -176,4 +205,63 @@ pub fn report(path: &Path) -> anyhow::Result<Report> {
     }
     let [a, b, c, d, e] = stages.map(Pcts::of);
     Ok(Report { key_to_write: a, write_to_output: b, output_to_submit: c, submit_to_present: d, key_to_present: e })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame_lines(dir: &Path) -> Vec<(u64, u64, Vec<u64>)> {
+        let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+        let mut lines = Vec::new();
+        for line in text.lines() {
+            if let Event::Frame { seq, t_output_ns, keys, .. } = serde_json::from_str(line).unwrap() {
+                lines.push((seq, t_output_ns, keys));
+            }
+        }
+        lines
+    }
+
+    /// `<target>/tmp/<name>`, the directory integration tests get as `CARGO_TARGET_TMPDIR`
+    /// (the test binary is `<target>/<profile>/deps/<name>`). Never the system temp directory.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        exe.ancestors().nth(3).expect("a target directory").join("tmp").join(name)
+    }
+
+    #[test]
+    fn frame_line_folds_in_keys_of_taken_frames_never_logged() {
+        let dir = scratch("latency_fold");
+        let log = Log::create(&dir).unwrap();
+        log.frame_taken(1, 100, &[1]);
+        log.frame_taken(2, 200, &[]);
+        log.frame_taken(3, 300, &[2, 3]);
+        log.frame_taken(4, 400, &[4]);
+        // The front-end drew frame 3 only: it showed what frames 1 and 2 would have.
+        log.frame(3, 310, 320, "present_return");
+        assert_eq!(log.inner.lock().unwrap().taken.len(), 1, "frame 4 still waits");
+        log.frame(4, 410, 420, "present_return");
+        // A seq that was never taken (or is logged twice) has nothing to report.
+        log.frame(4, 510, 520, "present_return");
+        log.flush();
+        assert_eq!(frame_lines(&dir), [(3, 300, vec![1, 2, 3]), (4, 400, vec![4]), (4, 0, vec![])]);
+        assert_eq!(log.frames_logged(), 3);
+        assert!(log.inner.lock().unwrap().taken.is_empty());
+    }
+
+    #[test]
+    fn taken_frames_stay_bounded_and_keep_their_keys() {
+        let dir = scratch("latency_bound");
+        let log = Log::create(&dir).unwrap();
+        for seq in 1..=10_000u64 {
+            log.frame_taken(seq, u128::from(seq), &[seq]);
+        }
+        assert_eq!(log.inner.lock().unwrap().taken.len(), MAX_TAKEN);
+        log.frame(10_000, 1, 2, "present_return");
+        log.flush();
+        let lines = frame_lines(&dir);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].1, 10_000);
+        assert_eq!(lines[0].2, (1..=10_000).collect::<Vec<u64>>());
+    }
 }

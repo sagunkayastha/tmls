@@ -51,6 +51,22 @@ fn press(key: Key, mods: Mods, text: Option<&str>) -> KeyEvent {
     KeyEvent { key, mods, text: text.map(str::to_string), repeat: false, pressed: true }
 }
 
+fn typed(c: char) -> KeyEvent {
+    press(Key::Char(c), Mods::default(), Some(&c.to_string()))
+}
+
+/// The `frame` lines of a latency log: (seq, keys).
+fn logged_frames(dir: &std::path::Path) -> Vec<(u64, Vec<u64>)> {
+    let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+    let mut frames = Vec::new();
+    for line in text.lines() {
+        if let Event::Frame { seq, keys, .. } = serde_json::from_str(line).unwrap() {
+            frames.push((seq, keys));
+        }
+    }
+    frames
+}
+
 #[test]
 fn pty_echo_roundtrip() {
     let pty = cat(80, 24);
@@ -210,6 +226,26 @@ fn key_reaches_pty_and_is_attributed_to_a_frame() {
     let report = latency::report(&dir.join("latency.jsonl")).unwrap();
     assert_eq!(report.key_to_present.n, 1);
     assert!(report.key_to_present.p50 > 0);
+}
+
+/// B8: a frame that was taken but never presented must not lose its keys; they belong to the
+/// next frame the front-end does log.
+#[test]
+fn keys_of_a_taken_frame_that_was_not_presented_are_logged() {
+    let dir = scratch("unpresented_frame");
+    let log = Log::create(&dir).unwrap();
+    let emu = Emu::start(cat(80, 24), 80, 24, Some(log.clone())).unwrap();
+    log.key(1, now_ns());
+    emu.input_tx.send(InputMsg::Key(typed('x'), 1)).unwrap();
+    let (first, _) = frames_until(&emu, |f| f.keys.contains(&1));
+    // The front-end takes a newer frame before it renders, and presents only that one.
+    emu.input_tx.send(InputMsg::Bytes(b"more".to_vec(), now_ns())).unwrap();
+    let (second, _) = frames_until(&emu, |f| f.row_text(0).contains("more"));
+    assert!(second.seq > first.seq && second.keys.is_empty());
+    log.frame(second.seq, now_ns(), now_ns(), "present_return");
+    log.flush();
+    assert_eq!(logged_frames(&dir), [(second.seq, vec![1])]);
+    assert_eq!(latency::report(&dir.join("latency.jsonl")).unwrap().key_to_present.n, 1);
 }
 
 #[test]
