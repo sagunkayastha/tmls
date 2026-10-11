@@ -101,6 +101,26 @@ fn large_paste_into_a_child_that_copies_it_back_completes() {
     assert_no_core_threads();
 }
 
+/// B1 as the review states it: 4 MiB pasted into plain `cat`, tty echo on, so 8 MiB of scrolling
+/// output comes back. `cat` only ends after it has read and written everything up to the end of
+/// input. Ignored by default because a debug build of libghostty-vt parses about 30 KiB/s of
+/// such output; run it with
+/// `cargo test --release -p s2-core --test shutdown -- --ignored`.
+#[test]
+#[ignore = "minutes in a debug build; run with --release"]
+fn large_paste_into_cat_completes() {
+    let _alone = alone();
+    let text = LINE.repeat(4 * 1024 * 1024 / LINE.len() + 1);
+    let emu = Emu::start(sh("cat; echo; echo cat is done; sleep 1000", 80, 24), 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Paste(text)).unwrap();
+    let end_of_input =
+        KeyEvent { key: Key::Char('d'), mods: Mods { ctrl: true, ..Mods::default() }, text: None, repeat: false, pressed: true };
+    emu.input_tx.send(InputMsg::Key(end_of_input, 1)).unwrap();
+    let emu = frame_within(emu, Duration::from_secs(120), |f| has_row(f, "cat is done"));
+    assert!(drops_within(emu, Duration::from_secs(2)), "drop after the paste hung");
+    assert_no_core_threads();
+}
+
 /// B1: input for a child that never reads it stays queued without blocking anything; the
 /// emulator keeps working and drop still returns.
 #[test]
