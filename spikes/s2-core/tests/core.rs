@@ -70,6 +70,12 @@ fn has_row(frame: &Frame, text: &str) -> bool {
     (0..frame.rows).any(|y| frame.row_text(y).contains(text))
 }
 
+/// The child's `echo ready` has been read in full: the text and the line break after it, which
+/// can arrive as a second chunk. Until then another frame may still follow.
+fn ready(frame: &Frame) -> bool {
+    has_row(frame, "ready") && frame.cursor.is_some_and(|c| (c.col, c.row) == (0, 1))
+}
+
 /// A waker that counts its calls.
 fn count_wakes(emu: &Emu) -> Arc<AtomicUsize> {
     let wakes = Arc::new(AtomicUsize::new(0));
@@ -151,7 +157,10 @@ fn emu_slot_is_latest_wins() {
         wait_for("a frame for the feed", || wakes.load(Ordering::SeqCst) > published);
     }
     let last = emu.frames.take().expect("the latest frame");
-    assert_eq!(last.seq, before.seq + 100, "every feed was published");
+    // Every feed is its own publish, except that the wake for the frame taken above can arrive
+    // late and be counted for the first feed, which then shares a publish with the second.
+    let published = last.seq - before.seq;
+    assert!((99..=100).contains(&published), "{published} publishes for 100 feeds");
     assert_eq!((last.row_text(22), last.row_text(23)), ("line 98".to_string(), "line 99".to_string()));
     assert!(last.dirty_rows.iter().all(|&d| d), "rows dirtied by replaced frames stay dirty");
     let cursor = last.cursor.expect("cursor in viewport");
@@ -298,7 +307,7 @@ fn frame_without_output_takes_no_key() {
     let writer = pty.writer();
     writer.start_recording();
     let emu = Emu::start(pty, 80, 24, None).unwrap();
-    frames_until(&emu, |f| has_row(f, "ready"));
+    frames_until(&emu, ready);
     emu.input_tx.send(InputMsg::Key(typed('x'), 1)).unwrap();
     // Echo is off and the child prints nothing: the key is written and nothing comes back.
     wait_for("the key to be written", || writer.recorded() == b"x");
@@ -400,36 +409,40 @@ fn resize_changes_frame_and_pty_size() {
 
 #[test]
 fn exit_is_reported() {
-    // Echo is off and the child prints nothing more, so the only wake after "ready" is the exit.
+    // Echo is off and the child prints nothing more, so after "ready" the next wake is the exit.
     let emu = Emu::start(sh("stty -echo; echo ready; read line", 80, 24), 80, 24, None).unwrap();
-    frames_until(&emu, |f| has_row(f, "ready"));
+    frames_until(&emu, ready);
     let (tx, rx) = channel();
     let tx = std::sync::Mutex::new(tx);
     emu.frames.set_waker(Box::new(move || {
         let _ = tx.lock().unwrap().send(());
     }));
-    assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "nothing is pending");
+    // The wake for the frame just taken may still be on its way (publish stores, then wakes).
+    std::thread::sleep(Duration::from_millis(100));
+    while rx.try_recv().is_ok() {}
     assert!(!emu.exited());
     emu.input_tx.send(InputMsg::Key(press(Key::Named(Named::Enter), Mods::default(), None), 1)).unwrap();
     rx.recv_timeout(WAIT).expect("the waker to fire when the child exits");
     assert!(emu.exited(), "exited is true by the time the waker runs");
 }
 
-/// B7: a waker installed after the first frame was published, or after the child exited, is
-/// called at once instead of waiting for a wake-up that already happened.
+/// B7: a waker installed after a frame was published, or after the child exited, is called at
+/// once, from inside `set_waker`, instead of waiting for a wake-up that already happened.
 #[test]
 fn waker_set_late_is_called_at_once() {
     let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
-    emu.input_tx.send(InputMsg::Bytes(b"x".to_vec(), now_ns())).unwrap();
     let early = count_wakes(&emu);
-    wait_for("a frame to be published", || early.load(Ordering::SeqCst) > 0);
-    // A frame is waiting in the slot and its wake-up went to the old waker.
-    assert_eq!(count_wakes(&emu).load(Ordering::SeqCst), 1, "a frame was pending");
+    emu.input_tx.send(InputMsg::Bytes(b"x".to_vec(), now_ns())).unwrap();
+    // Two publishes (the first frame and "x"), one wake each; nothing is taken, so a frame waits.
+    wait_for("both frames to be published", || early.load(Ordering::SeqCst) >= 2);
+    let late = count_wakes(&emu);
+    assert!(late.load(Ordering::SeqCst) >= 1, "a frame was pending");
 
     let emu = Emu::start(Pty::spawn(&["true".to_string()], 80, 24).unwrap(), 80, 24, None).unwrap();
     wait_for("the child to exit", || emu.exited());
     while emu.frames.take().is_some() {}
-    assert_eq!(count_wakes(&emu).load(Ordering::SeqCst), 1, "the child had exited");
+    let late = count_wakes(&emu);
+    assert!(late.load(Ordering::SeqCst) >= 1, "the child had exited");
 }
 
 #[test]

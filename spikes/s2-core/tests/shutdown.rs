@@ -112,9 +112,10 @@ fn drop_returns_while_input_is_stuck_behind_a_child_that_never_reads() {
         let key = KeyEvent { key: Key::Char('x'), mods: Mods::default(), text: Some("x".into()), repeat: false, pressed: true };
         emu.input_tx.send(InputMsg::Key(key, id)).unwrap();
     }
-    // The emulator thread is not stuck in a write: it still turns output into frames.
-    emu.input_tx.send(InputMsg::Bytes(b"\x1b[2J\x1b[1;1Hstill-alive".to_vec(), s2_core::now_ns())).unwrap();
-    let emu = frame_within(emu, Duration::from_secs(5), |f| has_row(f, "still-alive"));
+    // The emulator thread is not stuck in a write: it still handles what comes after. A resize
+    // shows in every later frame, whatever the tty echo of the accepted input scrolls away.
+    emu.input_tx.send(InputMsg::Resize(100, 30)).unwrap();
+    let emu = frame_within(emu, Duration::from_secs(5), |f| (f.cols, f.rows) == (100, 30));
     assert!(drops_within(emu, Duration::from_secs(2)), "drop hung with input queued");
     assert_no_core_threads();
 }

@@ -32,7 +32,8 @@ fn rows(frame: &Frame) -> Vec<String> {
 /// so a key typed after this returns is not echoed.
 fn emu_with_scrollback() -> (Emu, Frame) {
     let emu = Emu::start(sh("stty -echo; echo ready; sleep 1000", 20, 5), 20, 5, None).unwrap();
-    frame_where(&emu, |f| f.row_text(0) == "ready");
+    // The whole line, break included: a late "\r\n" would land in the middle of the lines below.
+    frame_where(&emu, |f| f.row_text(0) == "ready" && f.cursor.is_some_and(|c| (c.col, c.row) == (0, 1)));
     let mut text = String::new();
     for i in 0..30 {
         text.push_str(&format!("line {i}\r\n"));
