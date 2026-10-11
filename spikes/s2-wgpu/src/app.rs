@@ -385,17 +385,13 @@ impl Running {
         }));
 
         eprintln!(
-            "s2-wgpu: adapter {:?} / {} / {} {}; format {:?}; present {}; scale {scale}; \
-             refresh_rate_millihertz {:?}; grid {cols}x{rows}",
+            "s2-wgpu: adapter {:?} / {} / {} {}; format {:?}; present {}; grid {cols}x{rows}",
             info.backend,
             info.name,
             info.driver,
             info.driver_info,
             config.format,
             present.as_str(),
-            window
-                .current_monitor()
-                .and_then(|monitor| monitor.refresh_rate_millihertz()),
         );
         Ok(Running {
             marks: log.clone().map(Marks::new),
@@ -823,7 +819,8 @@ impl Running {
         meta::write(log, &fixed, &refresh, self.ui.enabled());
         // The log line is the record; this is for someone watching the terminal.
         eprintln!(
-            "s2-wgpu: meta hz {} hz_source {} ui {} (after {} ms)",
+            "s2-wgpu: meta scale {} hz {} hz_source {} ui {} (after {} ms)",
+            fixed.scale,
             refresh.hz(),
             refresh.source.as_str(),
             self.ui.enabled(),
