@@ -27,19 +27,20 @@ impl Seen {
 
     /// Call with every snapshot, as it comes from the poller: marks its unseen sessions.
     /// A session's first listing is never unseen (it finished before anyone could look).
+    /// Applying a snapshot again is fine: its marks stay as they are until [`Seen::opened`].
     pub fn apply(&mut self, snap: &mut HostSnapshot) {
         for session in &mut snap.sessions {
-            let before = self.last.insert(session.key.clone(), session.status);
-            if session.status != Status::Idle {
+            // a snapshot that went through here before says Unseen where the listing said Idle
+            let listed = if session.status == Status::Unseen { Status::Idle } else { session.status };
+            let before = self.last.insert(session.key.clone(), listed);
+            if listed != Status::Idle {
                 self.unseen.remove(&session.key); // working again, or it needs the user
                 continue;
             }
             if matches!(before, Some(Status::Running | Status::Waiting)) {
                 self.unseen.insert(session.key.clone());
             }
-            if self.unseen.contains(&session.key) {
-                session.status = Status::Unseen;
-            }
+            session.status = if self.unseen.contains(&session.key) { Status::Unseen } else { Status::Idle };
         }
     }
 

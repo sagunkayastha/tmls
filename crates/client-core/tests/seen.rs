@@ -160,3 +160,27 @@ fn a_renamed_session_is_a_new_identity() {
     marks(&mut seen, "ph", &[("build", Running)]);
     assert_eq!(marks(&mut seen, "ph", &[("build 2", Idle)]), [Idle]);
 }
+
+#[test]
+fn applying_a_snapshot_twice_keeps_the_mark() {
+    let mut seen = Seen::new();
+    marks(&mut seen, "ph", &[("job", Running), ("quiet", Idle)]);
+    let mut kept = snap("ph", &[("job", Idle), ("quiet", Idle)]);
+    let statuses = |s: &HostSnapshot| s.sessions.iter().map(|s| s.status).collect::<Vec<_>>();
+    seen.apply(&mut kept);
+    assert_eq!(statuses(&kept), [Unseen, Idle]);
+    for _ in 0..3 {
+        seen.apply(&mut kept); // the same snapshot, already marked
+        seen.forget_missing(&kept);
+        assert_eq!(statuses(&kept), [Unseen, Idle]);
+    }
+    // and a fresh listing after that is still unseen
+    assert_eq!(marks(&mut seen, "ph", &[("job", Idle), ("quiet", Idle)]), [Unseen, Idle]);
+
+    // once opened, applying the kept snapshot again takes the mark off it
+    seen.opened(&key("ph", "job"));
+    seen.apply(&mut kept);
+    assert_eq!(statuses(&kept), [Idle, Idle]);
+    seen.apply(&mut kept);
+    assert_eq!(statuses(&kept), [Idle, Idle]);
+}
