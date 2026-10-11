@@ -140,3 +140,36 @@ fn finish_writes_what_is_pending() {
     marks.finish();
     assert_eq!(marks.sink().len(), 2);
 }
+
+#[test]
+fn redraw_entry_is_stamped_and_is_never_after_submit() {
+    // `t_redraw_ns` marks where the main thread stopped taking events: a key whose `t_key_ns`
+    // falls just after a frame's redraw..present window may have waited in the queue.
+    let (mut marks, mut gpu, clock) = setup();
+    marks.begin_redraw();
+    clock.advance(4_000); // taking frames, building quads, acquiring the texture
+    marks.present_frame(1, &mut gpu);
+    // A frame presented without the call (not a code path of the app): the submit time.
+    marks.present_frame(2, &mut gpu);
+    // A redraw that gave up (no texture) and one that presented: the entry of the one that did.
+    marks.begin_redraw();
+    clock.advance(9_000);
+    marks.begin_redraw();
+    clock.advance(1_000);
+    marks.present_frame(3, &mut gpu);
+    marks.finish();
+    let lines = marks.sink();
+    assert_eq!(lines.len(), 3);
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.t_redraw_ns > 0 && l.t_redraw_ns <= l.t_submit_ns)
+    );
+    assert_eq!(lines[0].t_submit_ns - lines[0].t_redraw_ns, 4_010);
+    assert_eq!(lines[1].t_redraw_ns, lines[1].t_submit_ns);
+    assert_eq!(lines[2].t_submit_ns - lines[2].t_redraw_ns, 1_010);
+    assert!(
+        lines[1].t_present_ns < lines[2].t_redraw_ns,
+        "not the previous frame's entry"
+    );
+}

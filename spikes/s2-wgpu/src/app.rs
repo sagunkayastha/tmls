@@ -36,6 +36,7 @@ use crate::gfx::render::{Gpu, Renderer};
 use crate::input::{self, Action};
 use crate::marks::{Marks, PresentPath, WorkDone};
 use crate::session::Session;
+use crate::surface::{self, Acquired, Next};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -99,11 +100,9 @@ impl ApplicationHandler<UserEvent> for App {
                 running.exit_by = Some(Instant::now() + EXIT_WAIT);
             }
             // Drawn here, not at the next compositor frame: the loop is about to end.
+            // `about_to_wait` decides when (a redraw can end without a present).
             if let Err(e) = running.redraw(Redraw::Woken) {
                 self.error = Some(e);
-                event_loop.exit();
-            }
-            if running.session.output_drained() {
                 event_loop.exit();
             }
         } else {
@@ -158,15 +157,22 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         };
         let now = Instant::now();
-        if running.exit_by.is_some_and(|deadline| now >= deadline) {
-            return event_loop.exit();
+        if let Some(deadline) = running.exit_by {
+            let drained = running.session.output_drained();
+            if surface::may_exit(drained, running.shown(), now >= deadline) {
+                return event_loop.exit();
+            }
+        }
+        if running.retry_at.is_some_and(|at| now >= at) {
+            running.retry_at = None;
+            running.invalidate();
         }
         let poll = running.settle_marks().then_some(now + WORK_DONE_POLL);
-        event_loop.set_control_flow(match (poll, running.exit_by) {
-            (Some(poll), Some(exit)) => ControlFlow::WaitUntil(poll.min(exit)),
-            (Some(at), None) | (None, Some(at)) => ControlFlow::WaitUntil(at),
-            (None, None) => ControlFlow::Wait,
-        });
+        let next = [poll, running.exit_by, running.retry_at]
+            .into_iter()
+            .flatten()
+            .min();
+        event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -222,6 +228,10 @@ struct Running {
     ime_cell: Option<(u16, u16)>,
     /// The child has exited: leave at this time at the latest.
     exit_by: Option<Instant>,
+    /// `seq` of the frame presented last.
+    shown_seq: Option<u64>,
+    /// A redraw got no texture and is to be tried again at this time.
+    retry_at: Option<Instant>,
 }
 
 impl Running {
@@ -362,6 +372,8 @@ impl Running {
             dirty: true,
             ime_cell: None,
             exit_by: None,
+            shown_seq: None,
+            retry_at: None,
         })
     }
 
@@ -495,6 +507,9 @@ impl Running {
 
     /// Takes the waiting frames and, if there is something new to show, draws and presents.
     fn redraw(&mut self, cause: Redraw) -> anyhow::Result<()> {
+        if let Some(marks) = &mut self.marks {
+            marks.begin_redraw();
+        }
         let new_frame = self
             .session
             .take_frames(&mut self.scene, &mut self.atlas, &self.theme);
@@ -519,21 +534,36 @@ impl Running {
             (self.config.width, self.config.height),
         );
 
-        let (texture, suboptimal) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.gpu.device, &self.config);
-                self.invalidate();
+        let (acquired, texture) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture) => (Acquired::Ready, Some(texture)),
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                (Acquired::Suboptimal, Some(texture))
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => (Acquired::Outdated, None),
+            wgpu::CurrentSurfaceTexture::Lost => (Acquired::Lost, None),
+            wgpu::CurrentSurfaceTexture::Timeout => (Acquired::Timeout, None),
+            wgpu::CurrentSurfaceTexture::Occluded => (Acquired::Occluded, None),
+            wgpu::CurrentSurfaceTexture::Validation => (Acquired::Validation, None),
+        };
+        let (texture, suboptimal) = match (surface::after_acquire(acquired), texture) {
+            (Next::Present { reconfigure }, Some(texture)) => (texture, reconfigure),
+            // The frames taken above are not on screen (their keys stay in the log until a
+            // frame is presented): this redraw has to happen again.
+            (Next::Retry { reconfigure, after }, _) => {
+                if reconfigure {
+                    self.surface.configure(&self.gpu.device, &self.config);
+                }
+                if after.is_zero() {
+                    self.invalidate();
+                } else {
+                    self.dirty = true;
+                    self.retry_at = Some(Instant::now() + after);
+                }
                 return Ok(());
             }
-            // Not visible, or the compositor is not taking frames: draw at the next redraw.
-            // The frames taken above keep their keys in the log until a frame is presented.
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                self.dirty = true;
-                return Ok(());
+            (Next::Fail, _) | (Next::Present { .. }, None) => {
+                bail!("the surface rejected the frame")
             }
-            wgpu::CurrentSurfaceTexture::Validation => bail!("the surface rejected the frame"),
         };
         let view = texture
             .texture
@@ -564,12 +594,18 @@ impl Running {
             }
         }
         self.dirty = false;
+        self.shown_seq = Some(seq);
         self.settle_marks();
         if suboptimal {
             self.surface.configure(&self.gpu.device, &self.config);
         }
         self.place_ime(cursor);
         Ok(())
+    }
+
+    /// Everything taken from the emulator has been presented.
+    fn shown(&self) -> bool {
+        !self.dirty && self.session.frame().map(|frame| frame.seq) == self.shown_seq
     }
 
     /// Runs wgpu's callbacks and writes the `frame` lines that are complete. Returns whether a

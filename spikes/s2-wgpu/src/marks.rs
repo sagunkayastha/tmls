@@ -7,7 +7,10 @@
 //!   wgpu runs the callback from inside `device.poll`, which the app calls on its own thread, so
 //!   this time is late by up to the app's polling interval.
 //!
-//! None of the three is the time light left the screen.
+//! - `t_redraw_ns` — taken at the entry of the redraw that presented the frame. Carried on
+//!   `FrameLine`, but **not yet in the log file**: see `FrameSink for Log`.
+//!
+//! None of these is the time light left the screen.
 //!
 //! The GPU calls sit behind `PresentPath`, so the order of marks and calls is tested with a
 //! fake. One `frame` line is written per presented frame, in frame order, once its work-done
@@ -27,6 +30,8 @@ pub const WORK_DONE_WAIT_NS: u128 = 100_000_000;
 pub struct FrameLine {
     /// `Frame::seq` of the frame that was drawn.
     pub seq: u64,
+    /// When the redraw that presented this frame began (`Marks::begin_redraw`).
+    pub t_redraw_ns: u128,
     pub t_submit_ns: u128,
     pub t_present_ns: u128,
     pub t_work_done_ns: Option<u128>,
@@ -38,6 +43,9 @@ pub trait FrameSink {
 }
 
 impl FrameSink for s2_core::latency::Log {
+    /// `line.t_redraw_ns` is not written: `latency::Log` builds the `frame` line itself and
+    /// has no way to add a field (`Event::Frame` and `frame_with_work_done` carry only
+    /// `t_work_done_ns` as an extra). It needs a change in `s2-core`.
     fn frame(&mut self, line: FrameLine) {
         self.frame_with_work_done(
             line.seq,
@@ -95,6 +103,8 @@ pub struct Marks<S: FrameSink> {
     clock: Box<dyn Fn() -> u128>,
     /// Presented frames whose line is not written yet, oldest first.
     pending: VecDeque<Pending>,
+    /// Entry time of the redraw in progress.
+    redraw_ns: Option<u128>,
 }
 
 impl<S: FrameSink> Marks<S> {
@@ -108,7 +118,15 @@ impl<S: FrameSink> Marks<S> {
             sink,
             clock,
             pending: VecDeque::new(),
+            redraw_ns: None,
         }
+    }
+
+    /// Call as the first statement of a redraw. From here until `present()` returns the main
+    /// thread takes no events, so a key that arrives in that window gets its `t_key_ns` late.
+    /// If the redraw ends without a present, the next call replaces the stamp.
+    pub fn begin_redraw(&mut self) {
+        self.redraw_ns = Some((self.clock)());
     }
 
     /// Submits and presents the frame `seq` through `path`, taking the marks around the calls.
@@ -121,6 +139,7 @@ impl<S: FrameSink> Marks<S> {
         let t_present_ns = (self.clock)();
         let line = FrameLine {
             seq,
+            t_redraw_ns: self.redraw_ns.take().unwrap_or(t_submit_ns),
             t_submit_ns,
             t_present_ns,
             t_work_done_ns: None,
