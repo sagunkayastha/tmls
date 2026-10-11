@@ -41,13 +41,13 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
         "the cells that fit the terminal's area, not the window"
     );
 
-    // The sidebar from the top: an inset, the list's lines, a line, three lines of legend,
+    // The sidebar from the top: an inset, the list's lines, a line, five lines of legend,
     // the buttons, an inset.
     assert_eq!(l.list_cols, SIDEBAR_COLS);
     assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 3.0, 280.0));
-    assert_eq!(l.list_lines, 31);
-    assert_eq!(l.list.h, 620.0);
-    assert_eq!((l.legend.y, l.legend.h), (643.0, 60.0));
+    assert_eq!(l.list_lines, 29);
+    assert_eq!(l.list.h, 580.0);
+    assert_eq!((l.legend.y, l.legend.h), (603.0, 100.0));
     assert_eq!((l.buttons.y, l.buttons.bottom()), (703.0, 723.0));
     assert!(l.list.bottom() < l.legend.y);
     assert_eq!(
@@ -81,8 +81,8 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     // The list's lines are a cell high, below one inset of padding.
     assert_eq!(l.hit(50.0, 3.0, 2), Hit::List { line: 0, col: 5 });
     assert_eq!(l.hit(279.0, 23.0, 2), Hit::List { line: 1, col: 27 });
-    assert_eq!(l.hit(0.0, 622.9, 2), Hit::List { line: 30, col: 0 });
-    assert_eq!(l.hit(50.0, 623.0, 2), Hit::Sidebar, "under the last line");
+    assert_eq!(l.hit(0.0, 582.9, 2), Hit::List { line: 28, col: 0 });
+    assert_eq!(l.hit(50.0, 583.0, 2), Hit::Sidebar, "under the last line");
     assert_eq!(l.hit(280.5, 26.0, 2), Hit::Sidebar, "the separator");
     assert_eq!(l.hit(50.0, 2.0, 2), Hit::Sidebar, "above the first row");
     // The last three cells of a line are the `+` of a host's header.
@@ -156,14 +156,14 @@ fn many_tabs_share_the_bar() {
 
 #[test]
 fn a_low_window_has_no_legend_and_no_buttons() {
-    // Four lines for the list, or the foot goes: 3 + 4 * 20 + (1 + 4 * 20 + 3) = 167.
-    let l = at(1281, 167);
-    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (60.0, 20.0, 4));
-    let l = at(1281, 166);
+    // Four lines for the list, or the foot goes: 3 + 4 * 20 + (1 + 6 * 20 + 3) = 207.
+    let l = at(1281, 207);
+    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (100.0, 20.0, 4));
+    let l = at(1281, 206);
     assert_eq!((l.legend.h, l.buttons.h), (0.0, 0.0));
-    assert_eq!(l.list_lines, 8, "the list has the whole height");
-    assert_eq!(l.hit(15.0, 150.0, 0), Hit::List { line: 7, col: 1 });
-    assert_eq!(l.hit(15.0, 165.0, 0), Hit::Sidebar);
+    assert_eq!(l.list_lines, 10, "the list has the whole height");
+    assert_eq!(l.hit(15.0, 190.0, 0), Hit::List { line: 9, col: 1 });
+    assert_eq!(l.hit(15.0, 205.0, 0), Hit::Sidebar);
 }
 
 #[test]

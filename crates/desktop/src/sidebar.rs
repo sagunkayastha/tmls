@@ -341,7 +341,25 @@ impl Sidebar {
         pinned
     }
 
-    /// What went wrong at the last `toggle_pin`, once; `Ok` when nothing did.
+    /// A session was renamed here: its pin goes to the new name (tmls does the same), in the
+    /// `pins` file too. Returns whether there was a pin to move. When the file cannot be
+    /// written the old name stays pinned and `take_pin_error` has the reason.
+    pub fn renamed(&mut self, old: &SessionKey, new: &SessionKey) -> bool {
+        let mut pins = self.pins.clone();
+        if !pins.remove(&tmls_slug(old, &self.local_name)) {
+            return false;
+        }
+        pins.insert(tmls_slug(new, &self.local_name));
+        if let Err(e) = Config::save_pins(&self.config_dir, &pins) {
+            self.pin_error = Some(e.context(format!("pin of {} not moved", new.name)));
+            return false;
+        }
+        // The row still has the old name and its ★: the next listing brings the new one, pinned.
+        self.pins = pins;
+        true
+    }
+
+    /// What went wrong at the last `toggle_pin` or `renamed`, once; `Ok` when nothing did.
     pub fn take_pin_error(&mut self) -> anyhow::Result<()> {
         self.pin_error.take().map_or(Ok(()), Err)
     }
@@ -369,15 +387,30 @@ impl Sidebar {
     /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places
     /// on in the pinned (★) sessions listed now, in the list's order, wrapping round; the first
     /// of them when `from` is not pinned. `None` when no listed session is pinned — then the
-    /// keys walk the open tabs.
+    /// keys walk the open tabs, or every session (`list_step`).
     pub fn pin_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
+        self.ring_step(from, step, |key| self.is_pinned(key))
+    }
+
+    /// The same among all the sessions listed now: where the keys go while nothing is pinned
+    /// and fewer than two tabs are open. `None` with an empty list.
+    pub fn list_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
+        self.ring_step(from, step, |_| true)
+    }
+
+    fn ring_step(
+        &self,
+        from: Option<&SessionKey>,
+        step: i32,
+        in_ring: impl Fn(&SessionKey) -> bool,
+    ) -> Option<SessionKey> {
         let ring: Vec<&SessionKey> = self
             .rows
             .iter()
             .filter_map(Row::key)
-            .filter(|key| self.is_pinned(key))
+            .filter(|key| in_ring(key))
             .collect();
-        let at = match from.and_then(|key| ring.iter().position(|pinned| *pinned == key)) {
+        let at = match from.and_then(|key| ring.iter().position(|member| *member == key)) {
             Some(at) => (at as i64 + step as i64).rem_euclid(ring.len() as i64) as usize,
             None => 0,
         };

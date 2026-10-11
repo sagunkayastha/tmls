@@ -879,13 +879,19 @@ impl Running {
                 self.open(&key);
             }
             Request::Rename(old, name) => {
+                let key = SessionKey {
+                    host: old.host.clone(),
+                    name,
+                };
+                // The ★ follows the name. A `pins` file that cannot be written is not worth
+                // hiding that the rename worked: it goes to stderr only.
+                self.sidebar.renamed(&old, &key);
+                if let Err(e) = self.sidebar.take_pin_error() {
+                    crate::errln(format_args!("tmls-rs: {e:#}"));
+                }
                 if let Some(index) = self.tabs.index_of(&old) {
                     let front = self.tabs.active() == Some(index);
                     self.close_tab(index);
-                    let key = SessionKey {
-                        host: old.host,
-                        name,
-                    };
                     let back = self.tabs.active();
                     self.select_when_listed = Some(key.clone());
                     // Also with a form or menu open: the tab is never left closed.
@@ -1030,10 +1036,16 @@ impl Running {
 
     /// Opens the next session after the front tab's that needs the user.
     /// Alt+Shift+Right / Left, as in tmls: among the pinned (★) sessions when any is listed —
-    /// one without a tab gets one — else among the open tabs.
+    /// one without a tab gets one — else among the open tabs, and with fewer than two of
+    /// those among all the sessions.
     fn switch_tab(&mut self, step: i32) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
-        if let Some(key) = self.sidebar.pin_step(front, step) {
+        let pinned = self.sidebar.pin_step(front, step);
+        let few_tabs = || match self.tabs.len() {
+            0 | 1 => self.sidebar.list_step(front, step),
+            _ => None,
+        };
+        if let Some(key) = pinned.or_else(few_tabs) {
             self.open(&key);
             return;
         }

@@ -477,6 +477,22 @@ fn pin_step_walks_the_pinned_sessions() {
         Some(key(LOCAL, "a"))
     );
     assert_eq!(s.pin_step(None, -1), Some(key(LOCAL, "a")));
+    // All the sessions in the list's order (a c b, y x: the pinned first in each host), for
+    // when nothing is pinned and fewer than two tabs are open.
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "c")), 1),
+        Some(key(LOCAL, "b"))
+    );
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "b")), 1),
+        Some(key("nas", "y"))
+    );
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "a")), -1),
+        Some(key("nas", "x"))
+    );
+    assert_eq!(s.list_step(None, 1), Some(key(LOCAL, "a")));
+    assert_eq!(sidebar(&[LOCAL]).list_step(None, 1), None);
     // A pinned session whose host went away is not in the ring.
     s.apply(HostSnapshot {
         host: "nas".to_string(),
@@ -485,6 +501,29 @@ fn pin_step_walks_the_pinned_sessions() {
         sessions: Vec::new(),
     });
     assert_eq!(s.pin_step(Some(&key(LOCAL, "c")), 1), Some(key(LOCAL, "a")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_rename_takes_the_pin_along() {
+    let dir = scratch("pin-rename");
+    let mut s = Sidebar::new(&config(&[LOCAL]), dir.clone());
+    s.apply(idle(LOCAL, &["a", "b"]));
+    s.select_key(&key(LOCAL, "b"));
+    assert!(s.toggle_pin());
+    // Not pinned: nothing to move, nothing written.
+    let before = std::fs::read_to_string(dir.join("pins")).unwrap();
+    assert!(!s.renamed(&key(LOCAL, "a"), &key(LOCAL, "a2")));
+    assert_eq!(std::fs::read_to_string(dir.join("pins")).unwrap(), before);
+    // Pinned: the file has the new name's slug only, and the next listing shows the ★.
+    assert!(s.renamed(&key(LOCAL, "b"), &key(LOCAL, "b2")));
+    assert!(s.take_pin_error().is_ok());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("pins")).unwrap(),
+        format!("{}\n", tmls_slug(&key(LOCAL, "b2"), LOCAL))
+    );
+    s.apply(idle(LOCAL, &["a", "b2"]));
+    assert!(s.is_pinned(&key(LOCAL, "b2")) && !s.is_pinned(&key(LOCAL, "a")));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

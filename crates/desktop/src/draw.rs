@@ -36,7 +36,7 @@
 
 use std::borrow::Cow;
 
-use client_core::{SessionInfo, SessionKey};
+use client_core::{SessionInfo, SessionKey, Tool};
 use s2_wgpu::gfx::atlas::{Atlas, CellMetrics, FontStyle};
 use s2_wgpu::gfx::grid::{self, Instance, Scene, clusters, push_text, solid};
 use s2_wgpu::ui::draw::fit;
@@ -64,8 +64,17 @@ const TAB_CLOSE_COLS: usize = 3;
 /// Cells at the right end of a host's header that are its `+` when clicked: the `+` and one
 /// cell either side.
 const ADD_COLS: usize = 3;
-/// Lines of the legend: two marks a line, as in tmls.
-const LEGEND_LINES: usize = LEGEND.len().div_ceil(2);
+/// Lines of the legend, as in tmls: the marks and the ★ two a line, then the agents' letters
+/// on two lines.
+const LEGEND_LINES: usize = (LEGEND.len() + 1).div_ceil(2) + TOOL_LINES;
+/// The legend's lines for the agents' letters: `C Claude  O opencode`, `X Codex`.
+const TOOL_LINES: usize = 2;
+/// The agents of the legend, in tmls's order.
+const LEGEND_TOOLS: [(Tool, &str); 3] = [
+    (Tool::Claude, "Claude"),
+    (Tool::Opencode, "opencode"),
+    (Tool::Codex, "Codex"),
+];
 /// Columns from one legend entry to the next: the mark, a space, the word padded to nine
 /// (tmls line 96).
 const LEGEND_ENTRY_COLS: usize = 11;
@@ -785,14 +794,24 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         theme.sidebar_rule,
     );
     let entry_cols = LEGEND_ENTRY_COLS.min(l.list_cols.saturating_sub(2) / 2);
-    for (n, (status, word)) in LEGEND.iter().enumerate() {
+    // The marks, then the ★, then the agents' letters from a line of their own on.
+    let marks = LEGEND
+        .iter()
+        .map(|(status, word)| (mark_glyph(*status), mark_rgb(*status), *word))
+        .chain([(PIN, PIN_RGB, "pinned")]);
+    let tools_from = (LEGEND.len() + 1).div_ceil(2) * 2;
+    let tools = LEGEND_TOOLS.iter().filter_map(|(tool, word)| {
+        let (letter, colour) = tool_letter(*tool)?;
+        Some((letter, colour, *word))
+    });
+    let entries = marks
+        .enumerate()
+        .chain(tools.enumerate().map(|(n, entry)| (tools_from + n, entry)));
+    for (n, (mark, colour, word)) in entries {
         let col = 1 + (n % 2) * entry_cols;
         let origin = (l.legend.x, l.legend.y + (n / 2) as f32 * p.m.height);
-        let mark = Span::whole(0, col, mark_glyph(*status))
-            .colour(mark_rgb(*status))
-            .bold();
-        p.span(origin, &mark);
-        let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), *word);
+        p.span(origin, &Span::whole(0, col, mark).colour(colour).bold());
+        let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), word);
         p.span(origin, &word.colour(theme.muted_fg));
     }
     for (button, label, col, cols) in button_columns() {

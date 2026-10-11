@@ -1,8 +1,8 @@
 //! The window's own key bindings, and where every other key goes.
 //!
 //! Bindings (`global`), all on the press:
-//! - Alt+Shift+Right / Left — next / previous pinned (★) session, or tab when none is pinned
-//!   (repeats while held)
+//! - Alt+Shift+Right / Left — next / previous pinned (★) session; when none is pinned, tab,
+//!   or session while fewer than two tabs are open (repeats while held)
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the

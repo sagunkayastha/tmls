@@ -80,7 +80,7 @@ Everywhere:
 | Ctrl+Q | quit (sessions keep running) |
 | Ctrl+= or Ctrl++ | larger font |
 | Ctrl+- | smaller font |
-| Alt+Shift+Right / Left | next / previous pinned (★) session, opening its tab if needed; with nothing pinned, next / previous tab |
+| Alt+Shift+Right / Left | next / previous pinned (★) session, opening its tab if needed; with nothing pinned, next / previous tab, or next / previous session while fewer than two tabs are open |
 | Alt+Shift+Up | focus to the session list |
 | Alt+Shift+N | open the next session that waits for you |
 | Alt+Shift+W | close the front tab (the session lives on) |
@@ -243,7 +243,6 @@ Not built yet:
 
 - the `⋯` at the end of a session row that tmls has (use right-click or `m`);
 - window and pane actions of tmls's menu (new window, split, kill pane);
-- a renamed session keeps its pin only if you pin it again;
 - the `?` button (key help);
 - file paths and `file:line` as links, and tmls's quick select (Alt+Shift+S);
 - right-click paste in the terminal;

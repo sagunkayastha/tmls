@@ -635,20 +635,25 @@ fn legend_and_buttons_sit_at_the_bottom() {
         l.sidebar.bottom() - (theme.inset).round()
     );
     assert_eq!(l.legend.bottom(), l.buttons.y);
-    assert_eq!(l.legend.h, 3.0 * l.cell.1);
+    assert_eq!(l.legend.h, 5.0 * l.cell.1);
     assert!(l.list.bottom() <= l.legend.y);
-    // One mark of each status's colour in the legend, and a line above it.
-    for status in [
-        Status::Running,
-        Status::Waiting,
-        Status::Unseen,
-        Status::Error,
+    // One mark of each status's colour in the legend — the ★ has the `?`'s colour — then one
+    // letter for each agent, and a line above it all.
+    for (status, marks) in [
+        (Status::Running, 1),
+        (Status::Waiting, 2),
+        (Status::Unseen, 1),
+        (Status::Error, 1),
     ] {
         assert_eq!(
             glyphs(&quads, l.legend, mark_rgb(status)).len(),
-            1,
+            marks,
             "{status:?}"
         );
+    }
+    for tool in [Tool::Claude, Tool::Opencode, Tool::Codex] {
+        let (_, colour) = theme::tool_letter(tool).unwrap();
+        assert_eq!(glyphs(&quads, l.legend, colour).len(), 1, "{tool:?}");
     }
     let above = Rect {
         y: l.legend.y - 4.0,
