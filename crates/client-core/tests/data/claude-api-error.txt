@@ -1,0 +1,10 @@
+1000
+broke:1:0:990
+retry:1:0:990
+tool broke:claude
+tool retry:claude
+---
+{"status":"idle","statusUpdatedAt":900000,"tmux":"broke:@2.%2"}
+failed
+{"status":"busy","statusUpdatedAt":950000,"tmux":"retry:@3.%3"}
+failed

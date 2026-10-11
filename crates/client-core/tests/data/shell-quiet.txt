@@ -1,0 +1,6 @@
+1000
+build:1:0:969
+edge:1:0:970
+tool build:bash
+tool edge:zsh
+---

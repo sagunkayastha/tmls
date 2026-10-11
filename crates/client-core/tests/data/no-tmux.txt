@@ -1,0 +1,2 @@
+1000
+tmux-error sh: 1: tmux: not found

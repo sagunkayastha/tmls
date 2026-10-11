@@ -1,0 +1,15 @@
+1000
+work:1:1:990
+both:2:0:10
+sh:1:0:10
+tool x:1:0:10
+viaфайл:1:0:10
+tool work:opencode
+tool both:bash
+tool both:opencode
+tool both:codex
+tool sh:zsh
+tool viaфайл:node
+tool gone-meanwhile:claude
+---
+{"status":"idle","statusUpdatedAt":900000,"tmux":"viaфайл:@9.%9"}

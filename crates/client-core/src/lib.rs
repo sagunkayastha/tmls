@@ -5,4 +5,4 @@ pub mod config;
 pub mod listing;
 
 pub use config::{Config, HostColor, default_color};
-pub use listing::SessionKey;
+pub use listing::{HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command, parse_listing};

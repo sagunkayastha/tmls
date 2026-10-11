@@ -1,0 +1,12 @@
+1000
+Agent Thing:1:2:990
+a:b:c:1:0:990
+café ☕ 日本語:1:0:10
+it's "q" $HOME `x` = . #:3:0:10
+ lead and trail :1:0:10
+tool Agent Thing:claude
+tool a:b:c:codex
+tool café ☕ 日本語:opencode
+---
+{"status":"waiting","waitingFor":"input needed","statusUpdatedAt":900000,"tmux":"Agent Thing:@1.%1"}
+{"name":"カフェ","status":"idle","statusUpdatedAt":900000,"tmux":"café ☕ 日本語:@2.%2"}

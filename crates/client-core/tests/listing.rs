@@ -1,0 +1,367 @@
+//! The listing parser and the status rules, against captured and synthesised listing outputs
+//! (`tests/data/*.txt`). Cases ported from tmls's `tests/test_hosts.py` keep its inputs.
+
+use client_core::listing::{
+    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command, parse_listing,
+};
+
+fn fixture(name: &str) -> String {
+    let path = format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+fn parse(name: &str) -> HostSnapshot {
+    parse_listing("nas", &fixture(name))
+}
+
+fn session<'a>(snap: &'a HostSnapshot, name: &str) -> &'a SessionInfo {
+    snap.sessions
+        .iter()
+        .find(|s| s.key.name == name)
+        .unwrap_or_else(|| panic!("no session {name:?} in {:?}", names(snap)))
+}
+
+fn names(snap: &HostSnapshot) -> Vec<&str> {
+    snap.sessions.iter().map(|s| s.key.name.as_str()).collect()
+}
+
+#[test]
+fn parses_a_real_archbox_listing() {
+    // tests/data/archbox.txt: the tmux half of the listing as archbox printed it on 2026-10-11
+    // (`tmux ls` then showed Projects, Raid, Rnners, none attached); its Claude half is empty.
+    let snap = parse_listing("archbox", &fixture("archbox.txt"));
+    assert!(snap.online);
+    assert_eq!(snap.error, None);
+    assert_eq!(snap.host, "archbox");
+    let expected = [("Projects", Status::Running, 1), ("Raid", Status::Idle, 33), ("Rnners", Status::Idle, 33)];
+    assert_eq!(snap.sessions.len(), expected.len());
+    for (s, (name, status, age)) in snap.sessions.iter().zip(expected) {
+        assert_eq!(s.key, SessionKey { host: "archbox".into(), name: name.into() });
+        assert_eq!((s.status, s.last_output_age_s), (status, Some(age)), "{name}");
+        assert_eq!((s.tool, s.attached), (Tool::Claude, 0), "{name}");
+        assert_eq!((&s.reason, &s.title, s.context_pct), (&None, &None, None), "{name}");
+    }
+}
+
+#[test]
+fn status_rules_match_tmls() {
+    // busy Claude is running, however long ago its pane last printed
+    let snap = parse("claude-busy.txt");
+    let s = session(&snap, "work");
+    assert_eq!((s.status, &s.reason, s.last_output_age_s), (Status::Running, &None, Some(600)));
+    assert_eq!((s.tool, s.attached, s.context_pct), (Tool::Claude, 1, Some(58)));
+
+    // a permission prompt: waiting on you, with what for
+    let snap = parse("claude-waiting.txt");
+    let s = session(&snap, "ask");
+    assert_eq!((s.status, s.reason.as_deref()), (Status::Waiting, Some("permission prompt")));
+
+    // Claude's newest reply is an API error; a new turn (busy) clears the mark
+    let snap = parse("claude-api-error.txt");
+    assert_eq!(session(&snap, "broke").status, Status::Error);
+    assert_eq!(session(&snap, "broke").reason, None);
+    assert_eq!(session(&snap, "retry").status, Status::Running);
+
+    // no Claude: quiet for more than 30 s is idle (30 s exactly is too)
+    let snap = parse("shell-quiet.txt");
+    assert_eq!((session(&snap, "build").status, session(&snap, "build").last_output_age_s), (Status::Idle, Some(31)));
+    assert_eq!(session(&snap, "edge").status, Status::Idle);
+    assert_eq!(session(&snap, "build").tool, Tool::Other);
+
+    // no Claude: printed less than 30 s ago is running; the newest window's output counts
+    let snap = parse("shell-printing.txt");
+    assert_eq!(names(&snap), ["build"]);
+    assert_eq!((session(&snap, "build").status, session(&snap, "build").last_output_age_s), (Status::Running, Some(29)));
+}
+
+#[test]
+fn claude_status_is_matched_by_tmux_session() {
+    // test_hosts.py::test_parse_claude_status_by_tmux_session, plus "shell" (a monitor still runs)
+    let out = "1000\nwork:1:0:990\nnotes:1:0:400\nplain:1:0:10\nmon:1:0:10\nredraw:1:0:999\n---\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":500000,\"tmux\":\"notes:@2.%2\"}\n\
+               {\"status\":\"busy\",\"statusUpdatedAt\":900000,\"tmux\":\"work:@1.%1\"}\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":950000,\"tmux\":\"work:@3.%3\"}\n\
+               {\"status\":\"shell\",\"statusUpdatedAt\":1,\"tmux\":\"mon:@4.%4\"}\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":1,\"tmux\":\"redraw:@5.%5\"}\n\
+               {\"status\":\"busy\",\"statusUpdatedAt\":1,\"tmux\":null}\n";
+    let snap = parse_listing("nas", out);
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.status, s.tool)).collect();
+    assert_eq!(
+        got,
+        [
+            ("work", Status::Running, Tool::Claude), // two Claudes in one session: the running one wins
+            ("notes", Status::Idle, Tool::Claude),
+            ("plain", Status::Idle, Tool::Other),
+            ("mon", Status::Running, Tool::Claude),
+            ("redraw", Status::Idle, Tool::Claude), // an idle Claude's status line redraws: not work
+        ]
+    );
+}
+
+#[test]
+fn waiting_beats_running_and_failed() {
+    // test_hosts.py::test_parse_waiting_reason_and_failed_reply
+    let out = "1000\nask:1:0:990\nbroke:1:0:990\nboth:1:0:990\n---\n\
+               {\"status\":\"waiting\",\"waitingFor\":\"permission prompt\",\"statusUpdatedAt\":900000,\"tmux\":\"ask:@1.%1\"}\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":900000,\"tmux\":\"broke:@2.%2\"}\nfailed\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":950000,\"tmux\":\"both:@3.%3\"}\nfailed\n\
+               {\"status\":\"waiting\",\"waitingFor\":\"input needed\",\"statusUpdatedAt\":940000,\"tmux\":\"both:@4.%4\"}\n";
+    let snap = parse_listing("nas", out);
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.status, s.reason.as_deref())).collect();
+    assert_eq!(
+        got,
+        [
+            ("ask", Status::Waiting, Some("permission prompt")),
+            ("broke", Status::Error, None),
+            ("both", Status::Waiting, Some("input needed")),
+        ]
+    );
+}
+
+#[test]
+fn claude_title_and_context_percent() {
+    let snap = parse("claude-title-context.txt");
+    let got: Vec<_> =
+        snap.sessions.iter().map(|s| (s.key.name.as_str(), s.title.as_deref(), s.context_pct)).collect();
+    assert_eq!(
+        got,
+        [
+            ("Season-36", Some("NERSC_Training"), Some(58)), // Claude 5: 584 676 of 1M
+            ("old", Some("Old model"), Some(75)),            // older models: 150 000 of 200k
+            ("full", None, Some(100)),                       // never above 100
+            ("fresh", None, None),                           // no reply yet: no model, no percent
+            ("plain", None, None),                           // not Claude
+        ]
+    );
+}
+
+#[test]
+fn context_limit_is_1m_from_claude_5_and_200k_before() {
+    // test_hosts.py::test_context_limit_by_model
+    let pct = |model: &str, used: u64| {
+        let out = format!(
+            "1000\nx:1:0:990\n---\n{{\"status\":\"idle\",\"tmux\":\"x:@1.%1\"}}\nusage \"model\":\"{model}\" \"input_tokens\":{used}\n"
+        );
+        parse_listing("h", &out).sessions[0].context_pct
+    };
+    assert_eq!(pct("claude-sonnet-5-5", 900_000), Some(90));
+    assert_eq!(pct("claude-haiku-4-5-20251001", 150_000), Some(75));
+    assert_eq!(pct("claude-opus-10", 500_000), Some(50));
+    assert_eq!(pct("some-other-model", 100_000), Some(50));
+    assert_eq!(pct("claude-opus-5-5", u64::MAX), Some(100));
+}
+
+#[test]
+fn half_written_status_file_keeps_its_failed_and_usage_lines() {
+    // B's file was caught mid-write; the "failed" and "usage" after it are B's, not A's
+    let out = "1000\nA:1:0:990\nB:1:0:990\n---\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":900000,\"tmux\":\"A:@1.%1\"}\n\
+               {\"status\":\"idle\",\"statusUpdatedAt\":9\n\
+               failed\n\
+               usage \"model\":\"claude-haiku-4-5\" \"input_tokens\":190000\n";
+    let snap = parse_listing("nas", out);
+    let a = session(&snap, "A");
+    assert_eq!((a.status, a.context_pct), (Status::Idle, None));
+    assert_eq!((session(&snap, "B").status, session(&snap, "B").tool), (Status::Running, Tool::Other));
+}
+
+#[test]
+fn blank_line_after_a_status_file_keeps_its_failed_line() {
+    let out = "1000\nA:1:0:990\n---\n{\"status\":\"idle\",\"statusUpdatedAt\":900000,\"tmux\":\"A:@1.%1\"}\n\nfailed\n";
+    assert_eq!(parse_listing("nas", out).sessions[0].status, Status::Error);
+}
+
+#[test]
+fn tool_letters() {
+    let snap = parse("tools.txt");
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.tool)).collect();
+    assert_eq!(
+        got,
+        [
+            ("work", Tool::Opencode),
+            ("both", Tool::Codex),      // several agents in one session: claude, then codex, then opencode
+            ("sh", Tool::Other),
+            ("tool x", Tool::Other),    // a session really named "tool x" is still a session
+            ("viaфайл", Tool::Claude), // Claude's session file says so, whatever the pane's command is called
+        ]
+    );
+    assert_eq!(Tool::Claude.letter(), Some('C'));
+    assert_eq!(Tool::Opencode.letter(), Some('O'));
+    assert_eq!(Tool::Codex.letter(), Some('X'));
+    assert_eq!(Tool::Other.letter(), None);
+    let marks = [Status::Running, Status::Waiting, Status::Unseen, Status::Error, Status::Idle].map(Status::mark);
+    assert_eq!(marks, ['●', '?', '◆', '✕', '○']);
+}
+
+#[test]
+fn no_tmux_server_is_online_with_no_sessions() {
+    for name in ["no-server-old.txt", "no-server-3.7.txt"] {
+        let snap = parse(name);
+        assert_eq!(snap, HostSnapshot { host: "nas".into(), online: true, error: None, sessions: vec![] }, "{name}");
+    }
+    // tmux is not installed there: nothing to list, and the snapshot says why
+    let snap = parse("no-tmux.txt");
+    assert!(!snap.online && snap.sessions.is_empty());
+    assert_eq!(snap.error.as_deref(), Some("sh: 1: tmux: not found"));
+}
+
+#[test]
+fn login_banner_lines_are_skipped() {
+    // test_hosts.py::test_parse_skips_lines_that_are_not_windows: a banner's number isn't the clock
+    let snap = parse("banner.txt");
+    assert_eq!(names(&snap), ["work"]);
+    assert_eq!(snap.sessions[0].last_output_age_s, Some(10));
+}
+
+#[test]
+fn output_that_is_not_a_listing_is_offline() {
+    // test_hosts.py::test_list_host_offline_when_output_is_garbage
+    for out in ["", "garbage\n", "Welcome\nwork:1:0:990\n", "---\n", "\n---\n{}\n"] {
+        let snap = parse_listing("box", out);
+        assert!(!snap.online && snap.sessions.is_empty() && snap.error.is_some(), "{out:?}");
+        assert_eq!(snap.host, "box");
+    }
+}
+
+/// xorshift: the same "random" bytes on every run.
+fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn garbage_and_truncated_output_never_panics() {
+    assert!(!parse_listing("h", "").online);
+    for seed in 1..200u64 {
+        let bytes = noise(seed, (seed as usize * 37) % 4096);
+        let _ = parse_listing("h", &String::from_utf8_lossy(&bytes));
+        // noise after a valid clock line reaches the window, tool and Claude branches
+        let _ = parse_listing("h", &format!("1000\n{}\n---\n{}", String::from_utf8_lossy(&bytes), String::from_utf8_lossy(&bytes)));
+    }
+    // every fixture cut at every char boundary, mid-line and mid-JSON included
+    for name in ["claude-title-context.txt", "names.txt", "tools.txt", "claude-api-error.txt", "no-server-3.7.txt"] {
+        let text = fixture(name);
+        for cut in (0..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+            let snap = parse_listing("h", &text[..cut]);
+            assert!(snap.sessions.iter().all(|s| !s.key.name.is_empty() && s.key.host == "h"), "{name} cut at {cut}");
+        }
+    }
+    // hostile values in every field
+    let hostile = [
+        "99999999999999999999999999\nwork:1:0:1\n",
+        "1000\nwork:1:0:99999999999999999999999999\n",
+        "1000\nwork:-1:-1:-1\n:::\n::::\n:1:0:5\ntool \ntool :\ntool :claude\ntmux-error \n",
+        "5\nold:1:0:1000\n", // the window printed "after" the clock: age 0, not an underflow
+        "1000\nw:1:0:990\n---\n[]\n42\nnull\n\"x\"\n{\"tmux\":7,\"status\":[],\"statusUpdatedAt\":\"x\"}\n\
+         {\"tmux\":\"w:@1.%1\",\"status\":5,\"statusUpdatedAt\":1e400,\"name\":{},\"waitingFor\":3}\n\
+         {\"tmux\":\"w:@1.%1\",\"status\":\"idle\",\"statusUpdatedAt\":-99999999999999999999}\n\
+         usage \"model\":\"claude-opus-5\" \"input_tokens\":99999999999999999999999 \"cache_read_input_tokens\":18446744073709551615\n\
+         usage\nusage \"model\nusage \"\":\"\"\nfailed\n",
+        "1000\r\nwork:1:0:990\r\n---\r\n{\"status\":\"busy\",\"tmux\":\"work:@1.%1\"}\r\n",
+        "1000\nw:1:0:990\n---",
+    ];
+    for out in hostile {
+        let _ = parse_listing("h", out);
+    }
+    assert_eq!(parse_listing("h", hostile[3]).sessions[0].last_output_age_s, Some(0));
+    assert_eq!(parse_listing("h", hostile[5]).sessions[0].status, Status::Running); // CRLF line ends
+}
+
+#[test]
+fn names_with_spaces_colons_and_unicode() {
+    let snap = parse("names.txt");
+    assert_eq!(
+        names(&snap),
+        ["Agent Thing", "a:b:c", "café ☕ 日本語", "it's \"q\" $HOME `x` = . #", " lead and trail "]
+    );
+    let agent = session(&snap, "Agent Thing");
+    assert_eq!(agent.key, SessionKey { host: "nas".into(), name: "Agent Thing".into() });
+    assert_eq!((agent.status, agent.reason.as_deref(), agent.attached), (Status::Waiting, Some("input needed"), 2));
+    assert_eq!(agent.tool, Tool::Claude);
+    assert_eq!(session(&snap, "a:b:c").tool, Tool::Codex);
+    let cafe = session(&snap, "café ☕ 日本語");
+    assert_eq!((cafe.tool, cafe.title.as_deref()), (Tool::Claude, Some("カフェ")));
+}
+
+#[test]
+fn listing_script_collects_what_tmls_collects() {
+    // test_hosts.py::test_list_argv_reads_host_clock_windows_and_claude, ::test_listing_forces_utf8
+    for part in [
+        "date +%s",
+        "tmux -u list-windows -a",
+        "list-panes",
+        ".claude/sessions/",
+        ".claude/projects/",
+        "\"isApiErrorMessage\":true",
+        "echo usage",
+    ] {
+        assert!(LISTING_SCRIPT.contains(part), "the script lacks {part:?}");
+    }
+    assert!(!LISTING_SCRIPT.contains(".key"), "the .key files beside the session files are secrets");
+}
+
+#[test]
+fn listing_command_is_sh_here_and_batch_ssh_elsewhere() {
+    let argv = |cmd: std::process::Command| -> Vec<String> {
+        std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(argv(listing_command("laptop", "laptop")), ["sh", "-s"]);
+    assert_eq!(
+        argv(listing_command("nas", "laptop")),
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "nas", "sh", "-s"]
+    );
+}
+
+/// A stub `tmux` on PATH: the script, run by a real `sh -s`, prints a listing the parser reads.
+#[test]
+fn script_output_parses_with_a_stub_tmux() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listing-stub-{}", std::process::id()));
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let stub = dir.join("tmux");
+    let run = |body: &str| -> (bool, HostSnapshot) {
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = listing_command("me", "me")
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+            .env("HOME", &home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(LISTING_SCRIPT.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        (out.status.success(), parse_listing("me", &String::from_utf8_lossy(&out.stdout)))
+    };
+
+    let (ok, snap) = run(
+        "case \"$*\" in\n\
+         *list-windows*) echo 'my notes:1:1:5'; echo 'work:2:0:6';;\n\
+         *list-panes*) echo 'my notes:opencode:/dev/pts/998'; echo 'work:vim:/dev/pts/999';;\n\
+         esac",
+    );
+    assert!(ok && snap.online, "{snap:?}");
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.tool, s.attached, s.status)).collect();
+    assert_eq!(got, [("my notes", Tool::Opencode, 1, Status::Idle), ("work", Tool::Other, 0, Status::Idle)]);
+
+    let (ok, snap) = run("echo 'no server running on /tmp/tmux-1000/default' >&2; exit 1");
+    assert!(ok, "the script itself succeeds when tmux has no server");
+    assert_eq!(snap, HostSnapshot { host: "me".into(), online: true, error: None, sessions: vec![] });
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
