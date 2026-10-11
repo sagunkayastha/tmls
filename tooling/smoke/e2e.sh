@@ -493,6 +493,15 @@ has() { tmux has-session -t "=$1" 2>/dev/null; }
 gone() { ! has "$1"; }
 sessions() { tmux list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' '|'; }
 key_menu() { key_focus_list; keys -k m; }
+# in_no_pane TEXT SESSION…  — none of the sessions shows TEXT.
+in_no_pane() {
+  local text=$1 session
+  shift
+  for session in "$@"; do
+    pane_text "$session" | grep -qF -- "$text" && return 1
+  done
+  return 0
+}
 clients_are() { [ "$(attached | wc -l)" -eq "$1" ]; }
 
 # c in the list: the new-session form for the cursor's host. Tab Tab: the name, selected.
@@ -565,7 +574,17 @@ if wait_for 8 attached_to "$RENAMED" && wait_for 5 clients_are 2; then
 else
   fail "the tab is reopened under the new name (two clients, one on $RENAMED)" "clients: $(attached | tr '\n' '|')"
 fi
-check_typed "the renamed tab takes typing" "$RENAMED" renamed
+# The rename was asked from the list: the keys stay there. Letters that are no list key,
+# typed now, reach no session; Esc in the list then gives the keys to the terminal.
+keys "zqzq"
+sleep 0.5
+if in_no_pane zqzq "$RENAMED" "$ODD" "$ONE"; then
+  pass "after a rename from the list the keys stay in the list: typing reaches no session"
+else
+  fail "after a rename from the list the keys stay in the list: typing reaches no session" "pane of $RENAMED: $(pane_text "$RENAMED" | grep -v '^$' | tail -2 | tr '\n' '|') pane of $ODD: $(pane_text "$ODD" | grep -v '^$' | tail -2 | tr '\n' '|')"
+fi
+keys -k Escape
+check_typed "Esc in the list after the rename: the renamed tab takes typing" "$RENAMED" renamed
 check "screenshot 25-renamed" shot 25-renamed
 
 # Kill asks first. Something runs in the session, so the question names it.
@@ -610,7 +629,16 @@ else
   fail "the killed session's tab is closed (one client left)" "clients: $(attached | tr '\n' '|')"
 fi
 check "the app still runs after the kill" app_alive
-check_typed "after the kill the keys go to \"$ODD\"" "$ODD" afterkill
+# The kill was asked from the list: the tab that came to the front does not take the keys.
+keys "wxwx"
+sleep 0.5
+if in_no_pane wxwx "$ODD" "$ONE"; then
+  pass "after a kill from the list the keys stay in the list: typing reaches no session"
+else
+  fail "after a kill from the list the keys stay in the list: typing reaches no session" "pane of $ODD: $(pane_text "$ODD" | grep -v '^$' | tail -2 | tr '\n' '|')"
+fi
+keys -k Escape
+check_typed "Esc in the list after the kill: the keys go to \"$ODD\"" "$ODD" afterkill
 check "screenshot 28-killed" shot 28-killed
 
 # --- the same by mouse; a session that ends from inside ---------------------------------------

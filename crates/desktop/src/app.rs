@@ -848,6 +848,8 @@ impl Running {
     /// A request ran: says so in the status line, lists the hosts again, and opens the new
     /// session's tab, reopens a renamed session's tab under the new name, or closes a killed
     /// session's tab.
+    /// A rename or kill asked from the list leaves the keys in the list
+    /// (`keys::list_keeps_keys`).
     fn done(&mut self, request: Request, result: Result<String, String>) {
         let ok = result.is_ok();
         self.say(result);
@@ -855,6 +857,8 @@ impl Running {
             return;
         }
         self.poller.refresh_now();
+        let keys_were = keys::keys_at(self.focus, self.focus_before, self.modal.is_some());
+        let list_keeps_keys = keys::list_keeps_keys(&request, keys_were);
         match request {
             Request::New(new) => {
                 let key = SessionKey {
@@ -891,6 +895,19 @@ impl Running {
                 if let Some(index) = self.tabs.index_of(&key) {
                     self.close_tab(index);
                 }
+                if list_keeps_keys {
+                    // The cursor stays on the row that goes; the next listing moves it to a
+                    // neighbour, not to the row of the tab that came to the front.
+                    self.sidebar.select_key(&key);
+                }
+            }
+        }
+        if list_keeps_keys {
+            // Asked from the list: the tab that came to the front does not take the keys.
+            if self.modal.is_some() {
+                self.focus_before = Focus::Sidebar;
+            } else if self.focus != Focus::Sidebar {
+                self.set_focus(Focus::Sidebar);
             }
         }
     }

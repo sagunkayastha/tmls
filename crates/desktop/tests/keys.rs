@@ -1,7 +1,11 @@
 //! The window's own bindings per focus, and that everything else reaches the terminal.
 
+use client_core::SessionKey;
+use client_core::tmux::{NewSession, Start};
+use desktop::forms::Request;
 use desktop::keys::{
-    Focus, Global, ListKey, RepeatGate, Route, focus_after_close, global, list_key, route,
+    Focus, Global, ListKey, RepeatGate, Route, focus_after_close, global, keys_at, list_keeps_keys,
+    list_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -336,4 +340,60 @@ fn closing_a_tab_in_the_back_leaves_the_keys_where_they_are() {
     let j = ch('j', NONE);
     let focus = focus_after_close(Focus::Sidebar, false, false);
     assert_eq!(route(&j, focus, Some(TabState::Live)), Route::Sidebar);
+}
+
+#[test]
+fn a_rename_or_kill_asked_from_the_list_leaves_the_keys_in_the_list() {
+    let key = SessionKey {
+        host: "here".into(),
+        name: "one".into(),
+    };
+    let rename = Request::Rename(key.clone(), "two".into());
+    let kill = Request::Kill(key);
+    let new = Request::New(NewSession {
+        host: "here".into(),
+        folder: String::new(),
+        name: "three".into(),
+        start: Start::Shell,
+        size: None,
+    });
+
+    // Where the keys are: with a form or menu open, where they go when it closes.
+    assert_eq!(
+        keys_at(Focus::Sidebar, Focus::Terminal, false),
+        Focus::Sidebar
+    );
+    assert_eq!(
+        keys_at(Focus::Terminal, Focus::Sidebar, false),
+        Focus::Terminal
+    );
+    assert_eq!(keys_at(Focus::Form, Focus::Sidebar, true), Focus::Sidebar);
+    assert_eq!(keys_at(Focus::Form, Focus::Terminal, true), Focus::Terminal);
+
+    // The answer arrives with the keys in the list, or in a form opened from the list since:
+    // the tab that comes to the front does not take them.
+    for modal in [false, true] {
+        let in_list = if modal {
+            keys_at(Focus::Form, Focus::Sidebar, true)
+        } else {
+            keys_at(Focus::Sidebar, Focus::Terminal, false)
+        };
+        assert!(
+            list_keeps_keys(&rename, in_list),
+            "rename, form open: {modal}"
+        );
+        assert!(list_keeps_keys(&kill, in_list), "kill, form open: {modal}");
+        // A new session is asked for to work in it: its tab takes the keys, as before.
+        assert!(!list_keeps_keys(&new, in_list), "new, form open: {modal}");
+
+        // The keys were in the terminal: as before, they go where the tabs put them.
+        let in_terminal = if modal {
+            keys_at(Focus::Form, Focus::Terminal, true)
+        } else {
+            keys_at(Focus::Terminal, Focus::Sidebar, false)
+        };
+        for request in [&rename, &kill, &new] {
+            assert!(!list_keeps_keys(request, in_terminal), "{request:?}");
+        }
+    }
 }

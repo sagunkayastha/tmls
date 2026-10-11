@@ -25,6 +25,7 @@
 
 use s2_core::{Key, KeyEvent, Mods, Named};
 
+use crate::forms::Request;
 use crate::tabs::{TabState, Tabs};
 
 /// What has the keyboard focus inside the window.
@@ -248,6 +249,24 @@ pub fn focus_after_close(focus: Focus, front_changed: bool, no_tabs: bool) -> Fo
         (true, _) => Focus::Sidebar,
         (false, true) => Focus::Terminal,
         (false, false) => focus,
+    }
+}
+
+/// Where the keys are: `focus`, or with a form or menu open (`modal`) where they go when it
+/// closes (`focus_before`).
+pub fn keys_at(focus: Focus, focus_before: Focus, modal: bool) -> Focus {
+    if modal { focus_before } else { focus }
+}
+
+/// Whether the list keeps the keys when the answer to `request` is handled. `keys_were`: where
+/// they were when it arrived (`keys_at`). A rename or a kill asked from the list closes or
+/// reopens a tab, which brings a tab to the front; that tab must not take the keys: the next
+/// `j` or Enter is meant for the list, not for the session that happens to be in front. A new
+/// session's tab takes them.
+pub fn list_keeps_keys(request: &Request, keys_were: Focus) -> bool {
+    match request {
+        Request::New(_) => false,
+        Request::Rename(..) | Request::Kill(_) => keys_were == Focus::Sidebar,
     }
 }
 
