@@ -545,9 +545,14 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arboard",
  "client-core",
+ "pollster",
  "s2-core",
  "s2-wgpu",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

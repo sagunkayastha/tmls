@@ -1,0 +1,204 @@
+//! The window's own key bindings, and where every other key goes.
+//!
+//! Bindings (`global`), all on the press:
+//! - Alt+Shift+Right / Left — next / previous tab (repeats while held)
+//! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
+//! - Alt+Shift+N — the next session that waits for the user
+//! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
+//! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
+//! - Enter on a tab whose session ended — reattach (`route`, which knows the tab's state)
+//!
+//! The Alt+Shift keys work with the focus on the terminal or the list, not in a form. Quit and
+//! zoom work everywhere.
+//!
+//! Everything else belongs to whatever has the keyboard focus (`route`): with the terminal
+//! focused and a live tab it goes to that tab's session unchanged — Tab, Esc, Ctrl+C, Ctrl+Tab
+//! and Alt+letters included. A key for the list or a form reaches no session. A key for a tab
+//! whose session ended, or with no tab open, is dropped: it would get a `key` line in the
+//! latency log and never a frame.
+
+use s2_core::{Key, KeyEvent, Mods, Named};
+
+use crate::tabs::TabState;
+
+/// What has the keyboard focus inside the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    Terminal,
+    Sidebar,
+    Form,
+}
+
+/// What a bound key asks the window to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Global {
+    NextTab,
+    PrevTab,
+    FocusSidebar,
+    FocusTerminal,
+    CloseTab,
+    NextWaiting,
+    Quit,
+    ZoomIn,
+    ZoomOut,
+    Reattach,
+}
+
+impl Global {
+    /// Whether holding the key down does it again.
+    fn repeats(self) -> bool {
+        matches!(
+            self,
+            Global::NextTab | Global::PrevTab | Global::ZoomIn | Global::ZoomOut
+        )
+    }
+}
+
+const NONE: Mods = Mods {
+    shift: false,
+    ctrl: false,
+    alt: false,
+    logo: false,
+};
+const ALT_SHIFT: Mods = Mods {
+    shift: true,
+    alt: true,
+    ..NONE
+};
+const CTRL: Mods = Mods { ctrl: true, ..NONE };
+const CTRL_SHIFT: Mods = Mods {
+    ctrl: true,
+    shift: true,
+    ..NONE
+};
+
+/// The binding a key is part of, whether this event is its press, a repeat or its release.
+fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
+    let letter = |c: char| match ev.key {
+        Key::Char(key) => key.eq_ignore_ascii_case(&c),
+        Key::Named(_) => false,
+    };
+    if ev.mods == CTRL {
+        if letter('q') {
+            return Some(Global::Quit);
+        }
+        if letter('=') || letter('+') {
+            return Some(Global::ZoomIn);
+        }
+        // Not "_": Ctrl+_ is 0x1f, undo in readline and Emacs, and stays the terminal's.
+        if letter('-') {
+            return Some(Global::ZoomOut);
+        }
+    }
+    // `+` is Shift+= on most layouts.
+    if ev.mods == CTRL_SHIFT && letter('+') {
+        return Some(Global::ZoomIn);
+    }
+    if focus == Focus::Form {
+        return None;
+    }
+    if ev.mods == ALT_SHIFT {
+        return match ev.key {
+            Key::Named(Named::Right) => Some(Global::NextTab),
+            Key::Named(Named::Left) => Some(Global::PrevTab),
+            Key::Named(Named::Up) => Some(Global::FocusSidebar),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'n') => Some(Global::NextWaiting),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
+            _ => None,
+        };
+    }
+    if focus == Focus::Sidebar && ev.mods == NONE && ev.key == Key::Named(Named::Escape) {
+        return Some(Global::FocusTerminal);
+    }
+    None
+}
+
+/// The window's own binding this key event triggers, if any. `Reattach` is never returned
+/// here: it depends on the tab (`route`).
+pub fn global(ev: &KeyEvent, focus: Focus) -> Option<Global> {
+    let global = binding(ev, focus)?;
+    (ev.pressed && (!ev.repeat || global.repeats())).then_some(global)
+}
+
+/// Where one key event goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    Global(Global),
+    /// To the active tab's session, unchanged.
+    Terminal,
+    /// To the session list.
+    Sidebar,
+    /// To the open form.
+    Form,
+    /// Nowhere: the release or a repeat of a bound key, or a key for a tab that has no live
+    /// session.
+    Drop,
+}
+
+/// Routes one key event. `tab` is the state of the active tab, `None` when no tab is open.
+pub fn route(ev: &KeyEvent, focus: Focus, tab: Option<TabState>) -> Route {
+    if binding(ev, focus).is_some() {
+        return global(ev, focus).map_or(Route::Drop, Route::Global);
+    }
+    match (focus, tab) {
+        (Focus::Sidebar, _) => Route::Sidebar,
+        (Focus::Form, _) => Route::Form,
+        (Focus::Terminal, Some(TabState::Live)) => Route::Terminal,
+        (Focus::Terminal, Some(TabState::Ended { .. })) => {
+            let enter = ev.key == Key::Named(Named::Enter) && ev.mods == NONE;
+            if enter && ev.pressed && !ev.repeat {
+                Route::Global(Global::Reattach)
+            } else {
+                Route::Drop
+            }
+        }
+        (Focus::Terminal, None) => Route::Drop,
+    }
+}
+
+/// A key of the session list (tmls: j/k or the arrows move, Enter attaches).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKey {
+    Up,
+    Down,
+    Open,
+}
+
+/// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
+pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
+    if !ev.pressed || ev.mods != NONE {
+        return None;
+    }
+    match ev.key {
+        Key::Named(Named::Up) | Key::Char('k') => Some(ListKey::Up),
+        Key::Named(Named::Down) | Key::Char('j') => Some(ListKey::Down),
+        Key::Named(Named::Enter) if !ev.repeat => Some(ListKey::Open),
+        _ => None,
+    }
+}
+
+/// Keeps a held key from typing into a session it was not pressed for.
+///
+/// The key that gives a session the keys may still be down: Enter in the list (attach), Enter
+/// on an ended tab (reattach), Esc in the list. Its auto-repeats would be typed into that
+/// session. `hold` is called whenever the session that takes the keys changes; from then on
+/// repeats do not pass until a key is pressed afresh.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RepeatGate {
+    holding: bool,
+}
+
+impl RepeatGate {
+    /// The session that takes the keys changed.
+    pub fn hold(&mut self) {
+        self.holding = true;
+    }
+
+    /// Whether a key routed to the terminal is really sent there.
+    pub fn passes(&mut self, ev: &KeyEvent) -> bool {
+        if ev.pressed && !ev.repeat {
+            self.holding = false;
+        }
+        !(ev.pressed && ev.repeat && self.holding)
+    }
+}

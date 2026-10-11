@@ -114,8 +114,17 @@ pub struct Fixed<'a> {
 /// Writes the `meta` line: the contract's fixed fields, then the two optional ones this
 /// front-end knows — `ui` (false under `S2_WGPU_NO_UI`) and `hz_source`.
 pub fn write(log: &Log, fixed: &Fixed, refresh: &Refresh, ui: bool) {
+    write_as(log, "wgpu", fixed, refresh, ui);
+}
+
+/// The commit this crate was built from, for `Fixed::git`: `<short hash>`, `<short hash>-dirty`
+/// or `unknown` (`build.rs`). For a front-end that uses this crate as a library.
+pub const GIT: &str = env!("S2_GIT");
+
+/// [`write`] for another front-end built on this crate: `app` is its `meta.app`.
+pub fn write_as(log: &Log, app: &str, fixed: &Fixed, refresh: &Refresh, ui: bool) {
     let meta = Event::Meta {
-        app: "wgpu".to_string(),
+        app: app.to_string(),
         git: fixed.git.to_string(),
         profile: fixed.profile.to_string(),
         hz: refresh.hz(),

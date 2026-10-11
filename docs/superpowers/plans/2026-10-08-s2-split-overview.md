@@ -217,6 +217,20 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
 - **`meta.git` may end in `-dirty`** (`<short hash>-dirty`): the binary was built from a tree in which a tracked file
   differed from that commit. Results for the record come from a build without it.
 
+**Contract notes from desktop v0, Task 3 (2026-10-11; `s2-wgpu` used as a library by `crates/desktop`; all additive):**
+- `Session::take_frames_with(each: impl FnMut(&Frame)) -> bool` — `take_frames` with the scene left to the caller
+  (`take_frames` now calls it; its signature and behaviour are unchanged). `each` gets every frame taken, in order, and
+  must pass it to `Scene::update_cells` of the scene the session is drawn with; only a caller that never draws the
+  session (a test without fonts) may do nothing in it.
+- `meta::write_as(log, app, fixed, refresh, ui)` — `meta::write` for another front-end built on the crate; `app` is
+  its `meta.app` (`write` is `write_as(…, "wgpu", …)`). `tmls-rs` writes `"app":"tmls-rs"`.
+- `meta::GIT: &str` — the `S2_GIT` string `build.rs` bakes in, for `meta::Fixed::git` of such a front-end. It is
+  computed when `s2-wgpu` is built: an uncommitted edit outside `spikes/s2-core` and `spikes/s2-wgpu` (in
+  `crates/desktop`, say) is seen only at the next run of that build script, so `-dirty` can be missing for it.
+- **A latency log belongs to one session.** Key ids and frame `seq` are per `Session` / `Emu`, so `tmls-rs --bench`
+  gives the log to the first tab opened and to no other, and writes `frame` lines only for frames presented while that
+  tab is in front (`crates/desktop/src/tabs.rs`, `Tabs::set_log`).
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:

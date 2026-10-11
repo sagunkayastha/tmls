@@ -223,9 +223,19 @@ impl Session {
     /// Takes every waiting frame and feeds each to the scene (a taken frame that skipped
     /// `update_cells` would lose its dirty rows). Returns whether there was a new frame.
     pub fn take_frames(&mut self, scene: &mut Scene, atlas: &mut Atlas, theme: &Theme) -> bool {
+        self.take_frames_with(|frame| {
+            scene.update_cells(frame, atlas, theme);
+        })
+    }
+
+    /// `take_frames` with the scene left to the caller: `each` is called once for every frame
+    /// taken, in order, and has to pass it to `Scene::update_cells` of the scene this session
+    /// is drawn with. Only a caller that never draws the session (a test without fonts) may
+    /// do nothing in it.
+    pub fn take_frames_with(&mut self, mut each: impl FnMut(&Frame)) -> bool {
         let mut any = false;
         while let Some(frame) = self.emu.frames.take() {
-            scene.update_cells(&frame, atlas, theme);
+            each(&frame);
             if let Some(photon) = &mut self.photon {
                 photon.frame(&frame.keys);
             }
