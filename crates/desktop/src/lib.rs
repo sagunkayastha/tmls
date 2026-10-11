@@ -2,6 +2,7 @@
 //! tmux sessions in tabs on the right.
 //!
 //! - `tabs`  — the tab model: one terminal session per tab; open, switch, close, reattach.
+//! - `sidebar` — the session list's model: host sections, rows, selection by identity, pins.
 //! - `keys`  — the window's own key bindings and which keys go to the terminal, the list, a form.
 //! - `theme` — colours and sizes, taken from tmls.
 //! - `draw`  — the layout of the window and everything but the terminal's cells as quads.
@@ -13,5 +14,6 @@
 pub mod app;
 pub mod draw;
 pub mod keys;
+pub mod sidebar;
 pub mod tabs;
 pub mod theme;
