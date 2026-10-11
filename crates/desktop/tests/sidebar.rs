@@ -24,7 +24,8 @@ fn config(hosts: &[&str]) -> Config {
 
 /// A config directory of this test's own; never `~/.config/tmls`.
 fn scratch(test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tmlsrs-test-sidebar-{}-{test}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("tmlsrs-test-sidebar-{}-{test}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -95,8 +96,14 @@ fn shape(sidebar: &Sidebar) -> Vec<String> {
         .rows()
         .iter()
         .map(|row| match row {
-            Row::Host { host, online: true, .. } => format!("[{host}]"),
-            Row::Host { host, online: false, .. } => format!("[{host} offline]"),
+            Row::Host {
+                host, online: true, ..
+            } => format!("[{host}]"),
+            Row::Host {
+                host,
+                online: false,
+                ..
+            } => format!("[{host} offline]"),
             Row::Session(info) => info.key.name.clone(),
             Row::Gap => "-".to_string(),
         })
@@ -125,7 +132,9 @@ fn hosts_in_config_order_local_first() {
     s.apply(idle("stranger", &["x"]));
     assert_eq!(
         shape(&s),
-        ["[laptop]", "work", "-", "[nas]", "media", "backup", "-", "[pc]", "build"]
+        [
+            "[laptop]", "work", "-", "[nas]", "media", "backup", "-", "[pc]", "build"
+        ]
     );
     let colours: Vec<HostColor> = s
         .rows()
@@ -223,7 +232,11 @@ fn move_by_skips_headers_and_clamps() {
     s.move_by(1);
     assert_eq!(selected(&s), at(LOCAL, "b"));
     s.move_by(1);
-    assert_eq!(selected(&s), at("pc", "c"), "over a gap, an empty host and two headers");
+    assert_eq!(
+        selected(&s),
+        at("pc", "c"),
+        "over a gap, an empty host and two headers"
+    );
     s.move_by(1);
     assert_eq!(selected(&s), at("pc", "c"), "clamped at the bottom");
     s.move_by(-2);
@@ -240,7 +253,11 @@ fn move_by_skips_headers_and_clamps() {
     assert_eq!(s.click(3), None);
     assert_eq!(s.click(99), None);
     assert_eq!(s.menu(2), Some(Action::Menu(key(LOCAL, "b"))));
-    assert_eq!(selected(&s), at(LOCAL, "b"), "the menu is for the row under the pointer");
+    assert_eq!(
+        selected(&s),
+        at(LOCAL, "b"),
+        "the menu is for the row under the pointer"
+    );
     assert_eq!(s.menu(0), None);
     assert_eq!(selected(&s), at(LOCAL, "b"));
 }
@@ -263,12 +280,19 @@ fn pins_sort_and_persist() {
         "pinned first, the rest in the listing's order"
     );
     assert!(s.is_pinned(&key(LOCAL, "c")));
-    assert!(!dir.join("pins").exists(), "nothing is written until a pin changes");
+    assert!(
+        !dir.join("pins").exists(),
+        "nothing is written until a pin changes"
+    );
 
     s.select_key(&key("nas", "Agent Thing"));
     assert!(s.toggle_pin());
     assert_eq!(shape(&s)[5..], ["[nas]", "Agent Thing", "m"]);
-    assert_eq!(selected(&s), at("nas", "Agent Thing"), "the selection moves with its row");
+    assert_eq!(
+        selected(&s),
+        at("nas", "Agent Thing"),
+        "the selection moves with its row"
+    );
     let written = std::fs::read_to_string(dir.join("pins")).unwrap();
     let mut expected = vec![
         from_tmls.clone(),
@@ -327,13 +351,19 @@ fn next_waiting_order() {
     ));
     // ? before ◆, whatever comes first in the list.
     assert_eq!(s.next_waiting(None), Some(key(LOCAL, "ask1")));
-    assert_eq!(s.next_waiting(Some(&key(LOCAL, "ask1"))), Some(key("nas", "ask2")));
+    assert_eq!(
+        s.next_waiting(Some(&key(LOCAL, "ask1"))),
+        Some(key("nas", "ask2"))
+    );
     assert_eq!(
         s.next_waiting(Some(&key("nas", "ask2"))),
         Some(key(LOCAL, "ask1")),
         "wraps round to the other ?"
     );
-    assert_eq!(s.next_waiting(Some(&key("nas", "failed"))), Some(key(LOCAL, "ask1")));
+    assert_eq!(
+        s.next_waiting(Some(&key("nas", "failed"))),
+        Some(key(LOCAL, "ask1"))
+    );
     assert_eq!(
         s.next_waiting(Some(&key("gone", "x"))),
         Some(key(LOCAL, "ask1")),
@@ -349,10 +379,22 @@ fn next_waiting_order() {
             session(LOCAL, "busy", Status::Running),
         ],
     ));
-    assert_eq!(s.next_waiting(Some(&key("nas", "ask2"))), Some(key("nas", "done2")));
-    s.apply(snapshot("nas", vec![session("nas", "done2", Status::Unseen)]));
-    assert_eq!(s.next_waiting(Some(&key("nas", "done2"))), Some(key(LOCAL, "done1")));
-    assert_eq!(s.next_waiting(Some(&key(LOCAL, "done1"))), Some(key("nas", "done2")));
+    assert_eq!(
+        s.next_waiting(Some(&key("nas", "ask2"))),
+        Some(key("nas", "done2"))
+    );
+    s.apply(snapshot(
+        "nas",
+        vec![session("nas", "done2", Status::Unseen)],
+    ));
+    assert_eq!(
+        s.next_waiting(Some(&key("nas", "done2"))),
+        Some(key(LOCAL, "done1"))
+    );
+    assert_eq!(
+        s.next_waiting(Some(&key(LOCAL, "done1"))),
+        Some(key("nas", "done2"))
+    );
     s.apply(idle("nas", &["done2"]));
     assert_eq!(
         s.next_waiting(Some(&key(LOCAL, "done1"))),
@@ -389,7 +431,11 @@ fn view_keeps_the_selection_visible() {
     s.scroll(-100);
     assert_eq!(s.view(5), 0..5);
     s.scroll(100);
-    assert_eq!(s.view(5), 9..14, "the last row at the bottom, not at the top");
+    assert_eq!(
+        s.view(5),
+        9..14,
+        "the last row at the bottom, not at the top"
+    );
     s.scroll(-100);
     // The next move of the selection brings it back into view.
     s.move_by(-1); // s9, row 10
@@ -434,7 +480,16 @@ fn two_line_rows_count_two() {
     let rows: Vec<Option<usize>> = (0..8).map(|line| s.row_at(line, 20)).collect();
     assert_eq!(
         rows,
-        [Some(0), Some(1), Some(1), Some(2), Some(3), Some(3), Some(4), None]
+        [
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(3),
+            Some(4),
+            None
+        ]
     );
     // A row is in view only when all of it fits (the wheel, so the view is not the selection's).
     s.scroll(-1);
@@ -459,9 +514,17 @@ fn the_session_in_front_never_gets_the_done_mark() {
         snapshot(LOCAL, vec![session(LOCAL, "a", a), session(LOCAL, "b", b)])
     };
     let front = key(LOCAL, "a");
-    s.deliver(&mut seen, listing(Status::Running, Status::Running), Some(&front));
+    s.deliver(
+        &mut seen,
+        listing(Status::Running, Status::Running),
+        Some(&front),
+    );
     s.deliver(&mut seen, listing(Status::Idle, Status::Idle), Some(&front));
-    assert_eq!(s.status(&front), Some(Status::Idle), "the user watched it finish");
+    assert_eq!(
+        s.status(&front),
+        Some(Status::Idle),
+        "the user watched it finish"
+    );
     assert_eq!(s.status(&key(LOCAL, "b")), Some(Status::Unseen));
     // It stays seen when the same listing comes again.
     s.deliver(&mut seen, listing(Status::Idle, Status::Idle), None);
@@ -471,7 +534,10 @@ fn the_session_in_front_never_gets_the_done_mark() {
     // Opening the other one's tab clears its mark, in the list and for later listings.
     assert!(s.opened(&mut seen, &key(LOCAL, "b")));
     assert_eq!(s.status(&key(LOCAL, "b")), Some(Status::Idle));
-    assert!(!s.opened(&mut seen, &key(LOCAL, "b")), "nothing changed the second time");
+    assert!(
+        !s.opened(&mut seen, &key(LOCAL, "b")),
+        "nothing changed the second time"
+    );
     s.deliver(&mut seen, listing(Status::Idle, Status::Idle), None);
     assert_eq!(s.status(&key(LOCAL, "b")), Some(Status::Idle));
     assert_eq!(s.status(&key("nas", "none")), None);

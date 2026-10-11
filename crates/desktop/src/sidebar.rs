@@ -140,7 +140,11 @@ impl Sidebar {
         if let Row::Host { online, .. } = &mut self.rows[section.start] {
             *online = snap.online;
         }
-        let sessions = if snap.online { snap.sessions } else { Vec::new() };
+        let sessions = if snap.online {
+            snap.sessions
+        } else {
+            Vec::new()
+        };
         self.listed.retain(|key, _| key.host != snap.host);
         for (place, info) in sessions.iter().enumerate() {
             let pinned = self.pins.contains(&tmls_slug(&info.key, &self.local_name));
@@ -357,9 +361,8 @@ impl Sidebar {
                     top -= 1;
                 }
             }
-            let lines = |from: usize| -> usize {
-                self.rows[from..=cursor].iter().map(Row::lines).sum()
-            };
+            let lines =
+                |from: usize| -> usize { self.rows[from..=cursor].iter().map(Row::lines).sum() };
             while top < cursor && lines(top) > height {
                 top += 1;
             }

@@ -1,7 +1,7 @@
 //! The winit event loop and the wgpu surface: one window with the session list and the tabs.
 //!
 //! This file only moves events and frames between winit, wgpu, the poller and the modules that
-//! hold the logic (`tabs`, `keys`, `draw` here; `input`, `session`, `marks`, `surface`, `meta`,
+//! hold the logic (`tabs`, `keys`, `sidebar`, `draw` here; `input`, `session`, `marks`, `surface`, `meta`,
 //! `gfx` of `s2-wgpu`); those are tested without a window. It follows `s2-wgpu`'s `app`, which
 //! shows one terminal, and keeps its latency rules for the terminal of every tab:
 //!
@@ -10,6 +10,9 @@
 //! - frames are taken only by `Tabs::take_frames`, which passes each to the tab's scene;
 //! - a key reaches a session only through `keys::route` → `Route::Terminal`, so keys typed
 //!   while the list has the focus, or at a tab whose session ended, reach no PTY and no log.
+//!
+//! List path: a polling thread delivers a host's listing → `UserEvent::Snapshot` →
+//! `Sidebar::deliver` (which marks what finished unwatched) → a redraw that rebuilds the chrome.
 //!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
@@ -23,14 +26,13 @@
 //! `--bench DIR`: the first tab opened writes the latency log (`Tabs::set_log`); `frame` lines
 //! are written for the frames presented while that tab is in front.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use client_core::{Config, HostSnapshot, Poller, SessionKey, Status, default_color};
+use client_core::{Config, HostSnapshot, Poller, Seen, SessionKey, default_color, tmux};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -48,8 +50,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
-use crate::draw::{self, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
+use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
+use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{Theme, host_rgb, mark_rgb};
 
@@ -171,11 +174,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => running.ime(t_event_ns, &ime),
             WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => running.left_button(state),
+            WindowEvent::MouseInput { state, button, .. } => running.button(state, button),
             WindowEvent::MouseWheel { delta, .. } => running.wheel(&delta),
             _ => {}
         }
@@ -232,11 +231,8 @@ struct Meta {
     first_try: Option<Instant>,
 }
 
-/// One row of the session list: a session and the mark the listing gave it.
-struct Row {
-    key: SessionKey,
-    status: Status,
-}
+/// The window's title with no tab open.
+const TITLE: &str = "tmls-rs";
 
 struct Running {
     window: Arc<Window>,
@@ -248,9 +244,11 @@ struct Running {
     theme: Theme,
     /// Where everything is, for the current size, scale and font size.
     layout: Layout,
-    /// The quads of everything but the terminal, rebuilt only when `view` changed.
+    /// The quads of everything but the terminal, rebuilt only when something they show
+    /// changed.
     chrome: Chrome,
-    /// What `chrome` draws; put together again on every redraw that is `dirty`.
+    /// What `chrome` draws besides the session list; put together again on every redraw that
+    /// is `dirty`.
     view: View,
 
     cfg: Config,
@@ -258,12 +256,10 @@ struct Running {
     /// What has the keyboard focus inside the window.
     focus: Focus,
     gate: RepeatGate,
-    /// The newest listing of every host that has delivered one.
-    snapshots: BTreeMap<String, HostSnapshot>,
-    /// The session list: every session of `snapshots`, hosts in `cfg.hosts` order.
-    rows: Vec<Row>,
-    /// The list's cursor: an index into `rows`.
-    selected: usize,
+    /// The session list.
+    sidebar: Sidebar,
+    /// Which sessions finished while their tab was not in front.
+    seen: Seen,
     /// The last thing that went wrong (a tab that could not be opened), for the status line.
     problem: Option<String>,
     /// Keeps the polling threads alive.
@@ -301,7 +297,7 @@ impl Running {
         proxy: EventLoopProxy<UserEvent>,
     ) -> anyhow::Result<Running> {
         let attributes = Window::default_attributes()
-            .with_title("tmls-rs")
+            .with_title(TITLE)
             .with_inner_size(LogicalSize::new(1200.0, 720.0));
         let window = Arc::new(
             event_loop
@@ -371,6 +367,7 @@ impl Running {
             None => None,
         };
         let cfg = Config::load(config_dir, &args.hosts);
+        let sidebar = Sidebar::new(&cfg, config_dir.to_path_buf());
         let mut tabs = Tabs::new(&cfg.local_name);
         let wake_pending = Arc::new(AtomicBool::new(false));
         let (pending, wake_proxy) = (wake_pending.clone(), proxy.clone());
@@ -418,9 +415,8 @@ impl Running {
             // Nothing is open yet: the keys are the list's.
             focus: Focus::Sidebar,
             gate: RepeatGate::default(),
-            snapshots: BTreeMap::new(),
-            rows: Vec::new(),
-            selected: 0,
+            sidebar,
+            seen: Seen::new(),
             problem: None,
             _poller: poller,
             log,
@@ -483,41 +479,26 @@ impl Running {
         self.invalidate();
     }
 
-    /// A host's new listing: the list is put together again; its cursor stays on the session
-    /// it was on, if that is still there.
+    /// A host's new listing, in the order the poller delivers them. The session of the tab in
+    /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, snapshot: HostSnapshot) {
-        let cursor = self.rows.get(self.selected).map(|row| row.key.clone());
-        self.snapshots.insert(snapshot.host.clone(), snapshot);
-        self.rows = self
-            .cfg
-            .hosts
-            .iter()
-            .filter_map(|host| self.snapshots.get(host))
-            .flat_map(|snapshot| &snapshot.sessions)
-            .map(|session| Row {
-                key: session.key.clone(),
-                status: session.status,
-            })
-            .collect();
-        let kept = cursor.and_then(|key| self.rows.iter().position(|row| row.key == key));
-        self.selected = kept
-            .unwrap_or(self.selected)
-            .min(self.rows.len().saturating_sub(1));
+        let front = self.tabs.active().map(|index| self.tabs.key(index));
+        self.sidebar.deliver(&mut self.seen, snapshot, front);
         self.invalidate();
     }
 
-    /// Everything `chrome` draws, from the state as it is now.
+    /// What `chrome` draws besides the session list, from the state as it is now.
     fn build_view(&self) -> View {
         let status_of = |key: &SessionKey| {
-            let row = self.rows.iter().find(|row| &row.key == key)?;
-            Some((row.status.mark(), mark_rgb(row.status)))
+            let status = self.sidebar.status(key)?;
+            Some((status.mark(), mark_rgb(status)))
         };
         let tabs = (0..self.tabs.len())
             .map(|index| {
                 let key = self.tabs.key(index);
                 let host = self.cfg.host_colors.get(&key.host).copied();
                 TabView {
-                    name: key.name.clone(),
+                    key: key.clone(),
                     mark: status_of(key),
                     host: host_rgb(host.unwrap_or_else(|| default_color(&key.host))),
                     ended: self.tabs.state(index) != TabState::Live,
@@ -536,12 +517,6 @@ impl Running {
             (None, None) => "no session open — Enter in the list attaches".to_string(),
         };
         View {
-            rows: self
-                .rows
-                .iter()
-                .map(|row| format!("{} {}:{}", row.status.mark(), row.key.host, row.key.name))
-                .collect(),
-            selected: self.selected,
             sidebar_focused: self.focus == Focus::Sidebar,
             tabs,
             active,
@@ -613,11 +588,7 @@ impl Running {
                     self.close_tab(active);
                 }
             }
-            Global::NextWaiting => {
-                if let Some(key) = self.next_waiting() {
-                    self.open(&key);
-                }
-            }
+            Global::NextWaiting => self.next_waiting(),
             Global::ZoomIn => self.zoom(ZoomDir::In),
             Global::ZoomOut => self.zoom(ZoomDir::Out),
             Global::Reattach => {
@@ -631,32 +602,89 @@ impl Running {
         }
     }
 
-    /// The session after the front tab's in the list (wrapping round) that waits for the user.
-    fn next_waiting(&self) -> Option<SessionKey> {
+    /// Opens the next session after the front tab's that needs the user.
+    fn next_waiting(&mut self) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
-        let from = front
-            .and_then(|key| self.rows.iter().position(|row| &row.key == key))
-            .map_or(0, |at| at + 1);
-        let count = self.rows.len();
-        (0..count)
-            .map(|step| &self.rows[(from + step) % count])
-            .find(|row| row.status == Status::Waiting)
-            .map(|row| row.key.clone())
+        if let Some(key) = self.sidebar.next_waiting(front) {
+            self.open(&key);
+        }
     }
 
     fn list_key(&mut self, key: ListKey) {
         match key {
-            ListKey::Up => self.selected = self.selected.saturating_sub(1),
-            ListKey::Down => {
-                self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1));
-            }
+            ListKey::Up => self.sidebar.move_by(-1),
+            ListKey::Down => self.sidebar.move_by(1),
             ListKey::Open => {
-                if let Some(key) = self.rows.get(self.selected).map(|row| row.key.clone()) {
-                    self.open(&key);
+                if let Some(action) = self.sidebar.activate() {
+                    self.act(action);
                 }
             }
+            ListKey::Pin => {
+                self.sidebar.toggle_pin();
+            }
+            ListKey::NextWaiting => self.next_waiting(),
         }
         self.invalidate();
+    }
+
+    /// Does what the list asked for.
+    fn act(&mut self, action: sidebar::Action) {
+        match action {
+            sidebar::Action::Attach(key) => self.open(&key),
+            // The new-session form and the session menu are not built yet (Tasks 5 and 6 of
+            // the plan); the list already asks for them.
+            sidebar::Action::NewSessionOn(_) | sidebar::Action::Menu(_) => {}
+        }
+    }
+
+    /// A mouse button pressed on the session list. Left: attach the session, or the `+` of a
+    /// host's header. Middle: pin. Right: the session's menu.
+    fn list_click(&mut self, button: MouseButton, line: usize, col: usize) {
+        let Some(row) = self.sidebar.row_at(line, self.layout.list_lines) else {
+            return;
+        };
+        let header = matches!(self.sidebar.rows()[row], sidebar::Row::Host { .. });
+        let action = match button {
+            MouseButton::Left if header && !self.layout.on_add(col) => None,
+            MouseButton::Left => self.sidebar.click(row),
+            MouseButton::Right => self.sidebar.menu(row),
+            MouseButton::Middle => {
+                if let Some(key) = self.sidebar.key_at(row).cloned() {
+                    self.sidebar.select_key(&key);
+                    self.sidebar.toggle_pin();
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(action) = action {
+            self.act(action);
+        }
+        self.invalidate();
+    }
+
+    /// A button at the foot of the sidebar; they act on the selected session.
+    fn foot_button(&mut self, button: Button) {
+        let selected = self.sidebar.selected().cloned();
+        match (button, selected) {
+            (Button::Open, Some(key)) => self.open(&key),
+            (Button::Copy, Some(key)) => {
+                let text = tmux::attach_text(&key, &self.cfg.local_name);
+                if let Some(clipboard) = self.clipboard()
+                    && let Err(e) = clipboard.set_text(text)
+                {
+                    eprintln!("tmls-rs: copy failed: {e}");
+                }
+            }
+            (Button::New, selected) => {
+                let host = selected.map(|key| key.host);
+                if let Some(host) = host.or_else(|| self.cfg.hosts.first().cloned()) {
+                    self.act(sidebar::Action::NewSessionOn(host));
+                }
+            }
+            // The keys' panel is not built.
+            (Button::Help, _) | (Button::Open | Button::Copy, None) => {}
+        }
     }
 
     /// Opens the session's tab (or brings it to the front) and gives it the keys.
@@ -678,19 +706,43 @@ impl Running {
         self.invalidate();
     }
 
+    /// Closes a tab. The keys move only when that changes which tab is in front: closing one
+    /// in the back while the list has the keys leaves them with the list.
     fn close_tab(&mut self, index: usize) {
+        let front = self
+            .tabs
+            .active()
+            .map(|active| self.tabs.key(active).clone());
         self.tabs.close(index);
-        if self.tabs.is_empty() {
-            self.set_focus(Focus::Sidebar);
+        let now = self.tabs.active().map(|active| self.tabs.key(active));
+        let front_changed = now != front.as_ref();
+        let focus = keys::focus_after_close(self.focus, front_changed, self.tabs.is_empty());
+        if front_changed {
+            self.tab_changed();
         }
-        self.tab_changed();
+        if focus != self.focus {
+            self.set_focus(focus);
+        }
+        self.invalidate();
     }
 
     /// Another tab is in front, or the one in front has a new session: the keys go to the
-    /// terminal, and a key still held is not typed into it.
+    /// terminal, and a key still held is not typed into it. The list's cursor goes to the
+    /// tab's session, which counts as seen from now on; the window is named after it.
     fn tab_changed(&mut self) {
         self.gate.hold();
         self.ime_at = None;
+        let front = self.tabs.active().map(|active| self.tabs.key(active));
+        match front {
+            Some(key) => {
+                self.sidebar.select_key(key);
+                self.sidebar.opened(&mut self.seen, key);
+                // tmls: `session · machine` (its `set_title`).
+                self.window
+                    .set_title(&format!("{} · {}", key.name, key.host));
+            }
+            None => self.window.set_title(TITLE),
+        }
         if !self.tabs.is_empty() {
             self.set_focus(Focus::Terminal);
         }
@@ -797,22 +849,25 @@ impl Running {
         }
     }
 
-    fn left_button(&mut self, state: ElementState) {
+    fn button(&mut self, state: ElementState, button: MouseButton) {
         let (x, y) = self.pointer;
         if state == ElementState::Released {
-            if let Some(active) = self.tabs.active() {
+            if button == MouseButton::Left
+                && let Some(active) = self.tabs.active()
+            {
                 self.tabs.session_mut(active).select_end();
             }
             return;
         }
-        match self.layout.hit(x, y, self.tabs.len()) {
-            Hit::ListRow(row) => {
-                let index = draw::list_top(self.selected, self.layout.visible_rows) + row;
-                if let Some(key) = self.rows.get(index).map(|row| row.key.clone()) {
-                    self.selected = index;
-                    self.open(&key);
-                }
-            }
+        let hit = self.layout.hit(x, y, self.tabs.len());
+        if let Hit::List { line, col } = hit {
+            return self.list_click(button, line, col);
+        }
+        if button != MouseButton::Left {
+            return;
+        }
+        match hit {
+            Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);
                 self.tab_changed();
@@ -829,20 +884,28 @@ impl Running {
                     .and_then(|scene| scene.cell_at(x, y));
                 self.tabs.session_mut(active).select_start(cell);
             }
-            Hit::Sidebar | Hit::TabBar | Hit::Status | Hit::Outside => {}
+            Hit::List { .. } | Hit::Sidebar | Hit::TabBar | Hit::Status | Hit::Outside => {}
         }
     }
 
-    /// The wheel scrolls the front tab's scrollback while the pointer is over the terminal.
+    /// The wheel scrolls what the pointer is over: the front tab's scrollback, or the session
+    /// list.
     fn wheel(&mut self, delta: &MouseScrollDelta) {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
         let (x, y) = self.pointer;
-        if self.layout.hit(x, y, self.tabs.len()) == Hit::Terminal
-            && let Some(active) = self.tabs.active()
-        {
-            // The frame at the new position comes back through the waker.
-            self.tabs.session_mut(active).scroll(rows);
+        match self.layout.hit(x, y, self.tabs.len()) {
+            Hit::Terminal => {
+                if let Some(active) = self.tabs.active() {
+                    // The frame at the new position comes back through the waker.
+                    self.tabs.session_mut(active).scroll(rows);
+                }
+            }
+            Hit::List { .. } | Hit::Button(_) | Hit::Sidebar if rows != 0 => {
+                self.sidebar.scroll(rows);
+                self.invalidate();
+            }
+            _ => {}
         }
     }
 
@@ -879,6 +942,7 @@ impl Running {
             &self.theme,
             &mut self.chrome,
             &self.view,
+            &self.sidebar,
             &self.layout,
         );
         self.renderer.prepare(

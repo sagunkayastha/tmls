@@ -1,6 +1,8 @@
 //! The window's own bindings per focus, and that everything else reaches the terminal.
 
-use desktop::keys::{Focus, Global, ListKey, RepeatGate, Route, global, list_key, route};
+use desktop::keys::{
+    Focus, Global, ListKey, RepeatGate, Route, focus_after_close, global, list_key, route,
+};
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
 
@@ -280,6 +282,12 @@ fn list_keys() {
     assert_eq!(list_key(&release(&enter)), None);
     assert_eq!(list_key(&ch('j', CTRL)), None);
     assert_eq!(list_key(&ch('x', NONE)), None);
+    // Pin and "next waiting" act once per press.
+    assert_eq!(list_key(&ch('p', NONE)), Some(ListKey::Pin));
+    assert_eq!(list_key(&ch('n', NONE)), Some(ListKey::NextWaiting));
+    assert_eq!(list_key(&repeat(&ch('p', NONE))), None);
+    assert_eq!(list_key(&repeat(&ch('n', NONE))), None);
+    assert_eq!(list_key(&ch('P', SHIFT)), None);
 }
 
 #[test]
@@ -296,4 +304,29 @@ fn a_held_key_does_not_type_into_the_session_that_just_got_the_keys() {
     assert!(!gate.passes(&repeat(&enter)));
     assert!(gate.passes(&ch('a', NONE)), "a fresh press ends it");
     assert!(gate.passes(&repeat(&ch('a', NONE))));
+}
+
+#[test]
+fn closing_a_tab_in_the_back_leaves_the_keys_where_they_are() {
+    // The `×` of a tab in the back, clicked while the list has the keys: the tab in front
+    // stays in front, and `j` / `k` stay the list's.
+    assert_eq!(
+        focus_after_close(Focus::Sidebar, false, false),
+        Focus::Sidebar
+    );
+    assert_eq!(
+        focus_after_close(Focus::Terminal, false, false),
+        Focus::Terminal
+    );
+    assert_eq!(focus_after_close(Focus::Form, false, false), Focus::Form);
+    // The tab in front was closed: the one that took its place gets the keys.
+    for focus in FOCUSES {
+        assert_eq!(focus_after_close(focus, true, false), Focus::Terminal);
+        // The last tab: there is no terminal to give them to.
+        assert_eq!(focus_after_close(focus, true, true), Focus::Sidebar);
+    }
+    // And the keys the list then gets reach no session.
+    let j = ch('j', NONE);
+    let focus = focus_after_close(Focus::Sidebar, false, false);
+    assert_eq!(route(&j, focus, Some(TabState::Live)), Route::Sidebar);
 }

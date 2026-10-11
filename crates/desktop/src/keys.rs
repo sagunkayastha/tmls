@@ -3,6 +3,8 @@
 //! Bindings (`global`), all on the press:
 //! - Alt+Shift+Right / Left — next / previous tab (repeats while held)
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
+//! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
+//!   next session that waits
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
@@ -156,12 +158,15 @@ pub fn route(ev: &KeyEvent, focus: Focus, tab: Option<TabState>) -> Route {
     }
 }
 
-/// A key of the session list (tmls: j/k or the arrows move, Enter attaches).
+/// A key of the session list (tmls `keys.py`: j/k or the arrows move, Enter attaches, p pins,
+/// n jumps to the next session that waits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListKey {
     Up,
     Down,
     Open,
+    Pin,
+    NextWaiting,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -173,7 +178,20 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Named(Named::Up) | Key::Char('k') => Some(ListKey::Up),
         Key::Named(Named::Down) | Key::Char('j') => Some(ListKey::Down),
         Key::Named(Named::Enter) if !ev.repeat => Some(ListKey::Open),
+        Key::Char('p') if !ev.repeat => Some(ListKey::Pin),
+        Key::Char('n') if !ev.repeat => Some(ListKey::NextWaiting),
         _ => None,
+    }
+}
+
+/// What has the keys after a tab was closed. With no tab left it is the list. When another
+/// tab came to the front it is that tab's terminal. Otherwise (a tab in the back was closed)
+/// nothing moves: `j` in the list must not start to type into the session in front.
+pub fn focus_after_close(focus: Focus, front_changed: bool, no_tabs: bool) -> Focus {
+    match (no_tabs, front_changed) {
+        (true, _) => Focus::Sidebar,
+        (false, true) => Focus::Terminal,
+        (false, false) => focus,
     }
 }
 

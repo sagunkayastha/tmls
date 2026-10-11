@@ -1,11 +1,17 @@
 //! Colours and sizes. What tmls defines is taken from tmls (the source line is cited); the
 //! rest goes with the terminal's dark default (`s2_wgpu::gfx::grid::Theme`).
 //!
+//! "tmls" is `src/tmls/app.py` on its branch `feat/native-attach` unless another file is named.
+//! Where its CSS names a variable of Textual's instead of a colour (`$accent`, `$boost`, …) the
+//! value is the one Textual's default dark theme gives it, computed with the Textual that tmls
+//! runs on (`textual-dark`: background #121212, foreground #e0e0e0, primary #0178d4,
+//! primary-darken-2 #0053aa, accent #fea62b, success #4ebf71, boost = white at 4 %).
+//!
 //! Sizes are logical pixels or cells; `draw::layout` multiplies the pixels by the window's
 //! scale factor. Colours are sRGB bytes. One font for everything: the atlas rasterises at a
 //! single size, so the sidebar and the tab bar are set in the terminal's font and zoom with it.
 
-use client_core::{HostColor, Status};
+use client_core::{HostColor, Status, Tool};
 use s2_wgpu::gfx::atlas::FontSpec;
 use s2_wgpu::gfx::grid;
 
@@ -18,15 +24,54 @@ pub const TAB_MAX_COLS: usize = 24;
 /// The mark of a session's close button in the tab bar.
 pub const CLOSE_MARK: &str = "×";
 
+/// Text that is `dim` in tmls (the idle mark, a row's second line, a low context %): the
+/// terminal's faint attribute, here the foreground at half strength over the background.
+pub const DIM_RGB: [u8; 3] = [0x79, 0x79, 0x79];
+/// The bar at the left of the list's cursor row (tmls line 439: `border-left: outer $accent`).
+pub const CURSOR_RGB: [u8; 3] = [0xfe, 0xa6, 0x2b];
+/// The name of the session whose tab is in front (tmls line 392: `SessionRow.current`).
+pub const CURRENT_RGB: [u8; 3] = [0xff, 0x8c, 0x00];
+/// The `+` of a host's header and the New and Open buttons (tmls line 387: `AddSession`,
+/// `$success`; line 533: `variant="success"`).
+pub const ADD_RGB: [u8; 3] = [0x4e, 0xbf, 0x71];
+/// The Copy button (tmls line 534: `variant="primary"`, `$primary`).
+pub const COPY_RGB: [u8; 3] = [0x01, 0x78, 0xd4];
+/// The mark after a pinned session's name and its colour (tmls line 64: `PIN`).
+pub const PIN: &str = "★";
+pub const PIN_RGB: [u8; 3] = [0xe5, 0xc0, 0x7b];
+/// Before the number of other clients attached to a session (tmls line 144).
+pub const ATTACHED_MARK: &str = "◉";
+/// After a host's name when it does not answer (tmls line 893).
+pub const OFFLINE: &str = "· offline";
+/// The legend's words, in tmls's order (lines 92–93); tmls's `failed` is `Status::Error`.
+pub const LEGEND: [(Status, &str); 5] = [
+    (Status::Running, "running"),
+    (Status::Waiting, "waiting"),
+    (Status::Unseen, "done"),
+    (Status::Error, "error"),
+    (Status::Idle, "idle"),
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     /// The terminal's own colours; `terminal.bg` clears the window.
     pub terminal: grid::Theme,
     /// Family and logical size at zoom level zero.
     pub font: FontSpec,
+    /// Textual's `$background` and `$foreground`: what tmls's sidebar is drawn on and in.
     pub sidebar_bg: [u8; 3],
     pub sidebar_fg: [u8; 3],
-    /// Text that matters less: an inactive tab's name, the status line.
+    /// See `DIM_RGB`.
+    pub dim_fg: [u8; 3],
+    /// The line beside the list and the one above its legend (tmls lines 383 and 447:
+    /// `solid $primary-darken-2`).
+    pub sidebar_rule: [u8; 3],
+    /// Behind the row of the session whose tab is in front (tmls line 392: `$boost`).
+    pub row_active_bg: [u8; 3],
+    /// The cursor's bar while the list does not have the keys. (tmls shows none then.)
+    pub cursor_idle: [u8; 3],
+    /// Text that matters less: a host's name, the legend, an inactive tab's name, the status
+    /// line (tmls `$text-muted`: the foreground at 60 %).
     pub muted_fg: [u8; 3],
     /// Lines between areas.
     pub separator: [u8; 3],
@@ -55,9 +100,13 @@ impl Default for Theme {
         Theme {
             terminal,
             font: FontSpec::default(),
-            sidebar_bg: [0x1a, 0x1b, 0x22],
-            sidebar_fg: [0xc8, 0xc8, 0xd0],
-            muted_fg: [0x80, 0x84, 0x94],
+            sidebar_bg: [0x12, 0x12, 0x12],
+            sidebar_fg: [0xe0, 0xe0, 0xe0],
+            dim_fg: DIM_RGB,
+            sidebar_rule: [0x00, 0x53, 0xaa],
+            row_active_bg: [0x1b, 0x1b, 0x1b],
+            cursor_idle: [0x4a, 0x4a, 0x4a],
+            muted_fg: [0x8e, 0x8e, 0x8e],
             separator: [0x34, 0x36, 0x42],
             focus_ring: [0x5a, 0x9c, 0xf0],
             row_selected_bg: [0x2c, 0x3a, 0x5c],
@@ -86,13 +135,45 @@ pub fn host_rgb(color: HostColor) -> [u8; 3] {
     }
 }
 
-/// The colour of a status mark (tmls `app.py`, `MARKS`, lines 47–49; idle is tmls's "dim").
+/// The colour of a status mark (tmls `MARKS`, lines 51–53; idle is `dim`).
 pub fn mark_rgb(status: Status) -> [u8; 3] {
     match status {
         Status::Running => [0x4e, 0xbf, 0x71],
         Status::Waiting => [0xe5, 0xc0, 0x7b],
         Status::Unseen => [0xff, 0x8c, 0x00],
         Status::Error => [0xe0, 0x6c, 0x75],
-        Status::Idle => [0x80, 0x84, 0x94],
+        Status::Idle => DIM_RGB,
+    }
+}
+
+/// A status mark as text (tmls `MARKS`, lines 51–53): `Status::mark`, for drawing.
+pub fn mark_glyph(status: Status) -> &'static str {
+    match status {
+        Status::Running => "●",
+        Status::Waiting => "?",
+        Status::Unseen => "◆",
+        Status::Error => "✕",
+        Status::Idle => "○",
+    }
+}
+
+/// The letter of the agent CLI a session runs and its colour (tmls `TOOL_LETTER`, lines
+/// 66–67); none for a shell.
+pub fn tool_letter(tool: Tool) -> Option<(&'static str, [u8; 3])> {
+    match tool {
+        Tool::Claude => Some(("C", [0xd9, 0x77, 0x57])),
+        Tool::Opencode => Some(("O", [0x61, 0xaf, 0xef])),
+        Tool::Codex => Some(("X", [0x98, 0xc3, 0x79])),
+        Tool::Other => None,
+    }
+}
+
+/// The colour of "how full Claude's context is" (tmls `fill_style`, lines 58–59): red from
+/// 90 %, orange from 70 %, dim below.
+pub fn context_rgb(pct: u8, theme: &Theme) -> [u8; 3] {
+    match pct {
+        90.. => [0xe0, 0x6c, 0x75],
+        70.. => [0xff, 0x8c, 0x00],
+        _ => theme.dim_fg,
     }
 }

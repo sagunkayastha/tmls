@@ -2,36 +2,52 @@
 //!
 //! ```text
 //! +-- sidebar (28 cols) --+s+-- tab bar (1 row) ---------------------+
-//! | session row           |e| ▌● name  × | ▌? name  × |              |
-//! | session row           |p+----------------------------------------+
-//! | …                     |a| terminal: the grid of the tab in front |
-//! |                       |r|                                        |
-//! |                       |a+----------------------------------------+
-//! |                       |t| status line (1 row)                    |
-//! +-----------------------+o+----------------------------------------+
+//! | LAPTOP              + |e| ▌● name  × | ▌? name  × |              |
+//! | ● C name ★            |p+----------------------------------------+
+//! |     title         58% |a|  terminal: the grid of the tab in front|
+//! | ○   name          ◉2  |r|                                        |
+//! |                       |a|                                        |
+//! | ● running  ? waiting  |t|                                        |
+//! | ◆ done     ✕ error    |o+----------------------------------------+
+//! | New  Open  Copy  ?    |r| status line (1 row)                    |
+//! +-----------------------+-+----------------------------------------+
 //! ```
 //!
 //! `layout` gives the rectangles in physical pixels, all on whole pixels (atlas texels are
 //! copied 1:1), `Layout::hit` what is under a pixel. `Layout::terminal` is the origin of the
 //! tabs' scenes and `Layout::grid` the size the sessions are resized to.
 //!
+//! **The sidebar** is tmls's (its pane mode): the session list on the cell grid, one line per
+//! row and two for a session with a summary, then a legend of the marks and a row of buttons
+//! at the foot. Which rows are in view and which row a line belongs to is the model's
+//! (`sidebar::Sidebar::view`, `row_at`); what a row says is `session_spans` and
+//! `header_spans`, text on the list's columns that the tests read without a font.
+//!
 //! The quads are two layers of `gfx::grid::Instance`s around the terminal's own:
 //! `[chrome.base, scene.bg, scene.glyphs, scene.overlay, chrome.top]` (`layer_order`) — `base`
 //! is the sidebar, the tab bar and the status line, `top` the notice over the terminal of a tab
 //! whose session ended. `Chrome` caches both: they are rebuilt when `invalidate` was called or
 //! the atlas started a new generation, not on every frame, so a key echo pays nothing for them.
+//! A rebuild sets the text of the rows in view only.
 //!
 //! Text is set on the atlas's cell grid and cut to the columns that fit (the renderer has no
-//! scissor). The sidebar here is a plain list of sessions; Task 4 replaces its model and
-//! drawing.
+//! scissor).
 
+use std::borrow::Cow;
+
+use client_core::{SessionInfo, SessionKey};
 use s2_wgpu::gfx::atlas::{Atlas, CellMetrics, FontStyle};
-use s2_wgpu::gfx::grid::{self, Instance, Scene, push_text, solid};
+use s2_wgpu::gfx::grid::{self, Instance, Scene, clusters, push_text, solid};
 use s2_wgpu::ui::draw::fit;
 pub use s2_wgpu::ui::layout::Rect;
 
+use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
-use crate::theme::{CLOSE_MARK, SIDEBAR_COLS, TAB_MAX_COLS, Theme};
+use crate::theme::{
+    ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, LEGEND, OFFLINE, PIN,
+    PIN_RGB, SIDEBAR_COLS, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
+    tool_letter,
+};
 
 /// What a tab whose session ended shows over its last screen.
 pub const ENDED_NOTICE: &str = "session ended — Enter to reattach";
@@ -43,6 +59,46 @@ const TAB_FIXED_COLS: usize = 6;
 const TAB_CLOSE_MIN_COLS: usize = 4;
 /// Cells at a tab's right end that close it when clicked: the `×` and one cell either side.
 const TAB_CLOSE_COLS: usize = 3;
+/// Cells at the right end of a host's header that are its `+` when clicked: the `+` and one
+/// cell either side.
+const ADD_COLS: usize = 3;
+/// Lines of the legend: two marks a line, as in tmls.
+const LEGEND_LINES: usize = LEGEND.len().div_ceil(2);
+/// Columns from one legend entry to the next: the mark, a space, the word padded to nine
+/// (tmls line 96).
+const LEGEND_ENTRY_COLS: usize = 11;
+/// The legend and the buttons are left out when fewer lines than this would be the list's.
+const MIN_LIST_LINES: usize = 4;
+
+/// A button at the foot of the sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    /// A new session on the selected session's host.
+    New,
+    /// Attach the selected session.
+    Open,
+    /// Copy the command that attaches the selected session.
+    Copy,
+    /// The keys.
+    Help,
+}
+
+/// The buttons from left to right with their labels, two columns apart.
+pub const BUTTONS: [(Button, &str); 4] = [
+    (Button::New, "New"),
+    (Button::Open, "Open"),
+    (Button::Copy, "Copy"),
+    (Button::Help, "?"),
+];
+
+/// Each button with its label and the column the label starts at.
+fn button_columns() -> impl Iterator<Item = (Button, &'static str, usize)> {
+    BUTTONS.iter().scan(1, |col, (button, label)| {
+        let start = *col;
+        *col += label.len() + 2;
+        Some((*button, *label, start))
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
@@ -52,13 +108,18 @@ pub struct Layout {
     pub sidebar: Rect,
     /// The line between the sidebar and the rest.
     pub separator: Rect,
-    /// Height of a row of the session list; `visible_rows` fit.
-    pub row_h: f32,
-    pub visible_rows: usize,
-    /// Columns a row's label may take.
-    pub label_cols: usize,
+    /// The session list: `list_lines` lines of a cell's height.
+    pub list: Rect,
+    pub list_lines: usize,
+    /// Columns of the sidebar. A row's text leaves one free at either end.
+    pub list_cols: usize,
+    /// The legend of the marks and, under it, the row of buttons; both empty when the window
+    /// is too low for them.
+    pub legend: Rect,
+    pub buttons: Rect,
     pub tab_bar: Rect,
-    /// The grid's area; its corner is the grid's origin.
+    /// The grid's area; its corner is the grid's origin. Half a cell right of the separator,
+    /// so the text does not touch it.
     pub terminal: Rect,
     pub status: Rect,
     /// Columns and rows of the terminal.
@@ -70,9 +131,15 @@ pub struct Layout {
 /// What is under a window pixel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
-    /// A row of the session list, counted from the first visible one (it may be empty).
-    ListRow(usize),
-    /// The sidebar or the separator, where no row is.
+    /// The session list: the line, counted from the first one drawn (it may be empty), and
+    /// the column.
+    List {
+        line: usize,
+        col: usize,
+    },
+    /// A button at the foot of the sidebar.
+    Button(Button),
+    /// The sidebar or the separator, where nothing is to click.
     Sidebar,
     /// A tab, anywhere but its `×`.
     Tab(usize),
@@ -107,13 +174,40 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
 
     // The tab bar and the status line never take more than a third of the height each.
     let bar_h = (cell_h + 2.0 * inset).min((win_h / 3.0).floor());
+    // (tmls's terminal is a kitty window with kitty's own padding; half a cell here.)
+    let pad = (cell_w / 2.0).round().min((right_w - cell_w).max(0.0));
     let terminal = Rect {
-        x: right_x,
+        x: right_x + pad,
         y: bar_h,
-        w: right_w,
+        w: right_w - pad,
         h: (win_h - 2.0 * bar_h).max(0.0),
     };
-    let row_h = cell_h + inset;
+    // The foot of the sidebar, from the bottom up: the inset, the buttons, the legend, a line.
+    let foot_h = line + (LEGEND_LINES + 1) as f32 * cell_h + inset;
+    let foot = win_h >= inset + MIN_LIST_LINES as f32 * cell_h + foot_h;
+    let across = Rect {
+        x: 0.0,
+        y: win_h,
+        w: side_w,
+        h: 0.0,
+    };
+    let (legend, buttons) = match foot {
+        true => (
+            Rect {
+                y: win_h - foot_h + line,
+                h: LEGEND_LINES as f32 * cell_h,
+                ..across
+            },
+            Rect {
+                y: win_h - inset - cell_h,
+                h: cell_h,
+                ..across
+            },
+        ),
+        false => (across, across),
+    };
+    let list_bottom = if foot { win_h - foot_h } else { win_h };
+    let list_lines = ((list_bottom - inset).max(0.0) / cell_h).floor() as usize;
     Layout {
         window: (win_w, win_h),
         cell: (cell_w, cell_h),
@@ -129,9 +223,15 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
             w: sep_w,
             h: win_h,
         },
-        row_h,
-        visible_rows: ((win_h - inset).max(0.0) / row_h).floor() as usize,
-        label_cols: ((side_w / cell_w).floor() as usize).saturating_sub(2),
+        list: Rect {
+            y: inset,
+            h: list_lines as f32 * cell_h,
+            ..across
+        },
+        list_lines,
+        list_cols: (side_w / cell_w).floor() as usize,
+        legend,
+        buttons,
         tab_bar: Rect {
             x: right_x,
             y: 0.0,
@@ -148,11 +248,6 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
         grid: m.grid_for(terminal.w as u32, terminal.h as u32),
         host_bar: px(theme.host_bar).clamp(1.0, cell_w),
     }
-}
-
-/// The first row of the session list that is drawn, so that the selected one is in view.
-pub fn list_top(selected: usize, visible_rows: usize) -> usize {
-    (selected + 1).saturating_sub(visible_rows)
 }
 
 impl Layout {
@@ -173,15 +268,18 @@ impl Layout {
         }
     }
 
-    /// The rectangle of a visible row of the session list.
-    pub fn list_row(&self, row: usize) -> Rect {
-        let top = self.row_h - self.cell.1;
+    /// The rectangle of `lines` lines of the session list from line `line`.
+    pub fn list_lines_rect(&self, line: usize, lines: usize) -> Rect {
         Rect {
-            x: 0.0,
-            y: top + row as f32 * self.row_h,
-            w: self.sidebar.w,
-            h: self.row_h,
+            y: self.list.y + line as f32 * self.cell.1,
+            h: lines as f32 * self.cell.1,
+            ..self.list
         }
+    }
+
+    /// Whether a click at this column of a host's header is on its `+`.
+    pub fn on_add(&self, col: usize) -> bool {
+        col + ADD_COLS >= self.list_cols
     }
 
     /// What is under a pixel while `tabs` tabs are open.
@@ -196,16 +294,18 @@ impl Layout {
             return Hit::Outside;
         }
         if x < self.tab_bar.x {
-            let row = ((y - self.list_row(0).y) / self.row_h).floor();
-            let in_list =
-                self.sidebar.contains(x, y) && row >= 0.0 && (row as usize) < self.visible_rows;
-            return if in_list {
-                Hit::ListRow(row as usize)
-            } else {
-                Hit::Sidebar
-            };
+            let col = (x / self.cell.0).floor() as usize;
+            if self.list.contains(x, y) {
+                let line = ((y - self.list.y) / self.cell.1).floor() as usize;
+                return Hit::List { line, col };
+            }
+            let button = button_columns()
+                .find(|(_, label, start)| (*start..start + label.len()).contains(&col))
+                .filter(|_| self.buttons.contains(x, y));
+            return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
         }
-        if self.terminal.contains(x, y) {
+        // The terminal's rows, the padding at its left included.
+        if y >= self.terminal.y && y < self.terminal.bottom() {
             return Hit::Terminal;
         }
         if !self.tab_bar.contains(x, y) {
@@ -228,7 +328,8 @@ impl Layout {
 /// One tab of the tab bar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabView {
-    pub name: String,
+    /// The tab's session; its name is the tab's.
+    pub key: SessionKey,
     /// The session's status mark and its colour; `None` while the listing does not know the
     /// session.
     pub mark: Option<(char, [u8; 3])>,
@@ -238,18 +339,179 @@ pub struct TabView {
     pub ended: bool,
 }
 
-/// Everything `Chrome` draws, as the app last put it together.
+/// What `Chrome` draws besides the session list (that is the `Sidebar`'s), as the app last
+/// put it together.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
-    /// The session list's rows, all of them.
-    pub rows: Vec<String>,
-    pub selected: usize,
     pub sidebar_focused: bool,
     pub tabs: Vec<TabView>,
     pub active: Option<usize>,
     pub status: String,
     /// Shown centred over the terminal (`ENDED_NOTICE`, or that no session is open).
     pub notice: Option<String>,
+}
+
+impl View {
+    /// The session of the tab in front.
+    fn front(&self) -> Option<&SessionKey> {
+        Some(&self.tabs.get(self.active?)?.key)
+    }
+}
+
+/// A piece of a row's text: where it starts on the list's columns, how many columns it may
+/// take (longer text ends in "…"), and how it looks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span<'a> {
+    /// 0, or 1 for a session's second line.
+    pub line: usize,
+    pub col: usize,
+    pub cols: usize,
+    pub text: Cow<'a, str>,
+    pub colour: [u8; 3],
+    pub bold: bool,
+}
+
+impl<'a> Span<'a> {
+    fn new(line: usize, col: usize, cols: usize, text: impl Into<Cow<'a, str>>) -> Span<'a> {
+        Span {
+            line,
+            col,
+            cols,
+            text: text.into(),
+            colour: [0; 3],
+            bold: false,
+        }
+    }
+
+    /// One that takes the columns of its text.
+    fn whole(line: usize, col: usize, text: impl Into<Cow<'a, str>>) -> Span<'a> {
+        let text = text.into();
+        Span::new(line, col, columns(&text), text)
+    }
+
+    fn colour(self, colour: [u8; 3]) -> Span<'a> {
+        Span { colour, ..self }
+    }
+
+    fn bold(self) -> Span<'a> {
+        Span { bold: true, ..self }
+    }
+
+    /// The text as drawn: cut to the span's columns.
+    pub fn shown(&self) -> String {
+        fit(&self.text, self.cols)
+            .into_iter()
+            .map(|(cluster, _)| cluster)
+            .collect()
+    }
+}
+
+/// Columns a text takes on the cell grid.
+fn columns(text: &str) -> usize {
+    clusters(text).iter().map(|(_, width)| width).sum()
+}
+
+/// What of a session's row does not come from its listing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowLook {
+    pub pinned: bool,
+    /// tmux clients attached besides this window's own tab.
+    pub others: u32,
+    /// Its tab is the one in front.
+    pub active: bool,
+}
+
+/// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name ★`,
+/// then at the right end `◉N` when other clients are attached; under it, when there is a
+/// summary, that in dim. How full Claude's context is ends the summary's line, or the name's
+/// when there is no summary. The ★, the count and the percentage always fit; the name and the
+/// summary are cut.
+pub fn session_spans<'a>(
+    info: &'a SessionInfo,
+    look: RowLook,
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    // One column of padding at either end (tmls line 437); the name starts under the summary.
+    let (first, name_col) = (1, 5);
+    let end = cols.saturating_sub(1);
+    let mut out = Vec::with_capacity(7);
+    out.push(
+        Span::whole(0, first, mark_glyph(info.status))
+            .colour(mark_rgb(info.status))
+            .bold(),
+    );
+    if let Some((letter, colour)) = tool_letter(info.tool) {
+        out.push(Span::whole(0, first + 2, letter).colour(colour).bold());
+    }
+    let summary = summary(info);
+    let percent = info.context_pct.map(|pct| {
+        let text = format!("{pct}%");
+        let col = end.saturating_sub(text.len());
+        let line = usize::from(summary.is_some());
+        Span::whole(line, col, text).colour(context_rgb(pct, theme))
+    });
+
+    // The name's line, from the right: the percentage if it is on this line, the count.
+    let mut right = end;
+    if let Some(percent) = percent.as_ref().filter(|percent| percent.line == 0) {
+        right = percent.col.saturating_sub(1);
+    }
+    let others = (look.others > 0).then(|| {
+        let text = format!("{ATTACHED_MARK}{}", look.others);
+        let col = right.saturating_sub(columns(&text));
+        right = col.saturating_sub(1);
+        Span::whole(0, col, text).colour(theme.muted_fg)
+    });
+    let pin_cols = if look.pinned { 2 } else { 0 };
+    let name_cols = right.saturating_sub(name_col + pin_cols);
+    let name = Span::new(0, name_col, name_cols, info.key.name.as_str());
+    let pin_col = name_col + columns(&info.key.name).min(name_cols) + 1;
+    out.push(match look.active {
+        true => name.colour(CURRENT_RGB).bold(),
+        false => name.colour(theme.sidebar_fg),
+    });
+    if look.pinned && pin_col < right {
+        out.push(Span::whole(0, pin_col, PIN).colour(PIN_RGB).bold());
+    }
+    out.extend(others);
+
+    if let Some((text, waiting)) = summary {
+        // tmls keeps five columns for the percentage: four and a space before it.
+        let taken = if percent.is_some() { 5 } else { 0 };
+        let colour = match waiting {
+            true => mark_rgb(client_core::Status::Waiting),
+            false => theme.dim_fg,
+        };
+        let cols = end.saturating_sub(name_col + taken);
+        out.push(Span::new(1, name_col, cols, text).colour(colour));
+    }
+    out.extend(percent);
+    out
+}
+
+/// A host's header on `cols` columns: the name in capitals as tmls writes it (line 895), then
+/// `+` at the right end, or `· offline` after the name of a host that does not answer, dimmed.
+pub fn header_spans(host: &str, online: bool, cols: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let end = cols.saturating_sub(1);
+    let name = host.to_uppercase();
+    if online {
+        let name_cols = end.saturating_sub(1 + 2);
+        return vec![
+            Span::new(0, 1, name_cols, name)
+                .colour(theme.muted_fg)
+                .bold(),
+            Span::whole(0, end.saturating_sub(1), "+")
+                .colour(ADD_RGB)
+                .bold(),
+        ];
+    }
+    let name_cols = end.saturating_sub(1 + columns(OFFLINE) + 1);
+    let offline_col = 1 + columns(&name).min(name_cols) + 1;
+    vec![
+        Span::new(0, 1, name_cols, name).colour(theme.dim_fg).bold(),
+        Span::whole(0, offline_col, OFFLINE).colour(theme.dim_fg),
+    ]
 }
 
 fn opaque(c: [u8; 3]) -> [u8; 4] {
@@ -272,19 +534,42 @@ impl Painter<'_> {
 
     /// `text` from `(x, y)` (top-left of its first cell), cut to `cols` columns.
     fn label(&mut self, text: &str, x: f32, y: f32, cols: usize, colour: [u8; 3]) {
+        self.styled(text, x, y, cols, colour, FontStyle::default());
+    }
+
+    fn styled(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        cols: usize,
+        colour: [u8; 3],
+        style: FontStyle,
+    ) {
         for (cluster, col) in fit(text, cols) {
             let x = x + col as f32 * self.m.width;
             push_text(
                 self.out,
                 self.atlas,
                 &cluster,
-                FontStyle::default(),
+                style,
                 x,
                 y,
                 &self.m,
                 opaque(colour),
             );
         }
+    }
+
+    /// A span of a row whose first line's first column is at `origin`.
+    fn span(&mut self, origin: (f32, f32), span: &Span) {
+        let style = FontStyle {
+            bold: span.bold,
+            ..FontStyle::default()
+        };
+        let x = origin.0 + span.col as f32 * self.m.width;
+        let y = origin.1 + span.line as f32 * self.m.height;
+        self.styled(&span.text, x, y, span.cols, span.colour, style);
     }
 
     /// The y that centres one line of text in `r`.
@@ -327,6 +612,7 @@ impl Chrome {
     pub fn update(
         &mut self,
         view: &View,
+        list: &Sidebar,
         layout: &Layout,
         theme: &Theme,
         atlas: &mut Atlas,
@@ -346,7 +632,7 @@ impl Chrome {
                 atlas,
                 m,
             };
-            sidebar(&mut p, view, layout, theme);
+            sidebar(&mut p, view, list, layout, theme);
             tab_bar(&mut p, view, layout, theme);
             status_line(&mut p, view, layout, theme);
             p.out = &mut self.top;
@@ -361,37 +647,113 @@ impl Chrome {
     }
 }
 
-fn sidebar(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
+fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &Theme) {
     p.rect(l.sidebar, theme.sidebar_bg);
     // The line beside the sidebar shows which side has the keyboard focus.
     let beside = if view.sidebar_focused {
         theme.focus_ring
     } else {
-        theme.separator
+        theme.sidebar_rule
     };
     p.rect(l.separator, beside);
-    let top = list_top(view.selected, l.visible_rows);
-    for row in 0..l.visible_rows {
-        let Some(label) = view.rows.get(top + row) else {
-            break;
-        };
-        let r = l.list_row(row);
-        let mut colour = theme.sidebar_fg;
-        if top + row == view.selected {
-            p.rect(r, theme.row_selected_bg);
-            colour = theme.row_selected_fg;
-            if view.sidebar_focused {
+    let line_px = l.separator.w.max(1.0);
+    let front = view.front();
+    let selected = list.selected();
+    let mut line = 0;
+    for row in &list.rows()[list.view(l.list_lines)] {
+        let r = l.list_lines_rect(line, row.lines());
+        line += row.lines();
+        match row {
+            Row::Gap => {}
+            Row::Host {
+                host,
+                online,
+                color,
+            } => {
+                // tmls: a full-width line in the host's colour above each machine (line 908).
                 p.rect(
                     Rect {
-                        w: (p.m.width / 4.0).round().max(1.0),
+                        h: (2.0 * line_px).min(r.h),
                         ..r
                     },
-                    theme.focus_ring,
+                    host_rgb(*color),
                 );
+                for span in header_spans(host, *online, l.list_cols, theme) {
+                    p.span((r.x, r.y), &span);
+                }
+            }
+            Row::Session(info) => {
+                let key = &info.key;
+                let active = front == Some(key);
+                if active {
+                    p.rect(r, theme.row_active_bg);
+                }
+                if selected == Some(key) {
+                    // The cursor's bar takes the padding's column: the text keeps its place.
+                    let bar = Rect {
+                        w: (p.m.width / 3.0).round().max(1.0).min(r.w),
+                        ..r
+                    };
+                    p.rect(
+                        bar,
+                        match view.sidebar_focused {
+                            true => CURSOR_RGB,
+                            false => theme.cursor_idle,
+                        },
+                    );
+                }
+                // This window's own live tab is one of the attached clients.
+                let own = view.tabs.iter().any(|tab| !tab.ended && tab.key == *key);
+                let look = RowLook {
+                    pinned: list.is_pinned(key),
+                    others: info.attached.saturating_sub(u32::from(own)),
+                    active,
+                };
+                for span in session_spans(info, look, l.list_cols, theme) {
+                    p.span((r.x, r.y), &span);
+                }
             }
         }
-        let y = p.text_y(r);
-        p.label(label, r.x + p.m.width, y, l.label_cols, colour);
+    }
+    foot(p, l, theme);
+}
+
+/// The legend of the marks under a line, and the buttons.
+fn foot(p: &mut Painter, l: &Layout, theme: &Theme) {
+    if l.legend.h <= 0.0 {
+        return;
+    }
+    let line_px = l.separator.w.max(1.0);
+    p.rect(
+        Rect {
+            y: l.legend.y - line_px,
+            h: line_px,
+            ..l.legend
+        },
+        theme.sidebar_rule,
+    );
+    let entry_cols = LEGEND_ENTRY_COLS.min(l.list_cols.saturating_sub(2) / 2);
+    for (n, (status, word)) in LEGEND.iter().enumerate() {
+        let col = 1 + (n % 2) * entry_cols;
+        let origin = (l.legend.x, l.legend.y + (n / 2) as f32 * p.m.height);
+        let mark = Span::whole(0, col, mark_glyph(*status))
+            .colour(mark_rgb(*status))
+            .bold();
+        p.span(origin, &mark);
+        let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), *word);
+        p.span(origin, &word.colour(theme.muted_fg));
+    }
+    for (button, label, col) in button_columns() {
+        let colour = match button {
+            Button::New | Button::Open => ADD_RGB,
+            Button::Copy => COPY_RGB,
+            Button::Help => theme.muted_fg,
+        };
+        let fits = col + label.len() < l.list_cols;
+        let span = Span::whole(0, col, label).colour(colour).bold();
+        if fits {
+            p.span((l.buttons.x, l.buttons.y), &span);
+        }
     }
 }
 
@@ -433,7 +795,7 @@ fn tab_bar(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             (_, true) => theme.muted_fg,
         };
         p.label(
-            &tab.name,
+            &tab.key.name,
             at(3),
             y,
             cols.saturating_sub(TAB_FIXED_COLS),
@@ -507,6 +869,7 @@ pub fn layer_order<'a>(scene: Option<&'a Scene>, chrome: &'a Chrome) -> [&'a [In
 /// it, which voids the other's quads and the cells'. `Scene::update_overlays` rebuilds the
 /// cells when it finds them stale and `Chrome::update` rebuilds on a new generation, so the two
 /// are repeated until the chrome was built in the atlas's current generation.
+#[allow(clippy::too_many_arguments)]
 pub fn compose(
     front: Option<Front<'_>>,
     refeed: bool,
@@ -514,10 +877,11 @@ pub fn compose(
     theme: &Theme,
     chrome: &mut Chrome,
     view: &View,
+    list: &Sidebar,
     layout: &Layout,
 ) {
     let Some(front) = front else {
-        chrome.update(view, layout, theme, atlas);
+        chrome.update(view, list, layout, theme, atlas);
         return;
     };
     if refeed {
@@ -527,7 +891,7 @@ pub fn compose(
     }
     let overlays: grid::Overlays = front.session.overlays();
     for _round in 0..3 {
-        chrome.update(view, layout, theme, atlas);
+        chrome.update(view, list, layout, theme, atlas);
         front
             .scene
             .update_overlays(front.frame, atlas, &theme.terminal, &overlays);

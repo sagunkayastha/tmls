@@ -1,6 +1,6 @@
 //! The window's layout and what a click hits. No atlas: the cell box is given.
 
-use desktop::draw::{Hit, Layout, layout, list_top};
+use desktop::draw::{Button, Hit, Layout, layout};
 use desktop::theme::{SIDEBAR_COLS, TAB_MAX_COLS, Theme};
 use s2_wgpu::gfx::atlas::CellMetrics;
 
@@ -27,13 +27,37 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
     assert_eq!((l.separator.x, l.separator.w), (280.0, 1.0));
     // One row each for the tab bar and the status line: a cell and the inset above and below.
     assert_eq!((l.tab_bar.x, l.tab_bar.y, l.tab_bar.h), (281.0, 0.0, 26.0));
-    assert_eq!((l.terminal.x, l.terminal.y), (281.0, 26.0));
-    assert_eq!((l.terminal.w, l.terminal.h), (1000.0, 674.0));
-    assert_eq!((l.status.y, l.status.bottom()), (700.0, 726.0));
+    // Half a cell between the separator and the terminal's text.
+    assert_eq!((l.terminal.x, l.terminal.y), (286.0, 26.0));
+    assert_eq!((l.terminal.w, l.terminal.h), (995.0, 674.0));
+    assert_eq!(l.terminal.right(), 1281.0);
+    assert_eq!(
+        (l.status.x, l.status.y, l.status.bottom()),
+        (281.0, 700.0, 726.0)
+    );
     assert_eq!(
         l.grid,
-        (100, 33),
+        (99, 33),
         "the cells that fit the terminal's area, not the window"
+    );
+
+    // The sidebar from the top: an inset, the list's lines, a line, three lines of legend,
+    // the buttons, an inset.
+    assert_eq!(l.list_cols, SIDEBAR_COLS);
+    assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 3.0, 280.0));
+    assert_eq!(l.list_lines, 31);
+    assert_eq!(l.list.h, 620.0);
+    assert_eq!((l.legend.y, l.legend.h), (643.0, 60.0));
+    assert_eq!((l.buttons.y, l.buttons.bottom()), (703.0, 723.0));
+    assert!(l.list.bottom() < l.legend.y);
+    assert_eq!(
+        l.list_lines_rect(2, 2),
+        desktop::draw::Rect {
+            x: 0.0,
+            y: 43.0,
+            w: 280.0,
+            h: 40.0
+        }
     );
 }
 
@@ -54,11 +78,32 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     let l = at(1281, 726);
     assert_eq!(l.hit(-1.0, 5.0, 2), Hit::Outside);
     assert_eq!(l.hit(5.0, 800.0, 2), Hit::Outside);
-    // Rows are a cell and an inset high, below one inset of padding.
-    assert_eq!(l.hit(50.0, 4.0, 2), Hit::ListRow(0));
-    assert_eq!(l.hit(50.0, 26.0, 2), Hit::ListRow(1));
+    // The list's lines are a cell high, below one inset of padding.
+    assert_eq!(l.hit(50.0, 3.0, 2), Hit::List { line: 0, col: 5 });
+    assert_eq!(l.hit(279.0, 23.0, 2), Hit::List { line: 1, col: 27 });
+    assert_eq!(l.hit(0.0, 622.9, 2), Hit::List { line: 30, col: 0 });
+    assert_eq!(l.hit(50.0, 623.0, 2), Hit::Sidebar, "under the last line");
     assert_eq!(l.hit(280.5, 26.0, 2), Hit::Sidebar, "the separator");
     assert_eq!(l.hit(50.0, 2.0, 2), Hit::Sidebar, "above the first row");
+    // The last three cells of a line are the `+` of a host's header.
+    assert!(!l.on_add(24) && l.on_add(25) && l.on_add(27));
+
+    // The legend is not for clicking; the buttons are, each on its label: New  Open  Copy  ?
+    assert_eq!(l.hit(50.0, 650.0, 2), Hit::Sidebar, "the legend");
+    for (x, hit) in [
+        (9.0, Hit::Sidebar),
+        (10.0, Hit::Button(Button::New)),
+        (39.0, Hit::Button(Button::New)),
+        (40.0, Hit::Sidebar),
+        (60.0, Hit::Button(Button::Open)),
+        (99.0, Hit::Button(Button::Open)),
+        (120.0, Hit::Button(Button::Copy)),
+        (180.0, Hit::Button(Button::Help)),
+        (190.0, Hit::Sidebar),
+    ] {
+        assert_eq!(l.hit(x, 710.0, 2), hit, "x {x}");
+    }
+    assert_eq!(l.hit(15.0, 724.0, 2), Hit::Sidebar, "under the buttons");
 
     // Two tabs of TAB_MAX_COLS cells; the last three cells of each close it.
     assert_eq!(l.tab_cols(2), TAB_MAX_COLS);
@@ -75,7 +120,12 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     );
     assert_eq!(l.hit(300.0, 10.0, 0), Hit::TabBar, "no tab is open");
 
-    assert_eq!(l.hit(281.0, 26.0, 2), Hit::Terminal);
+    assert_eq!(
+        l.hit(281.0, 26.0, 2),
+        Hit::Terminal,
+        "the padding left of the text"
+    );
+    assert_eq!(l.hit(286.0, 26.0, 2), Hit::Terminal);
     assert_eq!(l.hit(1280.0, 699.0, 2), Hit::Terminal);
     assert_eq!(l.hit(600.0, 700.0, 2), Hit::Status);
 }
@@ -95,9 +145,13 @@ fn many_tabs_share_the_bar() {
 }
 
 #[test]
-fn the_list_scrolls_to_keep_its_cursor_in_view() {
-    assert_eq!(list_top(0, 10), 0);
-    assert_eq!(list_top(9, 10), 0);
-    assert_eq!(list_top(10, 10), 1);
-    assert_eq!(list_top(3, 0), 4, "no row fits: none is drawn");
+fn a_low_window_has_no_legend_and_no_buttons() {
+    // Four lines for the list, or the foot goes: 3 + 4 * 20 + (1 + 4 * 20 + 3) = 167.
+    let l = at(1281, 167);
+    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (60.0, 20.0, 4));
+    let l = at(1281, 166);
+    assert_eq!((l.legend.h, l.buttons.h), (0.0, 0.0));
+    assert_eq!(l.list_lines, 8, "the list has the whole height");
+    assert_eq!(l.hit(15.0, 150.0, 0), Hit::List { line: 7, col: 1 });
+    assert_eq!(l.hit(15.0, 165.0, 0), Hit::Sidebar);
 }
