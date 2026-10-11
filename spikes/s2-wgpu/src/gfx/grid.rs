@@ -8,8 +8,8 @@
 //!   Returns how many rows it rebuilt.
 //! - `Scene::update_overlays(&frame, &mut atlas, &theme, &overlays)` — cursor, IME preedit,
 //!   selection and the `--photon` square. Cheap; call it before each render, also when only an
-//!   overlay changed (same frame as before). If `atlas.generation()` differs after the call (an
-//!   overlay glyph restarted a full atlas), call `update` instead — it handles that itself.
+//!   overlay changed (same frame as before). If an overlay glyph restarts a full atlas, the
+//!   cell quads are rebuilt in the same call; nothing for the caller to check.
 //! - `Scene::update(..)` does both.
 //! - `Scene::layers()` → `[background, glyphs, overlay]` in draw order, for
 //!   `Renderer::prepare`. A front-end can append layers of its own (sidebar, menus).
@@ -144,15 +144,12 @@ impl Scene {
         theme: &Theme,
         overlays: &Overlays,
     ) -> usize {
-        let mut rebuilt = self.update_cells(frame, atlas, theme);
-        let generation = atlas.generation();
-        self.update_overlays(frame, atlas, theme, overlays);
-        if atlas.generation() != generation {
-            // An overlay glyph filled the atlas and restarted it: the cell quads are stale.
-            rebuilt = self.update_cells(frame, atlas, theme);
-            self.update_overlays(frame, atlas, theme, overlays);
+        let rebuilt = self.update_cells(frame, atlas, theme);
+        if self.update_overlays(frame, atlas, theme, overlays) {
+            frame.rows as usize
+        } else {
+            rebuilt
         }
-        rebuilt
     }
 
     /// Rebuilds the background and glyph quads of the rows that need it; returns how many.
@@ -209,8 +206,31 @@ impl Scene {
     }
 
     /// Rebuilds the overlay layer: selection, preedit, cursor, photon square — in that order,
-    /// so the photon square is the last thing drawn.
+    /// so the photon square is the last thing drawn. `frame` is the one last given to
+    /// `update_cells`.
+    ///
+    /// An overlay glyph (new preedit text) can fill the atlas and restart it, which voids the
+    /// cell quads too. That is handled here: the cells are rebuilt from `frame` and the overlays
+    /// built again, and the call returns `true` (information only — nothing is left to do).
     pub fn update_overlays(
+        &mut self,
+        frame: &Frame,
+        atlas: &mut Atlas,
+        theme: &Theme,
+        overlays: &Overlays,
+    ) -> bool {
+        self.build_overlays(frame, atlas, theme, overlays);
+        let stale = self
+            .built
+            .is_some_and(|built| built.generation != atlas.generation());
+        if stale {
+            self.update_cells(frame, atlas, theme);
+            self.build_overlays(frame, atlas, theme, overlays);
+        }
+        stale
+    }
+
+    fn build_overlays(
         &mut self,
         frame: &Frame,
         atlas: &mut Atlas,

@@ -566,49 +566,52 @@ fn layers_are_background_then_glyphs_then_overlay() {
     );
 }
 
-#[test]
-fn atlas_restart_during_an_update_leaves_no_stale_quads() {
-    // 200 px glyphs fill the atlas after a couple of hundred. Rasterise glyphs the frame does not
-    // use (subpixel bins 1..) and count how many fit before the atlas starts over.
-    let big = || {
-        Atlas::new(
-            FontSpec {
-                family: None,
-                size: 200.0,
-            },
-            1.0,
-        )
-    };
-    let filler = |atlas: &mut Atlas, stop_after: usize| {
-        let start = atlas.generation();
-        let mut done = 0;
-        for bin in 1..4u8 {
-            for bold in [false, true] {
-                for ch in '!'..='~' {
-                    let shaped = atlas.shape(
-                        &ch.to_string(),
-                        FontStyle {
-                            bold,
-                            italic: false,
-                        },
-                    );
-                    let key = atlas.key(&shaped[0], bin);
-                    atlas.glyph(key);
-                    if atlas.generation() != start || done == stop_after {
-                        return done;
-                    }
-                    done += 1;
+/// 200 px glyphs: the atlas is full after a couple of hundred.
+fn big_atlas() -> Atlas {
+    Atlas::new(
+        FontSpec {
+            family: None,
+            size: 200.0,
+        },
+        1.0,
+    )
+}
+
+/// Rasterises glyphs no test frame uses (subpixel bins 1..) until the atlas starts over or
+/// `stop_after` are in; returns how many fitted.
+fn fill_big_atlas(atlas: &mut Atlas, stop_after: usize) -> usize {
+    let start = atlas.generation();
+    let mut done = 0;
+    for bin in 1..4u8 {
+        for bold in [false, true] {
+            for ch in '!'..='~' {
+                let shaped = atlas.shape(
+                    &ch.to_string(),
+                    FontStyle {
+                        bold,
+                        italic: false,
+                    },
+                );
+                let key = atlas.key(&shaped[0], bin);
+                atlas.glyph(key);
+                if atlas.generation() != start || done == stop_after {
+                    return done;
                 }
+                done += 1;
             }
         }
-        panic!("the atlas never filled up");
-    };
-    let capacity = filler(&mut big(), usize::MAX);
+    }
+    panic!("the atlas never filled up");
+}
+
+#[test]
+fn atlas_restart_during_an_update_leaves_no_stale_quads() {
+    let capacity = fill_big_atlas(&mut big_atlas(), usize::MAX);
     assert!(capacity > 20);
 
     // Ten glyphs short of full; a 26-letter row then overflows it in the middle of the row.
-    let mut atlas = big();
-    filler(&mut atlas, capacity - 10);
+    let mut atlas = big_atlas();
+    fill_big_atlas(&mut atlas, capacity - 10);
     let generation = atlas.generation();
     let theme = Theme::default();
     let f = text_frame(&["abcdefghijklmnopqrstuvwxyz"], 26);
@@ -671,4 +674,49 @@ fn origin_is_snapped_to_whole_pixels() {
     assert_eq!(scene.cell_at(80.0, 9.0), Some((0, 0)));
     assert_eq!(scene.cell_at(79.5, 9.0), None);
     assert_eq!(scene.cell_at(80.0, 8.5), None);
+}
+
+#[test]
+fn overlay_glyphs_that_restart_the_atlas_leave_no_stale_cell_quads() {
+    // The IME path: cells are already built, then `update_overlays` alone is called with new
+    // preedit text whose glyphs fill the atlas and restart it.
+    let capacity = fill_big_atlas(&mut big_atlas(), usize::MAX);
+    let mut atlas = big_atlas();
+    fill_big_atlas(&mut atlas, capacity - 10);
+    let theme = Theme::default();
+    let mut f = text_frame(&["abc"], 40);
+    f.cursor = cursor(4, 0, CursorShape::Bar);
+    let mut scene = Scene::new();
+    let generation = atlas.generation();
+    scene.update(&f, &mut atlas, &theme, &Overlays::default());
+    assert_eq!(atlas.generation(), generation, "the cells still fit");
+    let cells_before = scene.glyphs().to_vec();
+    assert_eq!(cells_before.len(), 3);
+
+    // Thirty glyphs the atlas has not seen (subpixel bin 0): more than the room that is left.
+    let overlays = Overlays {
+        preedit: Some(Preedit {
+            text: ('A'..='Z').chain('0'..='3').collect(),
+        }),
+        ..Overlays::default()
+    };
+    scene.update_overlays(&f, &mut atlas, &theme, &overlays);
+    assert_ne!(
+        atlas.generation(),
+        generation,
+        "the preedit restarted the atlas"
+    );
+
+    // No caller-side generation check: the scene must already match a fresh build.
+    let generation = atlas.generation();
+    let mut fresh = Scene::new();
+    fresh.update(&f, &mut atlas, &theme, &overlays);
+    assert_eq!(atlas.generation(), generation, "all cache hits");
+    assert_ne!(
+        scene.glyphs(),
+        cells_before.as_slice(),
+        "the cells were rebuilt"
+    );
+    assert_eq!(scene.glyphs(), fresh.glyphs());
+    assert_eq!(scene.overlay(), fresh.overlay());
 }
