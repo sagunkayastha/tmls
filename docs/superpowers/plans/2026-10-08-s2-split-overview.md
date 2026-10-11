@@ -231,6 +231,21 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   gives the log to the first tab opened and to no other, and writes `frame` lines only for frames presented while that
   tab is in front (`crates/desktop/src/tabs.rs`, `Tabs::set_log`).
 
+**Contract notes from desktop v0, Task 7 (2026-10-11; mouse reports; all additive):**
+- `s2-core`: new variant `InputMsg::Mouse { kind: MouseKind, button: Option<MouseButton>, col, row, mods: Mods }` —
+  one mouse event at a **0-based viewport cell**. The emulator thread encodes it with libghostty-vt's mouse encoder
+  under the terminal's current modes (tracking 9 / 1000 / 1002 / 1003; format SGR 1006, X10, …) and writes the report
+  to the PTY; it writes **nothing** when the program did not ask for that event (no tracking mode, motion under 1000).
+  `button` is the one pressed or released, for `Motion` the one held (`None` = none); the wheel is a `Press` of
+  `MouseButton::WheelUp` / `WheelDown` (64 / 65 on the wire), never a `Release`. A mouse event has no key id, no
+  latency line, and does not move a scrolled viewport. New exports: `s2_core::{MouseKind, MouseButton}`,
+  `keys::MouseEncoder`. No code outside `s2-core` matches `InputMsg` (checked: `s2-wgpu`, `crates/desktop` only
+  construct values; `s2-gpui` does not name the type), so the new variant breaks no build.
+- `s2-core`: `Emu::mouse_reporting() -> bool` / `FrameSlot::mouse_reporting()` — the program has a mouse tracking mode
+  set, as of the newest frame **published** (an atomic, stored just before that frame is published; never blocks the
+  caller or the emulator thread). `Frame` itself is unchanged. The front-end reads it on each mouse event to choose
+  between "send to the program" and "act locally"; the core does not choose.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:

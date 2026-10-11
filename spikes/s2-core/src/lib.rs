@@ -11,7 +11,7 @@ pub mod pty;
 
 pub use emu::{Emu, InputMsg};
 pub use frame::{Cell, CellFlags, Cursor, CursorShape, Frame, FrameSlot, Wide};
-pub use keys::{Key, KeyEvent, Mods, Named};
+pub use keys::{Key, KeyEvent, Mods, MouseButton, MouseKind, Named};
 pub use pty::{Pty, PtyWriter};
 
 /// CLOCK_MONOTONIC in nanoseconds; every timestamp in every log uses this.
