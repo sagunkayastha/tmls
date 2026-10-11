@@ -203,6 +203,29 @@ fn ctrl_click_opens_the_link_and_reaches_no_program() {
     );
 }
 
+#[test]
+fn after_a_reset_the_release_and_the_motion_of_a_held_button_do_nothing() {
+    // The tab in front changed while a button was down: the new one saw no press.
+    let mut pointer = Pointer::default();
+    pointer.press(LEFT, Some((2, 1)), NONE, true);
+    assert!(pointer.held());
+    pointer.reset();
+    assert!(!pointer.held());
+    assert_eq!(pointer.motion((5, 3), NONE, false), []);
+    assert_eq!(
+        pointer.release(LEFT, Some((5, 3)), NONE),
+        [],
+        "no release report"
+    );
+
+    // A selection that was being dragged: no `SelectEnd`, no `Copy` in the new tab.
+    pointer.press(LEFT, Some((2, 1)), CTRL, true);
+    pointer.motion((6, 1), CTRL, true);
+    pointer.reset();
+    assert_eq!(pointer.release(LEFT, Some((6, 1)), CTRL), []);
+    assert_eq!(pointer, Pointer::default());
+}
+
 // ---- with a program behind it ----
 
 fn key(name: &str) -> SessionKey {

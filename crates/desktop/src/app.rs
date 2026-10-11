@@ -1168,11 +1168,15 @@ impl Running {
     }
 
     /// Another tab is in front, or the one in front has a new session: the keys go to the
-    /// terminal, and a key still held is not typed into it. The list's cursor goes to the
-    /// tab's session, which counts as seen from now on; the window is named after it.
+    /// terminal, and a key or a mouse button still held is not this tab's. The list's cursor
+    /// goes to the tab's session, which counts as seen from now on; the window is named after
+    /// it.
     fn tab_changed(&mut self) {
         self.gate.hold();
         self.ime_at = None;
+        // A button held over the tab that was in front is not this tab's (the selection that
+        // was being dragged there ended in `Tabs::select`).
+        self.mouse.reset();
         let front = self.tabs.active().map(|active| self.tabs.key(active));
         match front {
             Some(key) => {

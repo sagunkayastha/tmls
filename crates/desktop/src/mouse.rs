@@ -81,6 +81,12 @@ impl Pointer {
         self.held.is_some()
     }
 
+    /// The tab in front changed or was closed: a button still held is not held for the tab
+    /// that is in front now, which gets neither its motion nor its release.
+    pub fn reset(&mut self) {
+        *self = Pointer::default();
+    }
+
     /// A button went down over the terminal. `at`: the cell nearest to the pointer (`None`
     /// before the first frame). `reporting`: the program asked for mouse reports.
     pub fn press(
