@@ -167,6 +167,21 @@ tmux new-session -d -s "$ODD" -x 100 -y 30
 check "tmux has both test sessions" bash -c \
   '[ "$(tmux list-sessions -F "#{session_name}" | sort | tr "\n" "|")" = "$0|$1|" ]' "$ODD" "$ONE"
 
+# A stand-in for notify-send, first on PATH: one line per call, its arguments ending in "|".
+# In $OUT, not $SCRATCH: that tmpfs is mounted noexec.
+NOTIFY_LOG="$OUT/notify.log"
+: >"$NOTIFY_LOG"
+mkdir -p "$OUT/bin"
+cat >"$OUT/bin/notify-send" <<EOF
+#!/bin/sh
+{ printf '%s|' "\$@"; echo; } >>"$NOTIFY_LOG"
+EOF
+chmod +x "$OUT/bin/notify-send"
+export PATH="$OUT/bin:$PATH"
+# How often the stand-in was asked to say that $ONE is done.
+notified() { grep -cxF -- "--|tmls · $(hostname)|◆ $ONE · done|" "$NOTIFY_LOG"; }
+notified_is() { [ "$(notified)" -eq "$1" ]; }
+
 # --- the app ----------------------------------------------------------------------------------
 "$BIN" --bench "$OUT/bench" 2>"$OUT/app.stderr" &
 APP_PID=$!
@@ -599,6 +614,11 @@ check_typed "after the kill the keys go to \"$ODD\"" "$ODD" afterkill
 check "screenshot 28-killed" shot 28-killed
 
 # --- the same by mouse; a session that ends from inside ---------------------------------------
+# For the alerts checks further down: $ONE (no tab) prints something, so the next listing has
+# it running; 30 s after that it counts as done, unwatched. Counted from here.
+tmux send-keys -t "=$ONE:" "echo alert-$NONCE" Enter
+sleep 7
+NOTIFIED=$(notified)
 # Right-click on "$ODD" (the list's second line): its menu at the pointer. Esc closes it.
 PLAIN=$(picture)
 click 100 28 right
@@ -645,6 +665,34 @@ check_typed "the other tab still takes typing" "$ODD" afterexit
 key_next_tab
 key_close_tab
 check_typed "the ended tab is closed: the keys go to \"$ODD\"" "$ODD" closedbye
+
+# --- alerts (Task 8) ----------------------------------------------------------------------------
+# "$ODD" is the only tab and in front; $ONE went quiet in the back.
+if wait_for 50 notified_is $((NOTIFIED + 1)) && sleep 6 && notified_is $((NOTIFIED + 1)); then
+  pass "$ONE finishing in the back runs notify-send once: --, the title, '◆ $ONE · done'"
+else
+  fail "$ONE finishing in the back runs notify-send once: --, the title, '◆ $ONE · done'" \
+    "was $NOTIFIED, now $(notified); log: $(tail -4 "$NOTIFY_LOG" | tr '\n' ' ')"
+fi
+check "screenshot 32-bell (the bell has a count)" shot 32-bell
+PLAIN=$(picture)
+key_focus_list
+keys -k a
+check "screenshot 33-alerts" shot 33-alerts
+if [ "$(picture)" != "$PLAIN" ]; then
+  pass "a in the list opens the alerts (the picture changed)"
+else
+  fail "a in the list opens the alerts (the picture changed)" "same picture"
+fi
+# The newest alert is $ONE's and has the cursor.
+key_enter
+if wait_for 8 attached_to "$ONE"; then
+  pass "Enter on the newest alert opens the tab of $ONE"
+else
+  fail "Enter on the newest alert opens the tab of $ONE" "clients: $(attached | tr '\n' '|')"
+fi
+key_close_tab
+check_typed "the alert's tab is closed: the keys go to \"$ODD\"" "$ODD" afteralert
 
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7

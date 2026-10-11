@@ -253,6 +253,9 @@ clicks with `tooling/smoke/vptr.py`, pictures are taken with `grim`.
 It prints one `PASS` or `FAIL` line per check and exits 1 if any failed. Screenshots, the
 app's stderr and the latency log go to `/data/scratch/tmls-rs-v0/e2e/`.
 
+No real notification is sent: the run puts a stand-in `notify-send` first on `PATH` (in
+`bin/` of the output directory) that writes its arguments to `notify.log` there.
+
 - `SMOKE_OUT=DIR` — another output directory.
 - `SMOKE_NO_BUILD=1` — use the binary as it is.
 - `SMOKE_TIMEOUT=SECONDS` — limit for the whole run (default 480).
