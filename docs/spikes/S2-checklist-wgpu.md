@@ -3,19 +3,53 @@
 What this file is: (1) the checks only a person at the PC can do, as empty items to fill in; (2) the key
 bindings; (3) what the hand-rolled wgpu UI cost to build; (4) what was not built.
 
-Binary: `target-docker/release/s2-wgpu`, built with `tooling/docker/build.sh build --release -p s2-wgpu`.
-Nothing below has been run on a real display, a real GPU, a real keyboard, a pointer or an input method:
-archbox is headless. What was run there is in the task report
-(`.superpowers/sdd/2026-10-08-s2-track-a-core-wgpu/task-4-report.md`, section "Smoke").
+Binary: `~/Others/tmls-rs/target-docker/release/s2-wgpu`, built in Docker (section 1.0 below).
+
+What has run where, so far:
+- On the PC (KDE Wayland, 165 Hz monitor, scale 1.15, `--present fifo`): only the binary of commit `3593613`,
+  which is the terminal **before the UI was built**. 309 keys were typed and all 309 were attributed to a
+  frame; key → present p50 0.56 ms (p95 0.91, p99 2.06, max 4.24), measured to the return of `present()` —
+  not to photons.
+- On archbox (headless: sway without a display, software rendering, keys typed by a script): the UI and
+  its keyboard paths (`.superpowers/sdd/2026-10-08-s2-track-a-core-wgpu/task-4-report.md`, section "Smoke").
+- **Never run in a window with a person in front of it: the UI (sidebar, field, menu) on a real GPU, every
+  pointer path (click, drag, wheel, right-click menu), and every input method.** This checklist is the
+  first time.
 
 ## 1. User checklist (at the PC) — to be filled in
 
-Record for the session: date ________ · binary git hash (`meta` line of any bench log) ________ ·
-monitor(s) and refresh rate (`kscreen-doctor -o`) ________ · scaling ________ · compositor
-(`kwin_wayland --version`) ________ · NVIDIA driver (`nvidia-smi`) ________ · `game-mode status` ________
+### 1.0 Update and build (do this first)
 
-Start: `~/Others/tmls-rs/target-docker/release/s2-wgpu` (add `--cmd bash` for a plain shell).
-If it does not start for a missing shared library: paste `ldd target-docker/release/s2-wgpu` here, install nothing.
+The clone on the PC is checked out at the old commit from before the UI was built. Without this step every
+UI item below runs against a binary that has no sidebar.
+
+All command blocks in this file are written for bash. If the shell in your Konsole tab is fish (the
+CachyOS default), type `bash` and press Enter first, in every tab you use.
+
+```sh
+cd ~/Others/tmls-rs && git fetch && git checkout --detach origin/main
+git rev-parse --short HEAD        # note this hash
+tooling/docker/build.sh build --release -p s2-wgpu
+ldd target-docker/release/s2-wgpu | grep "not found"   # must print nothing
+```
+
+- [ ] Hash printed by `git rev-parse --short HEAD`: ________
+- [ ] `git log --oneline -15` lists the line `s2-wgpu: photon square flips once per presented frame with a
+      key press` (if it does not, `origin/main` does not have this work yet: stop here and say so): ________
+- [ ] The `ldd … | grep "not found"` line printed nothing: ________
+      (If it printed a library name: paste the output here and install nothing.)
+- [ ] The `meta` line of the first bench log (section 1.7) must show `"git":"<that hash>"`: ________
+      (`"git":"<that hash>-dirty"` means a tracked file in the clone was modified when the binary was built:
+      paste the output of `git -C ~/Others/tmls-rs status --short` here.)
+
+Record for the session: date ________ · monitor(s) and refresh rate (`kscreen-doctor -o`) ________ ·
+scaling ________ · compositor (`kwin_wayland --version`) ________ · NVIDIA driver (`nvidia-smi`) ________ ·
+`game-mode status` ________
+
+Start the app for sections 1.1 to 1.6 from a terminal (Konsole) with
+`~/Others/tmls-rs/target-docker/release/s2-wgpu --cmd bash`. Messages that start with `s2-wgpu:` appear in
+that terminal. The window opens with a sidebar on the left (a list, a text field, two buttons) and the shell
+on the right; the shell has the keyboard focus.
 
 ### 1.1 fcitx5 pinyin in the text field
 Ctrl+Tab twice (terminal → list → field), switch fcitx5 to pinyin, type `nihao`, pick 你好, press Enter.
@@ -46,6 +80,10 @@ Run `printf 'ab你好cd   \n'`. Drag over that line with the left button, then r
       without changing the selection: ________
 - [ ] Menu → Paste types the clipboard into the shell; Menu → Clear redraws an empty screen (it sends
       Ctrl+L, see "Not built"): ________
+- [ ] Run `printf '😀 ok\n'`. The emoji is drawn in colour, two cells wide, and ` ok` follows it without
+      overlap: ________
+      (The colour-glyph path has never been seen on any display. If an empty box or a one-colour outline
+      is drawn instead, write that down.)
 
 ### 1.4 Paste into the field
 With `ab你好cd` on the clipboard: click the field, Ctrl+V.
@@ -71,13 +109,22 @@ With `ab你好cd` on the clipboard: click the field, Ctrl+V.
 - [ ] After the move, glyphs are sharp (re-rasterised at the new scale; the terminal prints
       `s2-wgpu: scale factor …` on stderr): ________
 - [ ] The grid size follows (`stty size` before / after): ________ / ________
-- [ ] No latency cliff after the move (bench numbers below, same load): ________
+- [ ] No latency cliff on the other monitor: ________
+      Start a new `--bench` run, move the window before typing, then type. `meta` records the monitor the
+      window started on; take hz and scale for this row from `kscreen-doctor -o` and the `scale factor`
+      stderr line. The command is the last line of the command block in section 1.7
+      (`wgpu-othermon-quiet-ui`).
 
 ### 1.7 Scaling 125 % — glyph crispness and latency
 System Settings → Display → scale 125 %, then start the app (and once more: change the scale while it runs).
 
-- [ ] stderr shows `scale 1.25` at start (or `scale factor 1.25` on a change), not 1 or 2: ________
-      (If it shows 2: the compositor is giving integer scale + downscaling — record that, it is the blurry case.)
+- [ ] The `meta` line (and `s2-wgpu: meta …` on stderr) shows `"scale":1.25`; a later change prints
+      `s2-wgpu: scale factor 1.25`. Neither shows 1 or 2: ________
+      (The `meta` line exists only in a `--bench` run: read it from the two 125 % runs below. On stderr it
+      reads `s2-wgpu: meta scale 1.25 hz … hz_source … ui …`; `cat ~/s2-logs/wgpu-scale125-quiet-ui.stderr`
+      shows it. The `scale factor` line is printed in every run, in the terminal the app was started from.
+      If either shows 2: the compositor is giving integer scale + downscaling — record that, it is the
+      blurry case.)
 - [ ] Terminal glyphs are crisp (compare with Konsole at the same scale): ________
 - [ ] Sidebar, field and menu text is crisp and sits on whole pixels (no smeared edges): ________
 - [ ] Sidebar is about 240 logical px wide (300 physical at 125 %): ________
@@ -88,19 +135,32 @@ System Settings → Display → scale 125 %, then start the app (and once more: 
 Bench log commands. **Run every measurement twice: with the UI and with `S2_WGPU_NO_UI=1`** (the same
 window without sidebar, form and menu — the terminal alone, as before the UI was built). The difference
 is what the hand-rolled UI costs per frame on this GPU; on software rendering (headless, lavapipe) it was
-about +3 ms submit → present, which says nothing about a real GPU. Do each at 100 % and at 125 %; type
-~200 keys into the shell, then `exit`:
+about +3 ms submit → present, which says nothing about a real GPU.
+
+How to do one run: paste **one** of the long command lines into Konsole. The window opens with the shell
+focused. Type about 200 keys into the shell, then type `exit` and press Enter; the window closes and the
+log is complete. Type letters and Enter only: a key the shell does not echo (Esc, F-keys) is counted
+against the next echo and shows as an outlier. Leave the first second alone.
+
+Do the first two runs at 100 %, then set System Settings → Display → scale to 125 % and do the next two.
+The fifth line is only for section 1.6 (a second monitor). The first two lines of the block (`mkdir`, `B=`)
+have to be run once in every Konsole tab you use, before any of the others:
 
 ```sh
+mkdir -p ~/s2-logs
 B=~/Others/tmls-rs/target-docker/release/s2-wgpu
-                  "$B" --bench ~/s2-logs/wgpu-scale100-quiet-ui   --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-ui.stderr
-S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale100-quiet-noui --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-noui.stderr
-                  "$B" --bench ~/s2-logs/wgpu-scale125-quiet-ui   --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-ui.stderr
-S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale125-quiet-noui --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-noui.stderr
+                  "$B" --bench ~/s2-logs/wgpu-scale100-quiet-ui   --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-ui.stderr
+S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale100-quiet-noui --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-noui.stderr
+                  "$B" --bench ~/s2-logs/wgpu-scale125-quiet-ui   --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-ui.stderr
+S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale125-quiet-noui --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-noui.stderr
+                  "$B" --bench ~/s2-logs/wgpu-othermon-quiet-ui   --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-othermon-quiet-ui.stderr
 ```
 
-(Create `~/s2-logs` first. Which variant a log came from is in its `meta` line: `"ui":true|false`.
-`grep '"ev":"meta"' ~/s2-logs/<run>/latency.jsonl` shows it; it is not always the first line.)
+Each run writes `~/s2-logs/<run>/latency.jsonl`; what the app printed is in `~/s2-logs/<run>.stderr`
+(`cat ~/s2-logs/*.stderr` shows the `s2-wgpu: meta …` and `s2-wgpu: scale factor …` lines). Do not use a
+run name twice: a second run with the same name replaces the first log. Which variant a log came from is
+in its `meta` line (`"ui":true|false`); `grep -h '"ev":"meta"' ~/s2-logs/*/latency.jsonl` shows them all —
+the `meta` line is not always the first line of a log.
 
 - [ ] **`hz` in `meta` is the monitor's real refresh rate, not `0.0`**: ________
       It was `0.0` on the first PC runs: the rate was asked for before the window was on a monitor. The
@@ -111,33 +171,54 @@ S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale125-quiet-noui --photon --pre
 - [ ] `"ui":false` in `meta` on the `S2_WGPU_NO_UI=1` runs and no sidebar on screen; `"ui":true` on the
       others: ________
 
-Numbers: Track B's `spikes/s2-bench/analyze.py <dir>/latency.jsonl` once it is merged. Until then this
-prints key → present (the time `present()` returned — not photons) from one log:
+Numbers. After the four runs, paste this block as it is. For each log it prints the `meta` values, how
+many keys were sent to the shell and how many of them were attributed to a frame (the two should be
+equal), key → present (to the time `present()` returned — not photons), and two stages of a frame.
+(Track B's `spikes/s2-bench/analyze.py` will replace it once it is merged.)
 
 ```sh
-python3 - ~/s2-logs/wgpu-scale125-quiet/latency.jsonl <<'EOF'
+for run in wgpu-scale100-quiet-ui wgpu-scale100-quiet-noui wgpu-scale125-quiet-ui wgpu-scale125-quiet-noui; do
+python3 - ~/s2-logs/$run/latency.jsonl <<'EOF'
 import json, sys, math
-ev = [json.loads(l) for l in open(sys.argv[1])]
-print([e for e in ev if e['ev'] == 'meta'])
+ev = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+meta = next((e for e in ev if e['ev'] == 'meta'), {})
 key = {e['id']: e['t_key_ns'] for e in ev if e['ev'] == 'key'}
-d = sorted((f['t_present_ns'] - key[k]) / 1e6 for f in ev if f['ev'] == 'frame' for k in f['keys'] if k in key)
-p = lambda q: d[max(1, math.ceil(q / 100 * len(d))) - 1]
-print(f"keys {len(key)} attributed {len(d)} key->present ms p50 {p(50):.2f} p95 {p(95):.2f} p99 {p(99):.2f} max {d[-1]:.2f}")
+wr = {e['id'] for e in ev if e['ev'] == 'write'}
+fr = [f for f in ev if f['ev'] == 'frame' and f['t_output_ns']]
+p = lambda d, q: sorted(d)[max(1, math.ceil(q / 100 * len(d))) - 1] if d else float('nan')
+kp = [(f['t_present_ns'] - key[k]) / 1e6 for f in fr for k in f['keys'] if k in key and k in wr]
+rs = [(f['t_submit_ns'] - f['t_redraw_ns']) / 1e6 for f in fr if 't_redraw_ns' in f]
+sp = [(f['t_present_ns'] - f['t_submit_ns']) / 1e6 for f in fr]
+print(sys.argv[1])
+print(' meta', {k: meta.get(k) for k in ('git', 'scale', 'hz', 'hz_source', 'ui', 'present_mode')})
+print(f" keys sent {len(key.keys() & wr)} attributed {len(kp)}  key->present ms p50 {p(kp,50):.2f} p95 {p(kp,95):.2f} p99 {p(kp,99):.2f} max {max(kp, default=float('nan')):.2f}")
+print(f" redraw->submit ms p50 {p(rs,50):.2f} p95 {p(rs,95):.2f}   submit->present ms p50 {p(sp,50):.2f} p95 {p(sp,95):.2f}")
 EOF
+done
 ```
 
-| Run | scale in `meta` | hz in `meta` | hz_source in `meta` | keys | p50 ms | p95 ms | p99 ms | max ms |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 100 % quiet, UI | | | | | | | | |
-| 100 % quiet, `S2_WGPU_NO_UI=1` | | | | | | | | |
-| 125 % quiet, UI | | | | | | | | |
-| 125 % quiet, `S2_WGPU_NO_UI=1` | | | | | | | | |
-| other monitor (if any), UI | | | | | | | | |
+For the other-monitor run, paste the same block with its first line changed to
+`for run in wgpu-othermon-quiet-ui; do`.
 
-Note for reading the logs: only keys typed while the terminal has the focus are in them. Keys typed into
-the list, the field or an open menu, and Ctrl+Tab / Ctrl+= / Ctrl+−, get no `key` line (they are never
-echoed in a terminal frame). A redraw caused by the UI alone (focus change, typing in the field) writes a
-`frame` line with the old `seq`, `t_output_ns: 0` and no keys, like any re-present did before.
+Paste what the block printed here: ________
+
+Then fill in the table. The key → present columns come from the line that starts with `keys`, the last
+column from the last line of each log's output.
+
+| Run (directory under `~/s2-logs/`) | scale in `meta` | hz in `meta` | hz_source in `meta` | keys sent / attributed | key → present p50 ms | p95 ms | p99 ms | max ms | submit → present p50 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 100 % quiet, UI (`wgpu-scale100-quiet-ui`) | | | | | | | | | |
+| 100 % quiet, `S2_WGPU_NO_UI=1` (`wgpu-scale100-quiet-noui`) | | | | | | | | | |
+| 125 % quiet, UI (`wgpu-scale125-quiet-ui`) | | | | | | | | | |
+| 125 % quiet, `S2_WGPU_NO_UI=1` (`wgpu-scale125-quiet-noui`) | | | | | | | | | |
+| other monitor (if any), UI (`wgpu-othermon-quiet-ui`); hz and scale from `kscreen-doctor -o` and the `scale factor` stderr line, not from `meta` | | | | | | | | | |
+
+Note for reading the logs: only keys typed while the terminal has the focus are in them, with one
+addition: choosing Menu → Clear (with the mouse or with Enter) sends Ctrl+L to the program and writes a
+`key` line for it. Keys typed into the list, the field or an open menu, and Ctrl+Tab / Ctrl+= / Ctrl+−,
+get no `key` line (they are never echoed in a terminal frame). A redraw caused by the UI alone (focus
+change, typing in the field) writes a `frame` line with the old `seq`, `t_output_ns: 0` and no keys, like
+any re-present did before.
 
 ## 2. Key bindings
 
@@ -190,12 +271,14 @@ A3 only — the non-terminal UI:
 | `spikes/s2-wgpu/src/ui/list.rs` | 114 | list selection + scrolling |
 | `spikes/s2-wgpu/src/ui/theme.rs` | 108 | tokens, zoom steps |
 | **`src/ui/` total** | **2061** | (1900 as first built; +161 in review fix round 1) |
-| `spikes/s2-wgpu/src/app.rs` | 710 → 904 | wiring (includes the refresh-rate query for `meta`, which is not UI) |
+| `spikes/s2-wgpu/src/app.rs` | 710 → 898 | wiring (includes the refresh-rate query for `meta`, which is not UI) |
 | `spikes/s2-wgpu/src/gfx/grid.rs` | +8 / −5 | three helpers made `pub` |
 | tests: `tests/ui.rs` 1672, `tests/ui_draw.rs` 678, `tests/session.rs` +396, `tests/atlas.rs` +66 | 2812 | |
 
-For scale — the whole crate after A3 and its fix round (`wc -l`): `src/` 5781 (`ui/` 2061, `gfx/` 1746,
-`app.rs` 904, the other modules 1070), `tests/` 6027.
+For scale — the whole crate as it is on this branch (`wc -l`, counted on the final tree): `src/` 5887
+(`ui/` 2061, `gfx/` 1746 including the 70-line shader, `app.rs` 898, the other ten modules 1182),
+`build.rs` 65, `tests/` 6215 (`tests/session.rs` is 1082 lines: 396 of them came with the UI and 104 with
+the photon rule; `tests/meta.rs` is 200).
 
 What the 2061 lines buy: one list, one single-line text field, two buttons, one three-item menu, three
 focus stops. No widget is reusable beyond this window: each is laid out by hand in `layout.rs` and drawn
@@ -226,8 +309,9 @@ looked up or verified** — where one would be needed for a decision, that is st
 | 10 | arboard 3.6.1 | Wayland clipboard needs the `wayland-data-control` feature (a wlroots / KDE protocol) | feature enabled; not tried on a compositor without that protocol (GNOME) | <https://docs.rs/arboard/3.6.1/arboard/> |
 
 Not an upstream problem but seen in the headless runs: sway 1.7 reports integer scale 2 for an output
-scale of 1.5, so a fractional scale factor has never reached this app through a real compositor — layout
-and atlas at 1.25 are tested offscreen only. Item 1.7 of the checklist is the first real check.
+scale of 1.5, so no headless run had a fractional scale factor. On the PC the pre-UI binary ran at scale
+1.15 (terminal only); the UI's layout and text at a fractional scale are tested offscreen only. Section 1.7
+of the checklist is the first real check.
 
 ## 4. Not built
 
@@ -241,7 +325,9 @@ and atlas at 1.25 are tested offscreen only. Item 1.7 of the checklist is the fi
 - Text field: single line; no undo; no word-wise movement (Ctrl+←/→), no double-click word selection,
   no caret blink; the caret cannot be moved with the mouse while composing (a click in the field is
   ignored until the composition ends); no right-to-left text.
-- IME: the preedit's own cursor / segment highlighting is not drawn; no IME in the list.
+- IME: the preedit's own cursor / segment highlighting is not drawn; no IME in the list. Terminal
+  preedit that does not fit before the right edge is dropped (the composition does not wrap or scroll;
+  the committed text is not affected).
 - Buttons are not focus stops (the ring is list ↔ field ↔ terminal, as specified): keyboard users
   press Enter / Escape in the field.
 - Zoom: no Ctrl+0 reset, no persistence; UI and terminal zoom together (3.3 #9).
@@ -249,5 +335,7 @@ and atlas at 1.25 are tested offscreen only. Item 1.7 of the checklist is the fi
   runtime switch. The terminal's hollow cursor when it is not focused is still not drawn.
 - Accessibility (screen reader tree, high contrast), touch, drag and drop: nothing.
 - Windows (TSF) and macOS: not built, not tried. X11: compiled in, not tried.
-- Not exercised in any window so far: pointer (clicks, drags, wheel, the context menu), any input
-  method, a real GPU, vsync, fractional scale from a compositor, a second monitor.
+- Run on the PC so far (real display, real GPU, vsync, compositor scale 1.15): only the pre-UI binary
+  `3593613` — the terminal alone, 309 keys, numbers at the top of this file. Not exercised in any window
+  so far: the UI on a real GPU, the pointer (clicks, drags, wheel, the context menu), any input method,
+  a second monitor.
