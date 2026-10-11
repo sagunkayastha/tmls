@@ -148,6 +148,11 @@ without `$TERMINAL`, kitty if it is installed, else `x-terminal-emulator`.
 
 **Copy attach command.** Menu → Copy attach command, or the `Copy` button.
 
+After a rename or a kill started from the list (`m` with the keys in the list), the keys
+stay in the list: the tab that is reopened or comes to the front does not take them. Esc
+gives them to the terminal. Started while the terminal had the keys (a right-click on a
+row), they go to the tab in front as before.
+
 The status line says what each of these did, or why it failed, until the next key. Each
 command has 10 s to finish.
 
@@ -218,8 +223,10 @@ mouse does over the terminal depends on that:
 | **Ctrl+click** on a link | opens it | the same |
 | Shift+wheel | scrolls this window's scrollback | the same |
 
-With Ctrl or Shift held, nothing is sent to the program. Copied text has no trailing spaces
-at the ends of its lines. A selection stays highlighted until the text under it changes, a
+With Ctrl or Shift held, the left button (click and drag) is not sent to the program: it
+selects or opens a link here. That is about the left button only: Ctrl+wheel, and pointer
+motion with no button held, are still reported to a program that asked for them. Copied text
+has no trailing spaces at the ends of its lines. A selection stays highlighted until the text under it changes, a
 click, or Ctrl+C (which copies it again and ends it). On a tab whose session ended the
 mouse always selects here.
 
