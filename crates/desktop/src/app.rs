@@ -866,10 +866,9 @@ impl Running {
                     name: new.name,
                 };
                 self.select_when_listed = Some(key.clone());
-                // A form or menu opened since then keeps the keys.
-                if self.modal.is_none() {
-                    self.open(&key);
-                }
+                // A form or menu opened since then keeps the keys (`tab_changed`): the tab
+                // gets them when it closes.
+                self.open(&key);
             }
             Request::Rename(old, name) => {
                 if let Some(index) = self.tabs.index_of(&old) {
@@ -881,13 +880,12 @@ impl Running {
                     };
                     let back = self.tabs.active();
                     self.select_when_listed = Some(key.clone());
-                    if self.modal.is_none() {
-                        self.open(&key);
-                        // A tab that was in the back stays there.
-                        if let (false, Some(back)) = (front, back) {
-                            self.tabs.select(back);
-                            self.tab_changed();
-                        }
+                    // Also with a form or menu open: the tab is never left closed.
+                    self.open(&key);
+                    // A tab that was in the back stays there.
+                    if let (false, Some(back)) = (front, back) {
+                        self.tabs.select(back);
+                        self.tab_changed();
                     }
                 }
             }
