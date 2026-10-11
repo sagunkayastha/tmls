@@ -7,8 +7,9 @@
 //!   wgpu runs the callback from inside `device.poll`, which the app calls on its own thread, so
 //!   this time is late by up to the app's polling interval.
 //!
-//! - `t_redraw_ns` — taken at the entry of the redraw that presented the frame. Carried on
-//!   `FrameLine`, but **not yet in the log file**: see `FrameSink for Log`.
+//! - `t_redraw_ns` — taken at the entry of the redraw that presented the frame; on every
+//!   `frame` line. From then until `present()` returns the main thread takes no events, so a
+//!   key arriving in that window gets its `t_key_ns` late.
 //!
 //! None of these is the time light left the screen.
 //!
@@ -43,16 +44,14 @@ pub trait FrameSink {
 }
 
 impl FrameSink for s2_core::latency::Log {
-    /// `line.t_redraw_ns` is not written: `latency::Log` builds the `frame` line itself and
-    /// has no way to add a field (`Event::Frame` and `frame_with_work_done` carry only
-    /// `t_work_done_ns` as an extra). It needs a change in `s2-core`.
     fn frame(&mut self, line: FrameLine) {
-        self.frame_with_work_done(
+        self.frame_with_marks(
             line.seq,
             line.t_submit_ns,
             line.t_present_ns,
             PRESENT_KIND,
             line.t_work_done_ns,
+            Some(line.t_redraw_ns),
         );
     }
 }

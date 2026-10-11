@@ -199,6 +199,8 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     // visible, the square already shows the new colour.
     let start = Instant::now();
     loop {
+        // As the app does: the redraw begins before the frames are taken.
+        marks.begin_redraw();
         rig.session
             .take_frames(&mut rig.scene, &mut rig.atlas, &rig.theme);
         let echoed = row(&rig.session, 0) == "readyx";
@@ -216,6 +218,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     let seq = rig.session.frame().unwrap().seq;
     marks.present_frame(seq, &mut gpu);
     assert_eq!((gpu.submits, gpu.presents), (2, 2));
+    let t_presented = now_ns();
     for done in &gpu.done {
         done.mark(now_ns());
     }
@@ -256,7 +259,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
                 present_kind,
                 keys,
                 t_work_done_ns,
-                t_redraw_ns: _,
+                t_redraw_ns,
             } => Some((
                 *seq,
                 *t_output_ns,
@@ -265,6 +268,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
                 present_kind.clone(),
                 keys.clone(),
                 *t_work_done_ns,
+                *t_redraw_ns,
             )),
             _ => None,
         })
@@ -276,7 +280,7 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
         "the frames before the key carry none"
     );
 
-    let (f_seq, t_output, t_submit, t_present, _, keys, t_work_done) = frames[1].clone();
+    let (f_seq, t_output, t_submit, t_present, _, keys, t_work_done, t_redraw) = frames[1].clone();
     assert_eq!(
         (f_seq, keys),
         (seq, vec![1]),
@@ -294,6 +298,19 @@ fn key_echo_frame_is_logged_once_with_its_key_and_flips_the_photon_square() {
     );
     assert!(t_submit <= t_present && t_present <= t_work_done);
     assert!(t_work_done <= t_after as u64);
+
+    // The redraw entry is on the written line: at or after the key (its echo was taken in that
+    // redraw), never after the submit.
+    let t_redraw = t_redraw.expect("t_redraw_ns is on the line");
+    assert!(
+        t_key <= t_redraw && t_redraw <= t_submit,
+        "redraw {t_redraw}, submit {t_submit}"
+    );
+    assert!(t_present <= t_presented as u64);
+    assert!(
+        frames.iter().all(|f| f.7.is_some_and(|t| t <= f.2)),
+        "every line has it, also frames presented without `begin_redraw`"
+    );
 
     assert_eq!(frames[2].5, [2]);
     assert_eq!(
