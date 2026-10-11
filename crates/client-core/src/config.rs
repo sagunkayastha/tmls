@@ -3,11 +3,9 @@
 //!
 //! Reading never fails: a missing or damaged file is that file's default.
 //!
-//! **Pins.** tmls writes one *slug* per pinned session, a lossy key ending in a hash
-//! (`app.py: slug`), so host and name cannot be read back from it. This app therefore writes two
-//! lines per pin: tmls's slug, which keeps the session pinned in tmls, and `rs:HOST/NAME`
-//! (percent-encoded), which this app reads. tmls keeps lines it does not know when it saves, and
-//! [`Config::save_pins`] keeps the slugs it cannot name (sessions pinned in tmls only).
+//! **Pins.** The `pins` file is tmls's own: one *slug* per pinned session ([`tmls_slug`], a
+//! lossy key ending in a hash, so host and name cannot be read back from it). `Config::pins`
+//! holds those slugs as they are; a session pinned in tmls is pinned here and the other way round.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,7 +27,9 @@ pub struct Config {
     pub host_colors: BTreeMap<String, HostColor>,
     /// Agent presets for a new session, `(name, argv)`, in the file's order.
     pub presets: Vec<(String, Vec<String>)>,
-    pub pins: BTreeSet<SessionKey>,
+    /// The pinned sessions' tmls slugs ([`tmls_slug`]): every whitespace-separated token of
+    /// the `pins` file, as tmls loads it. Ask with [`Config::is_pinned`].
+    pub pins: BTreeSet<String>,
 }
 
 /// A host's accent colour, by its name in tmls's palette.
@@ -102,29 +102,21 @@ impl Config {
                 Some((name, argv)).filter(|(name, argv)| !name.is_empty() && !argv.is_empty())
             })
             .collect();
-        let pins = read("pins").split_whitespace().filter_map(pin_key).collect();
+        let pins = read("pins").split_whitespace().map(str::to_string).collect();
         Config { local_name, hosts, host_colors, presets, pins }
     }
 
-    /// Writes `dir/pins` for `pins`, creating `dir` if needed. Lines already there that belong
-    /// to no pin of this app (sessions pinned in tmls) are kept.
-    pub fn save_pins(dir: &Path, pins: &BTreeSet<SessionKey>) -> anyhow::Result<()> {
+    /// Whether the session is pinned, here or in tmls.
+    pub fn is_pinned(&self, key: &SessionKey) -> bool {
+        self.pins.contains(&tmls_slug(key, &self.local_name))
+    }
+
+    /// Writes `dir/pins` as tmls does: the whole set, one slug per line, sorted. Creates `dir`
+    /// if needed.
+    pub fn save_pins(dir: &Path, pins: &BTreeSet<String>) -> anyhow::Result<()> {
         let path = dir.join("pins");
-        let local_name = local_name(dir);
-        let old = std::fs::read_to_string(&path).unwrap_or_default();
-        let ours: BTreeSet<String> =
-            old.split_whitespace().filter_map(pin_key).map(|key| tmls_slug(&key, &local_name)).collect();
-        let mut lines: BTreeSet<String> = old
-            .split_whitespace()
-            .filter(|token| pin_key(token).is_none() && !ours.contains(*token))
-            .map(str::to_string)
-            .collect();
-        for key in pins {
-            lines.insert(tmls_slug(key, &local_name));
-            lines.insert(pin_token(key));
-        }
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let text: String = pins.iter().map(|slug| format!("{slug}\n")).collect();
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
     }
 }
@@ -141,41 +133,6 @@ pub fn tmls_slug(key: &SessionKey, local_name: &str) -> String {
         .collect();
     let hash: String = digest[..4].iter().map(|byte| format!("{byte:02x}")).collect();
     format!("{readable}-{hash}")
-}
-
-/// This app's line for a pin: `rs:HOST/NAME`, each part percent-encoded so the line has no
-/// whitespace (tmls splits the file on it) and no stray `/`.
-fn pin_token(key: &SessionKey) -> String {
-    let encode = |text: &str| -> String {
-        text.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' => (b as char).to_string(),
-                _ => format!("%{b:02X}"),
-            })
-            .collect()
-    };
-    format!("rs:{}/{}", encode(&key.host), encode(&key.name))
-}
-
-/// The session a `pins` line of this app names; `None` for tmls's slugs and damaged lines.
-fn pin_key(token: &str) -> Option<SessionKey> {
-    fn decode(text: &str) -> Option<String> {
-        let mut bytes = Vec::with_capacity(text.len());
-        let mut rest = text.as_bytes();
-        while let Some((&byte, tail)) = rest.split_first() {
-            if byte == b'%' {
-                let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
-                bytes.push(u8::from_str_radix(hex, 16).ok().filter(|_| hex.bytes().all(|b| b.is_ascii_hexdigit()))?);
-                rest = &tail[2..];
-            } else {
-                bytes.push(byte);
-                rest = tail;
-            }
-        }
-        String::from_utf8(bytes).ok().filter(|s| !s.is_empty())
-    }
-    let (host, name) = token.strip_prefix("rs:")?.split_once('/')?;
-    Some(SessionKey { host: decode(host)?, name: decode(name)? })
 }
 
 fn local_name(dir: &Path) -> String {

@@ -74,33 +74,30 @@ fn name_file_overrides_the_hostname() {
 #[test]
 fn pins_round_trip() {
     let d = dir("pins").join("made-on-save");
-    std::fs::write(d.parent().unwrap().join("x"), "").unwrap();
-    let me = Config::load(&d, &[]).local_name;
-    let pins: BTreeSet<SessionKey> = [
-        key(&me, "Agent Thing"),
-        key("laanta-chy", "café: x"),
-        key("user@nas", "50% / done"),
-        key("nas", "rs:a/b"),
-    ]
-    .into();
-    Config::save_pins(&d, &pins).unwrap();
-    assert_eq!(Config::load(&d, &[]).pins, pins);
+    let mut cfg = Config::load(&d, &[]);
+    let me = cfg.local_name.clone();
+    let pinned = [key(&me, "Agent Thing"), key("laanta-chy", "café: x"), key("user@nas", "50% / done")];
+    for k in &pinned {
+        assert!(!cfg.is_pinned(k));
+        cfg.pins.insert(tmls_slug(k, &me));
+    }
+    Config::save_pins(&d, &cfg.pins).unwrap();
 
-    // tmls's format: one whitespace-free token per line, sorted; its own slug for every pin
-    // (this machine is "local" there), so tmls shows the same sessions pinned
+    // tmls's format and nothing else: its slug for every pin, one per line, sorted
+    // (this machine is "local" there)
     let text = std::fs::read_to_string(d.join("pins")).unwrap();
-    let tokens: Vec<&str> = text.lines().collect();
-    assert_eq!(tokens, text.split_whitespace().collect::<Vec<_>>());
-    assert!(tokens.is_sorted());
-    assert!(tokens.contains(&"local-Agent_Thing-0ffb10f9"), "{tokens:?}");
-    assert!(tokens.contains(&"laanta-chy-caf___x-404715a3"), "{tokens:?}");
-    assert_eq!(tokens.len(), 8);
+    assert_eq!(text, "laanta-chy-caf___x-404715a3\nlocal-Agent_Thing-0ffb10f9\nuser_nas-50____done-f09ea08a\n");
 
-    // unpinning removes both of a pin's lines
-    let fewer: BTreeSet<SessionKey> = [key("laanta-chy", "café: x")].into();
-    Config::save_pins(&d, &fewer).unwrap();
-    assert_eq!(Config::load(&d, &[]).pins, fewer);
-    assert_eq!(std::fs::read_to_string(d.join("pins")).unwrap().lines().count(), 2);
+    let again = Config::load(&d, &[]);
+    assert_eq!(again.pins, cfg.pins);
+    assert!(pinned.iter().all(|k| again.is_pinned(k)));
+    assert!(!again.is_pinned(&key("nas", "Agent Thing")), "the same name on another host is another session");
+
+    // unpinning removes the slug; the file is always the whole set it was given
+    cfg.pins.remove(&tmls_slug(&pinned[0], &me));
+    Config::save_pins(&d, &cfg.pins).unwrap();
+    let again = Config::load(&d, &[]);
+    assert!(!again.is_pinned(&pinned[0]) && again.is_pinned(&pinned[1]));
     Config::save_pins(&d, &BTreeSet::new()).unwrap();
     assert_eq!(std::fs::read_to_string(d.join("pins")).unwrap(), "");
     done(d.parent().unwrap().to_path_buf());
@@ -109,24 +106,27 @@ fn pins_round_trip() {
 #[test]
 fn pins_made_in_tmls_survive_a_save() {
     let d = dir("pins-tmls");
-    // two sessions pinned in tmls (bare slugs: host and name can't be read back from them)
+    // as tmls wrote it: two sessions pinned there, one on this machine ("local") and one on nas
     std::fs::write(d.join("pins"), "local-work-b12e6407\nnas-build-0123abcd\n").unwrap();
-    let cfg = Config::load(&d, &[]);
-    assert!(cfg.pins.is_empty());
-    assert_eq!(tmls_slug(&key(&cfg.local_name, "work"), &cfg.local_name), "local-work-b12e6407");
+    let mut cfg = Config::load(&d, &[]);
+    let me = cfg.local_name.clone();
+    assert!(cfg.is_pinned(&key(&me, "work")), "a pin made in tmls is a pin here");
+    assert!(!cfg.is_pinned(&key("nas", "work")) && !cfg.is_pinned(&key(&me, "other")));
+    let from_tmls: BTreeSet<String> = ["local-work-b12e6407".to_string(), "nas-build-0123abcd".to_string()].into();
+    assert_eq!(cfg.pins, from_tmls, "every token of the file, as tmls's loader takes them");
 
-    let pins: BTreeSet<SessionKey> = [key(&cfg.local_name, "work"), key("nas", "other")].into();
-    Config::save_pins(&d, &pins).unwrap();
+    // pin one more here: tmls's own pins are written back with it
+    cfg.pins.insert(tmls_slug(&key("nas", "other"), &me));
+    Config::save_pins(&d, &cfg.pins).unwrap();
     let text = std::fs::read_to_string(d.join("pins")).unwrap();
-    assert_eq!(text.matches("local-work-b12e6407\n").count(), 1);
-    assert!(text.contains("nas-build-0123abcd\n"), "a tmls pin this app can't name is kept: {text}");
-    assert_eq!(Config::load(&d, &[]).pins, pins);
+    assert_eq!(text.lines().count(), 3);
+    assert!(text.contains("local-work-b12e6407\n") && text.contains("nas-build-0123abcd\n"), "{text}");
+    let again = Config::load(&d, &[]);
+    assert!(again.is_pinned(&key(&me, "work")) && again.is_pinned(&key("nas", "other")));
 
-    // a damaged line of ours is kept as it is, not read as a pin
-    std::fs::write(d.join("pins"), "rs:%zz/x\nrs:nohost\n").unwrap();
-    assert!(Config::load(&d, &[]).pins.is_empty());
-    Config::save_pins(&d, &BTreeSet::new()).unwrap();
-    assert_eq!(std::fs::read_to_string(d.join("pins")).unwrap(), "rs:%zz/x\nrs:nohost\n");
+    // tmls splits the file on any whitespace
+    std::fs::write(d.join("pins"), "  local-work-b12e6407 nas-build-0123abcd\n\n").unwrap();
+    assert_eq!(Config::load(&d, &[]).pins, from_tmls);
     done(d);
 }
 
