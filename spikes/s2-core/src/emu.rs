@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
 use libghostty_vt::style::Underline;
-use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, Terminal};
+use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 
 use crate::frame::{Cell, CellFlags, Cursor, CursorShape, Frame, FrameSlot, Wide};
 use crate::keys::{self, KeyEvent};
@@ -34,6 +34,13 @@ pub enum InputMsg {
     Paste(String),
     /// Window focus. `false` drops queued key repeats; both report to the PTY under mode 1004.
     Focus(bool),
+    /// Scrolls the viewport by this many rows: negative towards older output (wheel up),
+    /// positive towards the live screen. Clamped at both ends of the scrollback; the alternate
+    /// screen has none. A frame follows. Output does not move a scrolled viewport back; a key or
+    /// paste that sends bytes does, and so does `ScrollToBottom`.
+    Scroll(i32),
+    /// Returns the viewport to the live screen. A frame follows.
+    ScrollToBottom,
     Shutdown,
 }
 
@@ -209,7 +216,9 @@ struct State {
     /// Filled by the write's completion, which runs on the writer thread for a queued write.
     unseen_keys: Arc<Mutex<Vec<(u64, u128)>>>,
     repeat_ok: bool,
-    /// This batch changed what the viewport shows without PTY output (a resize).
+    /// The viewport may be away from the live screen (a `Scroll` since the last return).
+    scrolled: bool,
+    /// This batch changed what the viewport shows without PTY output (resize, scroll).
     redraw: bool,
 }
 
@@ -243,6 +252,7 @@ impl State {
             seq: 0,
             unseen_keys: Arc::default(),
             repeat_ok: true,
+            scrolled: false,
             redraw: false,
         })
     }
@@ -262,6 +272,8 @@ impl State {
                     InputMsg::Paste(text) => self.paste(&text),
                     InputMsg::Focus(focused) => self.focus(focused),
                     InputMsg::Resize(cols, rows) => self.redraw |= self.resize(cols, rows),
+                    InputMsg::Scroll(rows) => self.scroll(ScrollViewport::Delta(rows as isize)),
+                    InputMsg::ScrollToBottom => self.scroll(ScrollViewport::Bottom),
                     InputMsg::Shutdown => return,
                 }
             }
@@ -291,6 +303,10 @@ impl State {
     fn send(&mut self, bytes: Vec<u8>, written: Option<crate::pty::Written>) {
         if bytes.is_empty() {
             return;
+        }
+        // Typing returns to the live screen, as terminals do.
+        if self.scrolled {
+            self.scroll(ScrollViewport::Bottom);
         }
         let _ = self.writer.write_then(bytes, written);
     }
@@ -326,6 +342,12 @@ impl State {
     fn resize(&mut self, cols: u16, rows: u16) -> bool {
         // Cell pixel size only feeds image protocols and size reports; S2 draws neither.
         self.term.resize(cols, rows, 8, 16).is_ok() && self.pty.resize(cols, rows).is_ok()
+    }
+
+    fn scroll(&mut self, to: ScrollViewport) {
+        self.term.scroll_viewport(to);
+        self.scrolled = to != ScrollViewport::Bottom;
+        self.redraw = true;
     }
 
     /// Publishes the viewport. `has_output` says PTY output read at `t_output_ns` is in it; only

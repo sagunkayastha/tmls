@@ -15,7 +15,7 @@ pub struct Frame {
     pub dirty_rows: Vec<bool>,
     pub seq: u64,
     /// When the last PTY bytes in this frame were read. A frame published without new output
-    /// (the first one, a resize) carries the time it was built instead.
+    /// (the first one, a resize, a viewport scroll) carries the time it was built instead.
     pub t_output_ns: u128,
     /// Ids of the keys this frame is the first to show output for: keys whose PTY write began at
     /// or before `t_output_ns`. Always empty for a frame without new output.

@@ -60,7 +60,8 @@ impl Pty {
 }
 // emulator thread (libghostty-vt objects are not Send → they live on this thread only)
 pub struct Emu { pub input_tx: Sender<InputMsg>, pub frames: FrameSlot }
-pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Focus(bool), Shutdown }
+pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Focus(bool),
+                    Scroll(i32 /* rows; negative = up, into scrollback */), ScrollToBottom, Shutdown }
 impl Emu { pub fn start(pty: Pty, cols: u16, rows: u16, log: Option<latency::Log>) -> anyhow::Result<Emu>; }
 // FrameSlot = latest-wins single slot (Mutex<Option<Frame>> + wake callback). Frames may drop; PTY bytes never.
 pub struct FrameSlot; impl FrameSlot { pub fn take(&self) -> Option<Frame>; pub fn set_waker(&self, f: Box<dyn Fn() + Send + Sync>); }
@@ -96,8 +97,13 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   (generator `make-golden.py` beside them computes the report independently of the Rust code).
 
 **Contract changes from the A1 fix wave (2026-10-10, review `docs/reviews/2026-10-10-opus-s2-core.md`):**
+- **New: viewport scrolling.** `InputMsg::Scroll(i32)` moves the viewport by that many rows — negative is up, into the
+  scrollback (wheel up); positive is back towards the live screen — clamped at both ends; `InputMsg::ScrollToBottom`
+  returns to the live screen. Each is followed by a frame (rows that now show other text are dirty; `cursor` is `None`
+  while the cursor row is outside the viewport). PTY output does not move a scrolled viewport; a `Key` or `Paste` that
+  sends bytes returns it to the bottom, so front-ends need not send `ScrollToBottom` before typing.
 - **`Frame::t_output_ns` as implemented:** the read time of the *last* PTY chunk parsed into the frame (a frame can
-  cover several chunks). A frame published without new PTY output — the first frame, a resize — carries the
+  cover several chunks). A frame published without new PTY output — the first frame, a resize, a scroll — carries the
   time it was built instead, and **its `keys` are always empty**: only a frame with output can show a key's echo
   (review B3). Such frames still get a `frame` line if presented; they just carry no keys.
 - **`set_waker` never loses a wake-up (B7):** if a frame is already waiting in the slot or the child has already exited,
