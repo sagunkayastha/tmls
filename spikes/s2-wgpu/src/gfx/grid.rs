@@ -413,7 +413,8 @@ fn opaque(c: [u8; 3]) -> [u8; 4] {
     [c[0], c[1], c[2], 255]
 }
 
-fn solid(pos: [f32; 2], size: [f32; 2], color: [u8; 4]) -> Instance {
+/// A filled rectangle.
+pub fn solid(pos: [f32; 2], size: [f32; 2], color: [u8; 4]) -> Instance {
     Instance {
         pos,
         size,
@@ -427,9 +428,10 @@ fn is_blank(cell: &Cell) -> bool {
     cell.text.chars().all(|c| c == ' ')
 }
 
-/// Splits preedit text into drawable clusters with their width in columns (1 or 2); zero-width
-/// characters (combining marks, joiners) stay with the character before them.
-fn clusters(text: &str) -> Vec<(String, usize)> {
+/// Splits text into drawable clusters with their width in columns (1 or 2); zero-width
+/// characters (combining marks, joiners) stay with the character before them, control
+/// characters are dropped. Used for the preedit and for the UI's labels (`ui::draw`).
+pub fn clusters(text: &str) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
     for ch in text.chars().filter(|c| !c.is_control()) {
         match (ch.width().unwrap_or(0), out.last_mut()) {
@@ -442,8 +444,9 @@ fn clusters(text: &str) -> Vec<(String, usize)> {
 }
 
 /// Appends the glyph quads of one cell's text; `(x, y)` is the cell's top-left corner.
+/// Glyphs are not clipped to the cell: the caller decides what fits.
 #[allow(clippy::too_many_arguments)]
-fn push_text(
+pub fn push_text(
     out: &mut Vec<Instance>,
     atlas: &mut Atlas,
     text: &str,

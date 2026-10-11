@@ -306,3 +306,69 @@ fn atlas_height_is_capped_at_the_device_limit() {
     fill(&mut atlas, 4096);
     assert!(atlas.image().height <= 4096);
 }
+
+#[test]
+fn font_size_change_re_measures_and_invalidates() {
+    // Zoom: `set_font_size` is to the logical size what `set_scale` is to the scale factor.
+    let mut atlas = atlas(1.25);
+    assert_eq!(atlas.font_size(), FontSpec::default().size);
+    let small = atlas.metrics();
+    let shaped = atlas.shape("A", REGULAR);
+    let key = atlas.key(&shaped[0], 0);
+    let before = atlas.glyph(key).expect("'A' rasterises");
+    let generation = atlas.generation();
+
+    // The same size is not a change: nothing is thrown away.
+    assert!(!atlas.set_font_size(FontSpec::default().size));
+    assert_eq!(atlas.generation(), generation);
+    assert_eq!(atlas.stats().glyphs, 1);
+
+    // One zoom step up: a larger whole-pixel cell, an empty cache, a new generation, and the
+    // same character under another key with a larger bitmap.
+    assert!(atlas.set_font_size(15.0));
+    assert_eq!(atlas.font_size(), 15.0);
+    assert_ne!(atlas.generation(), generation);
+    assert_eq!(atlas.stats().glyphs, 0);
+    let large = atlas.metrics();
+    // (The width is rounded to whole pixels, so a single step may leave it as it was.)
+    assert!(large.width >= small.width && large.height > small.height);
+    for v in [large.width, large.height, large.baseline] {
+        assert_eq!(v, v.round(), "whole pixels at scale 1.25");
+    }
+    assert!(large.baseline >= small.baseline);
+    let shaped = atlas.shape("A", REGULAR);
+    let zoomed = atlas.key(&shaped[0], 0);
+    assert_ne!(zoomed, key);
+    let after = atlas.glyph(zoomed).expect("'A' rasterises again");
+    assert!(after.h > before.h, "{} > {}", after.h, before.h);
+    assert!(ink(&atlas, &after) > 0);
+    assert_eq!(atlas.stats().misses, 2, "rasterised again, not reused");
+    // The scale factor is untouched; both multiply.
+    assert_eq!(atlas.scale(), 1.25);
+
+    // Twice the size is about twice the cell (whole-pixel rounding aside).
+    assert!(atlas.set_font_size(28.0));
+    let double = atlas.metrics();
+    assert!((double.width / small.width - 2.0).abs() < 0.15);
+    assert!((double.height / small.height - 2.0).abs() < 0.15);
+    assert_eq!(
+        double.grid_for(1000, 500).0,
+        (1000.0 / double.width).floor() as u16
+    );
+
+    // Back to the first size: the first cell again, exactly (zoom in then out is lossless).
+    assert!(atlas.set_font_size(14.0));
+    assert_eq!(atlas.metrics(), small);
+    let shaped = atlas.shape("A", REGULAR);
+    assert_eq!(atlas.key(&shaped[0], 0), key);
+
+    // Nonsense sizes do not poison the atlas.
+    for bad in [f32::NAN, f32::INFINITY, 0.0, -5.0] {
+        atlas.set_font_size(bad);
+        let m = atlas.metrics();
+        assert!(
+            m.width >= 1.0 && m.height >= 1.0 && m.width.is_finite() && m.height.is_finite(),
+            "{bad}: {m:?}"
+        );
+    }
+}

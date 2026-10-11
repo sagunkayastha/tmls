@@ -1,7 +1,13 @@
 //! The winit event loop and the wgpu surface: one window showing one terminal session.
 //!
 //! This file only moves events and frames between winit, wgpu and the modules that hold the
-//! logic (`input`, `session`, `select`, `marks`, `gfx`); those are tested without a window.
+//! logic (`input`, `session`, `select`, `marks`, `gfx`, `ui`); those are tested without a
+//! window.
+//!
+//! Besides the terminal there is a small UI (`ui`: sidebar list, a one-field form, a context
+//! menu). Every key and IME event goes through `ui::key_event` / `ui::ime_event`, which hand
+//! it to the session only while the terminal has the keyboard focus; whatever else the UI
+//! wants done comes back as a `ui::Effect` (`Running::apply`).
 //!
 //! Frame path: the emulator thread publishes a frame and calls the waker → `UserEvent::Wake`
 //! → `request_redraw` → `RedrawRequested` takes the frame(s), builds quads, submits and
@@ -30,13 +36,18 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::cli::{Args, Present};
-use crate::gfx::atlas::{Atlas, FontSpec};
-use crate::gfx::grid::{Scene, Theme};
+use crate::gfx::atlas::Atlas;
+use crate::gfx::grid::Scene;
 use crate::gfx::render::{Gpu, Renderer};
-use crate::input::{self, Action};
+use crate::input;
 use crate::marks::{Marks, PresentPath, WorkDone};
 use crate::session::Session;
 use crate::surface::{self, Acquired, Next};
+use crate::ui::draw::{self, UiLayers};
+use crate::ui::focus::Focus;
+use crate::ui::layout::{self, Layout};
+use crate::ui::theme::{ZoomDir, zoom_step};
+use crate::ui::{self, Effect, Ui};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -133,7 +144,10 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Resized(size) => running.resized(size),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => running.rescaled(scale_factor),
             WindowEvent::Occluded(false) => running.invalidate(),
-            WindowEvent::Focused(focused) => running.session.focus(focused),
+            WindowEvent::Focused(focused) => {
+                running.window_focused = focused;
+                running.sync_focus();
+            }
             WindowEvent::ModifiersChanged(mods) => running.mods = mods.state(),
             WindowEvent::KeyboardInput {
                 event,
@@ -141,13 +155,20 @@ impl ApplicationHandler<UserEvent> for App {
                 ..
             } => running.key(t_event_ns, &event),
             WindowEvent::Ime(ime) => running.ime(t_event_ns, ime),
-            WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
+            WindowEvent::CursorMoved { position, .. } => {
+                running.pointer_moved(t_event_ns, position)
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => running.left_button(state),
-            WindowEvent::MouseWheel { delta, .. } => running.wheel(&delta),
+            } => running.left_button(t_event_ns, state),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => running.right_button(t_event_ns),
+            WindowEvent::MouseWheel { delta, .. } => running.wheel(t_event_ns, &delta),
             _ => {}
         }
     }
@@ -206,7 +227,12 @@ struct Running {
     renderer: Renderer,
     atlas: Atlas,
     scene: Scene,
-    theme: Theme,
+    /// The sidebar, the form and the context menu; also who has the keyboard focus.
+    ui: Ui,
+    /// Where the UI and the terminal are, for the current size, scale and font size.
+    layout: Layout,
+    /// The UI's quads, rebuilt only when it changed.
+    layers: UiLayers,
     session: Session,
     log: Option<Log>,
     marks: Option<Marks<Log>>,
@@ -224,8 +250,14 @@ struct Running {
     woken: bool,
     /// Something other than a new frame changed the picture (overlay, size, scale).
     dirty: bool,
-    /// Where the IME was last told the cursor is.
-    ime_cell: Option<(u16, u16)>,
+    /// Where the IME was last told the text cursor is (window pixels).
+    ime_at: Option<(f32, f32)>,
+    /// The window has the keyboard focus.
+    window_focused: bool,
+    /// What the session was last told about focus: window focused and terminal focused in it.
+    term_focused: Option<bool>,
+    /// Focus stop and "menu open" at the last `sync_focus`.
+    ui_seen: (Focus, bool),
     /// The child has exited: leave at this time at the latest.
     exit_by: Option<Instant>,
     /// `seq` of the frame presented last.
@@ -311,9 +343,18 @@ impl Running {
         surface.configure(&gpu.device, &config);
 
         let scale = window.scale_factor();
-        let mut atlas = Atlas::new(FontSpec::default(), scale as f32);
+        let ui = Ui::new();
+        let mut atlas = Atlas::new(ui.theme.font.clone(), scale as f32);
         atlas.set_max_height(gpu.device.limits().max_texture_dimension_2d);
-        let (cols, rows) = atlas.metrics().grid_for(config.width, config.height);
+        let layout = layout::layout(
+            (config.width, config.height),
+            atlas.scale(),
+            &atlas.metrics(),
+            &ui.theme,
+        );
+        let (cols, rows) = layout.grid;
+        let mut scene = Scene::new();
+        scene.set_origin(layout.terminal.x, layout.terminal.y);
         let renderer = Renderer::new(&gpu.device, config.format);
 
         let log = match &args.bench {
@@ -359,8 +400,11 @@ impl Running {
             gpu,
             renderer,
             atlas,
-            scene: Scene::new(),
-            theme: Theme::default(),
+            scene,
+            ui_seen: (ui.focus, false),
+            ui,
+            layout,
+            layers: UiLayers::new(),
             session,
             log,
             clipboard: None,
@@ -370,7 +414,9 @@ impl Running {
             wake_pending,
             woken: false,
             dirty: true,
-            ime_cell: None,
+            ime_at: None,
+            window_focused: false,
+            term_focused: None,
             exit_by: None,
             shown_seq: None,
             retry_at: None,
@@ -389,58 +435,117 @@ impl Running {
         }
         (self.config.width, self.config.height) = (size.width, size.height);
         self.surface.configure(&self.gpu.device, &self.config);
-        self.regrid();
+        self.relayout();
     }
 
-    /// A new scale factor: every glyph is rasterised again at the new size.
+    /// A new scale factor (HiDPI, another monitor): every glyph is rasterised again at the
+    /// new size and the layout is made for it.
     fn rescaled(&mut self, scale: f64) {
         if self.atlas.set_scale(scale as f32) {
             eprintln!("s2-wgpu: scale factor {scale}");
-            self.regrid();
+            self.relayout();
         }
     }
 
-    /// Tells the emulator how many cells fit now (`InputMsg::Resize` if that changed).
-    fn regrid(&mut self) {
-        let (cols, rows) = self
-            .atlas
-            .metrics()
-            .grid_for(self.config.width, self.config.height);
+    /// Ctrl+= / Ctrl+−: one step of the font size; like a scale change for the atlas.
+    fn zoom(&mut self, dir: ZoomDir) {
+        let size = zoom_step(self.atlas.font_size(), dir);
+        if self.atlas.set_font_size(size) {
+            eprintln!("s2-wgpu: font size {size}");
+            self.relayout();
+        }
+    }
+
+    /// Window size, scale factor or font size changed: lays the window out again, moves the
+    /// grid and tells the emulator how many cells fit now (`InputMsg::Resize` if that changed).
+    fn relayout(&mut self) {
+        self.layout = layout::layout(
+            (self.config.width, self.config.height),
+            self.atlas.scale(),
+            &self.atlas.metrics(),
+            &self.ui.theme,
+        );
+        self.scene
+            .set_origin(self.layout.terminal.x, self.layout.terminal.y);
+        self.ui.list.fit(self.layout.visible_rows);
+        let (cols, rows) = self.layout.grid;
         self.session.resize(cols, rows);
         self.invalidate();
     }
 
     fn key(&mut self, t_key_ns: u128, event: &KeyEvent) {
-        let pressed = event.state == ElementState::Pressed;
-        let action = input::key_action(
+        let effect = ui::key_event(
+            &mut self.ui,
+            &mut self.session,
+            &self.layout,
+            t_key_ns,
             &event.logical_key,
             event.text.as_deref(),
             self.mods,
-            pressed,
+            event.state == ElementState::Pressed,
             event.repeat,
         );
-        match action {
-            Action::Send(key) => {
-                self.session.key(t_key_ns, key);
-            }
-            Action::Copy => self.copy(),
-            Action::Paste => self.paste(),
-            Action::Ignore => {}
-        }
+        self.apply(t_key_ns, effect);
     }
 
     fn ime(&mut self, t_key_ns: u128, ime: Ime) {
-        let changed = match ime {
-            Ime::Preedit(text, _) => self.session.set_preedit(&text),
-            Ime::Commit(text) => {
-                self.session.ime_commit(t_key_ns, &text);
-                true
+        let effect = ui::ime_event(&mut self.ui, &mut self.session, t_key_ns, &ime);
+        self.apply(t_key_ns, effect);
+    }
+
+    /// Does what the UI asked for. `t_event_ns`: when the event behind it was received.
+    fn apply(&mut self, t_event_ns: u128, effect: Effect) {
+        match effect {
+            Effect::None => {}
+            Effect::Redraw => self.invalidate(),
+            Effect::SetClipboard(text) => {
+                self.set_clipboard(text);
+                self.invalidate();
             }
-            Ime::Disabled => self.session.set_preedit(""),
-            Ime::Enabled => false,
-        };
-        if changed {
+            Effect::PasteField => {
+                if let Some(text) = self.clipboard_text()
+                    && self.ui.paste(&text) == Effect::Redraw
+                {
+                    self.invalidate();
+                }
+            }
+            Effect::TermCopy => self.copy(),
+            Effect::TermPaste => self.paste(),
+            Effect::TermClear => {
+                self.session.key(t_event_ns, ui::menu::clear_key());
+            }
+            Effect::TermPress => {
+                let cell = self.scene.cell_at(self.pointer.0, self.pointer.1);
+                if self.session.select_start(cell) {
+                    self.invalidate();
+                }
+            }
+            Effect::Zoom(dir) => self.zoom(dir),
+        }
+        self.sync_focus();
+    }
+
+    /// After anything that may have moved the keyboard focus or opened / closed the menu:
+    /// redraws if so, and tells the session whether the terminal has the focus (window
+    /// focused and terminal focused in it). `false` is the contract's focus-lost marker.
+    fn sync_focus(&mut self) {
+        let seen = (self.ui.focus, self.ui.menu.is_some());
+        if seen != self.ui_seen {
+            if seen.0 != self.ui_seen.0 {
+                if seen.0 != Focus::Terminal {
+                    // A composition in the terminal ends when the focus leaves it.
+                    self.session.set_preedit("");
+                }
+                // The list takes keys, not text: j / k must not start a composition.
+                self.window.set_ime_allowed(seen.0 != Focus::List);
+            }
+            self.ui_seen = seen;
             self.invalidate();
+        }
+        let on = self.window_focused && self.ui.focus == Focus::Terminal;
+        if self.term_focused != Some(on) {
+            self.term_focused = Some(on);
+            self.session.focus(on);
         }
     }
 
@@ -454,10 +559,7 @@ impl Running {
         self.clipboard.as_mut()
     }
 
-    fn copy(&mut self) {
-        let Some(text) = self.session.selected_text() else {
-            return;
-        };
+    fn set_clipboard(&mut self, text: String) {
         if let Some(clipboard) = self.clipboard()
             && let Err(e) = clipboard.set_text(text)
         {
@@ -465,18 +567,36 @@ impl Running {
         }
     }
 
-    fn paste(&mut self) {
-        let Some(clipboard) = self.clipboard() else {
-            return;
-        };
-        match clipboard.get_text() {
-            Ok(text) => self.session.paste(&text),
-            Err(e) => eprintln!("s2-wgpu: paste failed: {e}"),
+    fn clipboard_text(&mut self) -> Option<String> {
+        match self.clipboard()?.get_text() {
+            Ok(text) => Some(text),
+            Err(e) => {
+                eprintln!("s2-wgpu: paste failed: {e}");
+                None
+            }
         }
     }
 
-    fn pointer_moved(&mut self, position: PhysicalPosition<f64>) {
+    /// Copies the terminal's selection.
+    fn copy(&mut self) {
+        if let Some(text) = self.session.selected_text() {
+            self.set_clipboard(text);
+        }
+    }
+
+    /// Pastes the clipboard into the terminal.
+    fn paste(&mut self) {
+        if let Some(text) = self.clipboard_text() {
+            self.session.paste(&text);
+        }
+    }
+
+    fn pointer_moved(&mut self, t_event_ns: u128, position: PhysicalPosition<f64>) {
         self.pointer = (position.x as f32, position.y as f32);
+        let effect = self
+            .ui
+            .pointer(self.pointer.0, self.pointer.1, &self.layout);
+        self.apply(t_event_ns, effect);
         if !self.session.selecting() {
             return;
         }
@@ -486,23 +606,37 @@ impl Running {
         }
     }
 
-    fn left_button(&mut self, state: ElementState) {
+    fn left_button(&mut self, t_event_ns: u128, state: ElementState) {
         match state {
             ElementState::Pressed => {
-                let cell = self.scene.cell_at(self.pointer.0, self.pointer.1);
-                if self.session.select_start(cell) {
-                    self.invalidate();
-                }
+                // The UI decides whose press it is; the terminal's comes back as `TermPress`.
+                let effect = self.ui.press(self.pointer.0, self.pointer.1, &self.layout);
+                self.apply(t_event_ns, effect);
             }
-            ElementState::Released => self.session.select_end(),
+            ElementState::Released => {
+                self.session.select_end();
+                self.ui.release();
+            }
         }
     }
 
-    fn wheel(&mut self, delta: &MouseScrollDelta) {
+    /// Right button down: the context menu, on the terminal.
+    fn right_button(&mut self, t_event_ns: u128) {
+        let effect = self
+            .ui
+            .context(self.pointer.0, self.pointer.1, &self.layout);
+        self.apply(t_event_ns, effect);
+    }
+
+    fn wheel(&mut self, t_event_ns: u128, delta: &MouseScrollDelta) {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
-        // The frame at the new position comes back through the waker.
-        self.session.scroll(rows);
+        let (x, y) = self.pointer;
+        match self.ui.wheel(x, y, rows, &self.layout) {
+            Some(effect) => self.apply(t_event_ns, effect),
+            // The frame at the new position comes back through the waker.
+            None => self.session.scroll(rows),
+        }
     }
 
     /// Takes the waiting frames and, if there is something new to show, draws and presents.
@@ -510,9 +644,10 @@ impl Running {
         if let Some(marks) = &mut self.marks {
             marks.begin_redraw();
         }
+        let theme = self.ui.theme.terminal;
         let new_frame = self
             .session
-            .take_frames(&mut self.scene, &mut self.atlas, &self.theme);
+            .take_frames(&mut self.scene, &mut self.atlas, &theme);
         if !new_frame && !self.dirty && cause == Redraw::Woken {
             return Ok(());
         }
@@ -520,17 +655,30 @@ impl Running {
             return Ok(());
         };
         if !new_frame {
-            // Same frame as before: this picks up a new scale factor (atlas generation).
-            self.scene.update_cells(frame, &mut self.atlas, &self.theme);
+            // Same frame as before: this picks up a new scale factor, font size or grid
+            // origin (atlas generation, layout).
+            self.scene.update_cells(frame, &mut self.atlas, &theme);
+        }
+        if self.dirty {
+            // Something other than terminal output changed; that may have been the UI. A
+            // redraw for a new frame alone (a key echo) leaves the UI's quads as they are.
+            self.layers.invalidate();
         }
         let overlays = self.session.overlays();
-        self.scene
-            .update_overlays(frame, &mut self.atlas, &self.theme, &overlays);
+        draw::compose(
+            &mut self.scene,
+            frame,
+            &mut self.atlas,
+            &overlays,
+            &mut self.ui,
+            &self.layout,
+            &mut self.layers,
+        );
         self.renderer.prepare(
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.atlas,
-            &self.scene.layers(),
+            &draw::layer_order(&self.scene, &self.layers),
             (self.config.width, self.config.height),
         );
 
@@ -574,7 +722,7 @@ impl Running {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("s2-wgpu frame"),
             });
-        self.renderer.draw(&mut encoder, &view, self.theme.bg);
+        self.renderer.draw(&mut encoder, &view, theme.bg);
         drop(view);
         let seq = frame.seq;
         let cursor = frame.cursor.map(|cursor| (cursor.col, cursor.row));
@@ -648,17 +796,19 @@ impl Running {
         });
     }
 
-    /// Keeps the input method's candidate window at the cursor cell.
+    /// Keeps the input method's candidate window at the text cursor: the terminal's cursor
+    /// cell or the field's caret, whichever has the focus.
     fn place_ime(&mut self, cursor: Option<(u16, u16)>) {
-        if cursor == self.ime_cell {
+        let at = self.ui.ime_anchor(&self.layout, cursor);
+        if at == self.ime_at {
             return;
         }
-        self.ime_cell = cursor;
-        if let Some((col, row)) = cursor {
-            let m = self.atlas.metrics();
+        self.ime_at = at;
+        if let Some((x, y)) = at {
+            let (width, height) = self.layout.cell;
             self.window.set_ime_cursor_area(
-                PhysicalPosition::new(col as f32 * m.width, row as f32 * m.height),
-                PhysicalSize::new(m.width, m.height),
+                PhysicalPosition::new(x, y),
+                PhysicalSize::new(width, height),
             );
         }
     }

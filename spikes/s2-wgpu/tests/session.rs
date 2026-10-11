@@ -12,6 +12,10 @@ use s2_wgpu::gfx::grid::{CellSpan, Preedit, Scene, Theme};
 use s2_wgpu::input::{Action, key_action};
 use s2_wgpu::marks::{Marks, PresentPath, WorkDone};
 use s2_wgpu::session::Session;
+use s2_wgpu::ui::focus::Focus;
+use s2_wgpu::ui::layout::layout;
+use s2_wgpu::ui::{self, Effect, Ui};
+use winit::event::Ime;
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -579,4 +583,181 @@ fn paste_goes_through_the_core_and_the_last_output_is_shown_before_exit() {
         .flatten()
         .collect();
     assert!(shown.contains(&id), "the last key has its frame: {shown:?}");
+}
+
+#[test]
+fn keys_reach_the_child_and_the_log_only_while_the_terminal_has_the_focus() {
+    // Through `ui::key_event` / `ui::ime_event`, the functions the window calls for every key
+    // and every IME event. A key that goes to the list or the field would never be echoed in a
+    // frame, so it must leave no `key` line; a terminal key must leave exactly what it did
+    // before the UI existed.
+    let dir = scratch("session_focus_routing");
+    let log = Log::create(&dir).unwrap();
+    let mut rig = Rig::raw(Some(log.clone()));
+    let mut ui = Ui::new();
+    let l = layout((1280, 800), 1.0, &rig.atlas.metrics(), &ui.theme);
+    let none = ModifiersState::empty();
+    let ctrl = ModifiersState::CONTROL;
+    let tab = WKey::Named(NamedKey::Tab);
+    let enter = WKey::Named(NamedKey::Enter);
+    let send = |ui: &mut Ui, rig: &mut Rig, key: &WKey, text: Option<&str>, mods| {
+        let effect = ui::key_event(
+            ui,
+            &mut rig.session,
+            &l,
+            now_ns(),
+            key,
+            text,
+            mods,
+            true,
+            false,
+        );
+        ui::key_event(
+            ui,
+            &mut rig.session,
+            &l,
+            now_ns(),
+            key,
+            None,
+            mods,
+            false,
+            false,
+        );
+        effect
+    };
+    let letter = |c: &str| WKey::Character(c.into());
+
+    // Terminal focused (as the app starts): the key and Tab reach the child.
+    assert_eq!(ui.focus, Focus::Terminal);
+    assert_eq!(
+        send(&mut ui, &mut rig, &letter("a"), Some("a"), none),
+        Effect::None
+    );
+    assert_eq!(
+        send(&mut ui, &mut rig, &tab, Some("\t"), none),
+        Effect::None
+    );
+    rig.until_recorded(b"a\t");
+    assert_eq!(ui.focus, Focus::Terminal, "Tab did not move the focus");
+
+    // Zoom and the traversal chord are the app's, even here.
+    assert!(matches!(
+        send(&mut ui, &mut rig, &letter("="), None, ctrl),
+        Effect::Zoom(_)
+    ));
+    assert_eq!(send(&mut ui, &mut rig, &tab, None, ctrl), Effect::Redraw);
+    assert_eq!(ui.focus, Focus::List);
+
+    // List focused: letters, Enter-less navigation, an IME commit — nothing for the child.
+    send(&mut ui, &mut rig, &letter("j"), Some("j"), none);
+    send(&mut ui, &mut rig, &letter("q"), Some("q"), none);
+    send(
+        &mut ui,
+        &mut rig,
+        &WKey::Named(NamedKey::ArrowDown),
+        None,
+        none,
+    );
+    send(&mut ui, &mut rig, &letter("c"), None, ctrl);
+    assert_eq!(
+        ui::ime_event(
+            &mut ui,
+            &mut rig.session,
+            now_ns(),
+            &Ime::Commit("列".to_string())
+        ),
+        Effect::None
+    );
+    assert_eq!(ui.list.selected(), 2);
+
+    // Field focused: typing, a composition and its commit, Enter — all stay in the UI.
+    send(&mut ui, &mut rig, &tab, Some("\t"), none);
+    assert_eq!(ui.focus, Focus::Field);
+    send(&mut ui, &mut rig, &letter("n"), Some("n"), none);
+    assert_eq!(
+        ui::ime_event(
+            &mut ui,
+            &mut rig.session,
+            now_ns(),
+            &Ime::Preedit("ni".to_string(), None)
+        ),
+        Effect::Redraw
+    );
+    assert_eq!(
+        rig.session.overlays().preedit,
+        None,
+        "not the terminal's preedit"
+    );
+    assert_eq!(ui.field.preedit(), "ni");
+    ui::ime_event(
+        &mut ui,
+        &mut rig.session,
+        now_ns(),
+        &Ime::Commit("你".to_string()),
+    );
+    assert_eq!(ui.field.text(), "n你");
+    let items = ui.list.items().len();
+    send(&mut ui, &mut rig, &enter, Some("\r"), none);
+    assert_eq!(ui.list.items().len(), items + 1);
+    assert_eq!(ui.focus, Focus::List);
+
+    // The context menu takes keys too, with the terminal focused under it.
+    ui.context(l.terminal.x + 50.0, 50.0, &l);
+    assert_eq!(ui.focus, Focus::Terminal);
+    send(&mut ui, &mut rig, &letter("m"), Some("m"), none);
+    assert!(ui.menu.is_none(), "the key closed the menu");
+
+    // Back on the terminal: keys and IME commits flow again, the preedit is the terminal's.
+    send(&mut ui, &mut rig, &letter("b"), Some("b"), none);
+    assert_eq!(
+        ui::ime_event(
+            &mut ui,
+            &mut rig.session,
+            now_ns(),
+            &Ime::Preedit("hao".to_string(), None)
+        ),
+        Effect::Redraw
+    );
+    assert_eq!(
+        rig.session.overlays().preedit,
+        Some(Preedit {
+            text: "hao".to_string()
+        })
+    );
+    assert_eq!(ui.field.preedit(), "");
+    ui::ime_event(
+        &mut ui,
+        &mut rig.session,
+        now_ns(),
+        &Ime::Commit("好".to_string()),
+    );
+    assert_eq!(rig.session.overlays().preedit, None);
+    rig.until_recorded("a\tb好".as_bytes());
+    rig.until("the echo", |s| row(s, 0).contains("b好"));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        rig.writer.recorded(),
+        "a\tb好".as_bytes(),
+        "only the four terminal keys, nothing typed into the list, the field or the menu"
+    );
+
+    // The log: one `key` line and one `write` line per terminal press, none for the others.
+    log.flush();
+    let events = events(&dir);
+    let keys: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Key { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let writes: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Write { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys.len(), 4, "a, Tab, b, the commit: {keys:?}");
+    assert_eq!(writes, keys, "every logged key was written to the PTY");
 }

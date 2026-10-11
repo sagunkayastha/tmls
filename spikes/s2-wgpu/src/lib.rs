@@ -7,6 +7,7 @@
 //! - `marks`   — the submit / present / work-done timestamps of the latency log.
 //! - `session` — one terminal: emulator, key ids, overlays; everything but the window.
 //! - `surface` — what to do when the surface gives no texture; when the app may exit.
+//! - `ui`      — the non-terminal UI: sidebar list, text field, focus, context menu, theme tokens.
 //! - `app`     — the winit event loop and the wgpu surface. Thin: the logic is in the others.
 
 pub mod app;
@@ -17,3 +18,4 @@ pub mod marks;
 pub mod select;
 pub mod session;
 pub mod surface;
+pub mod ui;
