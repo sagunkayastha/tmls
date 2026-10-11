@@ -65,6 +65,7 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `agent-presets.json` | agent commands for a new session: the form's Start choices after `shell` and `claude` | read |
 | `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
+| `sketchpad` | the sketchpad hub's address, first line | read |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.
 
@@ -200,6 +201,7 @@ sends a key to a session.
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |
 | click the red `✕` at the foot of the list | quit (sessions keep running) |
+| click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
 | `+` on a host's header | new-session form for that host |

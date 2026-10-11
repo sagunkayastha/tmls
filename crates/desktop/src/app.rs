@@ -366,6 +366,8 @@ struct Running {
     retry_at: Option<Instant>,
     /// The ✕ at the foot of the list was clicked: the event loop is to stop.
     quit: bool,
+    /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
+    sketchpad: Option<String>,
 }
 
 impl Running {
@@ -520,6 +522,7 @@ impl Running {
             ime_allowed: false,
             retry_at: None,
             quit: false,
+            sketchpad: Config::sketchpad(config_dir),
         })
     }
 
@@ -637,6 +640,7 @@ impl Running {
             status,
             notice: ended.then(|| ENDED_NOTICE.to_string()),
             panel,
+            sketch: self.sketchpad.is_some(),
             unread: self.alerts.unread(),
         }
     }
@@ -1133,6 +1137,12 @@ impl Running {
         match (button, selected) {
             (Button::Alerts, _) => self.open_alerts(),
             (Button::Quit, _) => self.quit = true,
+            (Button::Sketch, _) => {
+                // Without a hub the button is not drawn and its place does nothing.
+                if let Some(url) = self.sketchpad.clone() {
+                    self.say(links::open(&url).map(|()| format!("opened {url}")));
+                }
+            }
             (Button::Open, Some(key)) => self.open(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {

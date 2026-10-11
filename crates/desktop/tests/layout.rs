@@ -42,13 +42,13 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
     );
 
     // The sidebar from the top: an inset, the list's lines, a line, five lines of legend,
-    // the buttons, an inset.
+    // the buttons' two rows, an inset.
     assert_eq!(l.list_cols, SIDEBAR_COLS);
     assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 3.0, 280.0));
-    assert_eq!(l.list_lines, 29);
-    assert_eq!(l.list.h, 580.0);
-    assert_eq!((l.legend.y, l.legend.h), (603.0, 100.0));
-    assert_eq!((l.buttons.y, l.buttons.bottom()), (703.0, 723.0));
+    assert_eq!(l.list_lines, 28);
+    assert_eq!(l.list.h, 560.0);
+    assert_eq!((l.legend.y, l.legend.h), (583.0, 100.0));
+    assert_eq!((l.buttons.y, l.buttons.bottom()), (683.0, 723.0));
     assert!(l.list.bottom() < l.legend.y);
     assert_eq!(
         l.list_lines_rect(2, 2),
@@ -81,14 +81,14 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     // The list's lines are a cell high, below one inset of padding.
     assert_eq!(l.hit(50.0, 3.0, 2), Hit::List { line: 0, col: 5 });
     assert_eq!(l.hit(279.0, 23.0, 2), Hit::List { line: 1, col: 27 });
-    assert_eq!(l.hit(0.0, 582.9, 2), Hit::List { line: 28, col: 0 });
-    assert_eq!(l.hit(50.0, 583.0, 2), Hit::Sidebar, "under the last line");
+    assert_eq!(l.hit(0.0, 562.9, 2), Hit::List { line: 27, col: 0 });
+    assert_eq!(l.hit(50.0, 563.0, 2), Hit::Sidebar, "under the last line");
     assert_eq!(l.hit(280.5, 26.0, 2), Hit::Sidebar, "the separator");
     assert_eq!(l.hit(50.0, 2.0, 2), Hit::Sidebar, "above the first row");
     // The last three cells of a line are the `+` of a host's header.
     assert!(!l.on_add(24) && l.on_add(25) && l.on_add(27));
 
-    // The legend is not for clicking; the buttons are, each on its label: New  Open  Copy  ?  !  ✕
+    // The legend is not for clicking; the buttons are, each on its label: New  Open  Copy  Sketch / ?  !  ✕
     assert_eq!(l.hit(50.0, 650.0, 2), Hit::Sidebar, "the legend");
     for (x, hit) in [
         (9.0, Hit::Sidebar),
@@ -98,20 +98,29 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
         (60.0, Hit::Button(Button::Open)),
         (99.0, Hit::Button(Button::Open)),
         (120.0, Hit::Button(Button::Copy)),
-        (180.0, Hit::Button(Button::Help)),
-        (190.0, Hit::Sidebar),
-        // The bell: its mark and two columns for the count.
-        (209.0, Hit::Sidebar),
-        (210.0, Hit::Button(Button::Alerts)),
-        (239.0, Hit::Button(Button::Alerts)),
+        (179.0, Hit::Sidebar),
+        (180.0, Hit::Button(Button::Sketch)),
+        (239.0, Hit::Button(Button::Sketch)),
         (240.0, Hit::Sidebar),
-        // Quit, one column wide, the last but one of the list's 28.
+    ] {
+        assert_eq!(l.hit(x, 690.0, 2), hit, "upper row, x {x}");
+    }
+    for (x, hit) in [
+        (9.0, Hit::Sidebar),
+        (10.0, Hit::Button(Button::Help)),
+        (20.0, Hit::Sidebar),
+        // The bell: its mark and two columns for the count.
+        (39.0, Hit::Sidebar),
+        (40.0, Hit::Button(Button::Alerts)),
+        (69.0, Hit::Button(Button::Alerts)),
+        (70.0, Hit::Sidebar),
+        // Quit, one column wide, the last but one of the list's 28, away from the others.
         (259.0, Hit::Sidebar),
         (260.0, Hit::Button(Button::Quit)),
         (269.0, Hit::Button(Button::Quit)),
         (270.0, Hit::Sidebar),
     ] {
-        assert_eq!(l.hit(x, 710.0, 2), hit, "x {x}");
+        assert_eq!(l.hit(x, 710.0, 2), hit, "lower row, x {x}");
     }
     assert_eq!(l.hit(15.0, 724.0, 2), Hit::Sidebar, "under the buttons");
 
@@ -156,14 +165,14 @@ fn many_tabs_share_the_bar() {
 
 #[test]
 fn a_low_window_has_no_legend_and_no_buttons() {
-    // Four lines for the list, or the foot goes: 3 + 4 * 20 + (1 + 6 * 20 + 3) = 207.
-    let l = at(1281, 207);
-    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (100.0, 20.0, 4));
-    let l = at(1281, 206);
+    // Four lines for the list, or the foot goes: 3 + 4 * 20 + (1 + 7 * 20 + 3) = 227.
+    let l = at(1281, 227);
+    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (100.0, 40.0, 4));
+    let l = at(1281, 226);
     assert_eq!((l.legend.h, l.buttons.h), (0.0, 0.0));
-    assert_eq!(l.list_lines, 10, "the list has the whole height");
-    assert_eq!(l.hit(15.0, 190.0, 0), Hit::List { line: 9, col: 1 });
-    assert_eq!(l.hit(15.0, 205.0, 0), Hit::Sidebar);
+    assert_eq!(l.list_lines, 11, "the list has the whole height");
+    assert_eq!(l.hit(15.0, 210.0, 0), Hit::List { line: 10, col: 1 });
+    assert_eq!(l.hit(15.0, 225.0, 0), Hit::Sidebar);
 }
 
 #[test]

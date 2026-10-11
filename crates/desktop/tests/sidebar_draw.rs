@@ -107,6 +107,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         status: String::new(),
         notice: None,
         panel: None,
+        sketch: false,
         unread: 0,
     }
 }
@@ -670,6 +671,13 @@ fn legend_and_buttons_sit_at_the_bottom() {
     };
     assert_eq!(labels(&quads), 13, "New  Open  Copy  ?  !");
     assert!(glyphs(&quads, l.buttons, theme::CURSOR_RGB).is_empty());
+    // Quit, and Sketch only with a sketchpad hub configured.
+    assert_eq!(glyphs(&quads, l.buttons, theme::DANGER_RGB).len(), 1);
+    assert!(glyphs(&quads, l.buttons, theme::PIN_RGB).is_empty());
+    let mut with_hub = view(&[], None, false);
+    with_hub.sketch = true;
+    let (hub_quads, ..) = built(&with_hub, &list, &theme);
+    assert_eq!(glyphs(&hub_quads, l.buttons, theme::PIN_RGB).len(), 6);
     // With alerts not looked at yet the bell has their count, in the accent colour, and
     // still ends inside the sidebar.
     let mut unread = view(&[], None, false);

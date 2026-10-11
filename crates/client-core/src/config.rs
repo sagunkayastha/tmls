@@ -111,6 +111,16 @@ impl Config {
         self.pins.contains(&tmls_slug(key, &self.local_name))
     }
 
+    /// The sketchpad hub's address: the first line of `dir/sketchpad` that is not blank or a
+    /// `#` comment (tmls `read_config`). `None` without the file: then there is no Sketch.
+    pub fn sketchpad(dir: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(dir.join("sketchpad")).ok()?;
+        text.lines()
+            .map(|line| line.split('#').next().unwrap_or("").trim())
+            .find(|line| !line.is_empty() && !line.starts_with('-'))
+            .map(str::to_string)
+    }
+
     /// Writes `dir/pins` as tmls does: the whole set, one slug per line, sorted. Creates `dir`
     /// if needed.
     ///
