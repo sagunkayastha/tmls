@@ -1,0 +1,23 @@
+# Headless smoke image for tmls-rs: the build image plus a Wayland compositor without a display,
+# software Vulkan, keyboard injection, screenshots, tmux and fonts.
+#
+#   docker build -t tmls-rs-smoke:latest -f tooling/smoke/Dockerfile.smoke tooling/smoke
+#
+# Run through tooling/smoke/run.sh.
+FROM tmls-rs-build:latest
+
+USER root
+# sway: compositor (headless backend, pixman renderer); mesa-vulkan-drivers: lavapipe;
+# wtype: keys through the virtual-keyboard protocol; grim: screenshots (PNG/PPM);
+# fonts: DejaVu Sans Mono (the app's first choice), WenQuanYi Micro Hei (CJK), Noto Color Emoji.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      sway grim wtype \
+      mesa-vulkan-drivers libvulkan1 libwayland-client0 libwayland-cursor0 libxkbcommon0 xkb-data \
+      libfontconfig1 fontconfig \
+      tmux openssh-client procps \
+      fonts-dejavu-core fonts-wqy-microhei fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && fc-cache -f
+
+USER 1000:1000
+WORKDIR /work
