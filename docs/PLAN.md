@@ -6,6 +6,9 @@ Working name. A native, GPU-drawn terminal + session system in Rust to replace t
 > Python sidebar and let a native terminal draw the session (kitty on the PC, tmux pane host on the laptop).
 > Plan: `tmls/docs/design/native-attach-pc.md`. This repo's S0 key-echo harness is reused for those gates.
 > Restart only if the native-attach approach fails a gate. S2 split plans (917bfce) are on hold.
+>
+> **RESUMED 2026-10-10** on the user's decision, alongside the native-attach daily-use trial (not because a gate failed).
+> S2 continues from the split plans: Task 0 (workspace + stub crates) is on `main`; Track A starts on `spike/s2-wgpu`.
 Status: **draft 3 after Codex (gpt-6-astra) review. Phase 0: S0 done; S1 partially passed (Linux Formatter path); S1b corpus gate closed on Linux (3901/3901 identical), with simulated resize handoff 480/480; S2 (PC) next after review and merge. Windows and Claude recording pending. No product implementation yet.**
 History: draft 1 (requirements), draft 2 (research R1–R6), draft 3 (review: `docs/reviews/2026-10-07-codex-astra.md`).
 

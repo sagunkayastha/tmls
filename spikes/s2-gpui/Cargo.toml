@@ -1,0 +1,8 @@
+[package]
+name = "s2-gpui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "tmls-rs spike S2: gpui front-end for the interaction slice"
+
+[dependencies]
