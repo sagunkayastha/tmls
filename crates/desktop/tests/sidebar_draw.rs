@@ -626,15 +626,17 @@ fn other_clients_show_beside_the_name() {
 }
 
 #[test]
-fn legend_and_buttons_sit_at_the_bottom() {
+fn legend_and_buttons_sit_level_with_the_terminals_last_row() {
     let theme = Theme::default();
     let mut list = sidebar(&[LOCAL]);
     list.apply(snapshot(LOCAL, vec![session(LOCAL, "work", Status::Idle)]));
     let (quads, l, _atlas) = built(&view(&[], None, false), &list, &theme);
+    // The buttons' last row is level with the terminal's last one; under them it is empty.
     assert_eq!(
         l.buttons.bottom(),
-        l.sidebar.bottom() - (theme.inset).round()
+        l.terminal.y + l.grid.1 as f32 * l.cell.1
     );
+    assert!(l.buttons.bottom() < l.sidebar.bottom());
     assert_eq!(l.legend.bottom(), l.buttons.y);
     assert_eq!(l.legend.h, 5.0 * l.cell.1);
     assert!(l.list.bottom() <= l.legend.y);

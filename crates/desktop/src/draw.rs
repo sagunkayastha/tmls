@@ -9,7 +9,7 @@
 //! |                       |a|                                        |
 //! | ● running  ? waiting  |t|                                        |
 //! | ◆ done     ✕ error    |o+----------------------------------------+
-//! | New  Open  Copy  Sketch|r| status line (1 row)                    |
+//! | ?  !                 ✕ |r| status line (1 row)                    |
 //! +-----------------------+-+----------------------------------------+
 //! ```
 //!
@@ -103,19 +103,19 @@ pub enum Button {
 /// The bell. tmls draws 🔔, which the terminal's font need not have; this is in every font.
 pub const BELL: &str = "!";
 
-/// The buttons' two rows, each from left to right with the labels two columns apart: what
-/// acts on a session, then the app's own. Quit is apart, at the row's right end.
+/// The buttons' two rows, each from left to right with the labels two columns apart: the
+/// app's own, then what acts on a session. Quit is apart, at its row's right end.
 pub const BUTTONS: [&[(Button, &str)]; 2] = [
+    &[
+        (Button::Help, "?"),
+        (Button::Alerts, BELL),
+        (Button::Quit, "✕"),
+    ],
     &[
         (Button::New, "New"),
         (Button::Open, "Open"),
         (Button::Copy, "Copy"),
         (Button::Sketch, "Sketch"),
-    ],
-    &[
-        (Button::Help, "?"),
-        (Button::Alerts, BELL),
-        (Button::Quit, "✕"),
     ],
 ];
 
@@ -234,9 +234,13 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
         w: right_w - pad,
         h: (win_h - 2.0 * bar_h).max(0.0),
     };
-    // The foot of the sidebar, from the bottom up: the inset, the buttons, the legend, a line.
-    let foot_h = line + (LEGEND_LINES + BUTTONS.len()) as f32 * cell_h + inset;
-    let foot = win_h >= inset + MIN_LIST_LINES as f32 * cell_h + foot_h;
+    // The foot of the sidebar: a line, the legend, the buttons. The buttons' last row is
+    // level with the terminal's last row, not with the window's bottom edge: a desktop panel
+    // that slides in from that edge would cover them. The space under them stays empty.
+    let term_rows = (terminal.h / cell_h).floor().max(BUTTONS.len() as f32);
+    let buttons_y = terminal.y + (term_rows - BUTTONS.len() as f32) * cell_h;
+    let legend_y = buttons_y - LEGEND_LINES as f32 * cell_h;
+    let foot = legend_y - line - inset >= MIN_LIST_LINES as f32 * cell_h;
     let across = Rect {
         x: 0.0,
         y: win_h,
@@ -246,19 +250,19 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
     let (legend, buttons) = match foot {
         true => (
             Rect {
-                y: win_h - foot_h + line,
+                y: legend_y,
                 h: LEGEND_LINES as f32 * cell_h,
                 ..across
             },
             Rect {
-                y: win_h - inset - BUTTONS.len() as f32 * cell_h,
+                y: buttons_y,
                 h: BUTTONS.len() as f32 * cell_h,
                 ..across
             },
         ),
         false => (across, across),
     };
-    let list_bottom = if foot { win_h - foot_h } else { win_h };
+    let list_bottom = if foot { legend_y - line } else { win_h };
     let list_lines = ((list_bottom - inset).max(0.0) / cell_h).floor() as usize;
     Layout {
         window: (win_w, win_h),
