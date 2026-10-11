@@ -5,7 +5,7 @@ mod common;
 use common::{cell, cursor, frame, lead, spacer, text_frame};
 use s2_core::{Cell, CellFlags, CursorShape};
 use s2_wgpu::gfx::SHADER_WGSL;
-use s2_wgpu::gfx::atlas::{Atlas, FontSpec};
+use s2_wgpu::gfx::atlas::{Atlas, FontSpec, FontStyle};
 use s2_wgpu::gfx::grid::{CellSpan, Overlays, Preedit, Scene, Theme};
 use s2_wgpu::gfx::render::{Gpu, OFFSCREEN_FORMAT, Renderer, adapter_report, render_offscreen};
 
@@ -420,4 +420,70 @@ fn srgb_target_keeps_solid_colours() {
     assert!(close(cell, [200, 100, 30]), "coloured cell: {cell:?}");
     let clear = pixel(&rgba, width, width - 1, height - 1);
     assert!(close(clear, theme.bg), "clear colour: {clear:?}");
+}
+
+#[test]
+fn atlas_never_outgrows_the_device_texture_limit() {
+    // A device capped at 2048 px textures (GLES 3 class hardware) and an atlas that has grown
+    // past that: `prepare` must not ask for a texture the device rejects.
+    let gpu = Gpu::headless().expect("this test needs a wgpu adapter (a software one will do)");
+    const LIMIT: u32 = 2048;
+    let descriptor = wgpu::DeviceDescriptor {
+        label: Some("s2-wgpu capped"),
+        required_limits: wgpu::Limits {
+            max_texture_dimension_2d: LIMIT,
+            ..wgpu::Limits::downlevel_defaults()
+        },
+        ..Default::default()
+    };
+    let (device, queue) = pollster::block_on(gpu.adapter.request_device(&descriptor)).unwrap();
+    assert_eq!(device.limits().max_texture_dimension_2d, LIMIT);
+
+    let mut atlas = Atlas::new(
+        FontSpec {
+            family: None,
+            size: 200.0,
+        },
+        1.0,
+    );
+    let theme = Theme::default();
+    let mut scene = Scene::new();
+    let mut renderer = Renderer::new(&device, OFFSCREEN_FORMAT);
+    // Enough distinct 200 px glyphs to need more than 2048 atlas rows.
+    for bin in 0..4u8 {
+        for ch in '!'..='~' {
+            let shaped = atlas.shape(&ch.to_string(), FontStyle::default());
+            let key = atlas.key(&shaped[0], bin);
+            atlas.glyph(key);
+        }
+    }
+    let frame = text_frame(&["ABCD"], 4);
+    assert!(
+        atlas.image().height > LIMIT,
+        "the test needs an atlas taller than the limit, got {}",
+        atlas.image().height
+    );
+    let m = atlas.metrics();
+    let (width, height) = (m.width as u32 * 4, m.height as u32);
+    for _ in 0..2 {
+        scene.update(&frame, &mut atlas, &theme, &Overlays::default());
+        renderer.prepare(
+            &device,
+            &queue,
+            &mut atlas,
+            &scene.layers(),
+            (width, height),
+        );
+    }
+    assert!(atlas.image().height <= LIMIT);
+    // The frame drawn after the clamp shows real glyphs: "ABCD" leaves ink.
+    let capped = Gpu {
+        instance: gpu.instance,
+        adapter: gpu.adapter,
+        device,
+        queue,
+    };
+    let rgba = render_offscreen(&capped, &renderer, width, height, theme.bg).unwrap();
+    let ink = rgba.chunks_exact(4).filter(|p| p[0] > 150).count();
+    assert!(ink > 500, "glyph pixels after the clamp: {ink}");
 }

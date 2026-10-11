@@ -4,6 +4,10 @@
 //! API for the front-end (per rendered frame):
 //! 1. `renderer.prepare(&device, &queue, &mut atlas, &scene.layers(), (width, height))` — uploads
 //!    the atlas rows that changed and all instances. Call it after `Scene::update*`.
+//!    Call `atlas.set_max_height(device.limits().max_texture_dimension_2d)` once when the atlas
+//!    is created: `prepare` applies the same cap, but if it is the first to do so and the atlas
+//!    is already taller, the atlas restarts and the layers passed in are one generation old
+//!    (compare `atlas.generation()` around `prepare` and rebuild the scene if it changed).
 //! 2. `renderer.draw(&mut encoder, &view, theme.bg)` — one render pass that clears and draws.
 //!    The caller owns the encoder, so it can take its `queue.submit` timestamp itself.
 //!
@@ -249,6 +253,9 @@ impl Renderer {
     }
 
     fn upload_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, atlas: &mut Atlas) {
+        // Never ask for a texture the device rejects (a validation panic). A front-end that
+        // sets the limit when it creates the atlas makes this a no-op.
+        atlas.set_max_height(device.limits().max_texture_dimension_2d);
         let dirty = atlas.take_dirty();
         let image = atlas.image();
         let extent = wgpu::Extent3d {

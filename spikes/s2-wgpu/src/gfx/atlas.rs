@@ -14,7 +14,8 @@
 //!
 //! Cache key: (font face, weight, font size, glyph id, subpixel x bin, scale) — `GlyphKey`.
 //! Rectangles are in atlas pixels, so the image may grow downwards without invalidating them.
-//! When it cannot grow any more it is emptied and `generation()` changes: every rectangle handed
+//! Its height is capped at 4096 px or the device's texture limit (`set_max_height`), whichever
+//! is smaller. When it cannot grow any more it is emptied and `generation()` changes: every rectangle handed
 //! out before is then void, and `grid::Scene` rebuilds its rows when it sees the new generation.
 //!
 //! All sizes here are physical pixels unless a name says otherwise.
@@ -32,6 +33,7 @@ pub use cosmic_text::fontdb;
 /// Atlas width; fixed so that growing never moves a glyph.
 const ATLAS_WIDTH: u32 = 1024;
 const ATLAS_START_HEIGHT: u32 = 256;
+/// The tallest the image may get; `set_max_height` lowers it to what the GPU can hold.
 const ATLAS_MAX_HEIGHT: u32 = 4096;
 /// Empty pixels between neighbours in the atlas.
 const PADDING: u32 = 1;
@@ -174,6 +176,8 @@ pub struct Atlas {
 
     pixels: Vec<u8>,
     height: u32,
+    /// `ATLAS_MAX_HEIGHT`, or less on a device with smaller textures.
+    max_height: u32,
     /// Shelf packer: the open shelf's top, its height, and the next free x on it.
     shelf_y: u32,
     shelf_h: u32,
@@ -219,6 +223,7 @@ impl Atlas {
             misses: 0,
             pixels: vec![0; (ATLAS_WIDTH * ATLAS_START_HEIGHT * 4) as usize],
             height: ATLAS_START_HEIGHT,
+            max_height: ATLAS_MAX_HEIGHT,
             shelf_y: 0,
             shelf_h: 0,
             shelf_x: 0,
@@ -259,6 +264,22 @@ impl Atlas {
         }
         self.size = size;
         self.remeasure();
+        self.invalidate();
+        true
+    }
+
+    /// Caps the image height at the device's `max_texture_dimension_2d` (never above
+    /// `ATLAS_MAX_HEIGHT`, never below the starting height). Call it once the device is known;
+    /// `render::Renderer::prepare` does so too. If the image is already taller, it is cut down
+    /// and emptied, which starts a new generation; returns whether that happened.
+    pub fn set_max_height(&mut self, limit: u32) -> bool {
+        self.max_height = limit.clamp(ATLAS_START_HEIGHT, ATLAS_MAX_HEIGHT);
+        if self.height <= self.max_height {
+            return false;
+        }
+        self.height = self.max_height;
+        self.pixels
+            .truncate((ATLAS_WIDTH * self.height * 4) as usize);
         self.invalidate();
         true
     }
@@ -427,7 +448,7 @@ impl Atlas {
     /// a taller image when the shelves reach the bottom, and an empty atlas (new generation)
     /// when the image is at its maximum height.
     fn allocate(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        if w + PADDING > ATLAS_WIDTH || h + PADDING > ATLAS_MAX_HEIGHT {
+        if w + PADDING > ATLAS_WIDTH || h + PADDING > self.max_height {
             return None;
         }
         if self.shelf_x + w + PADDING > ATLAS_WIDTH {
@@ -435,13 +456,13 @@ impl Atlas {
             self.shelf_h = 0;
             self.shelf_x = 0;
         }
-        if self.shelf_y + h + PADDING > ATLAS_MAX_HEIGHT {
+        if self.shelf_y + h + PADDING > self.max_height {
             self.invalidate();
         }
         let needed = self.shelf_y + h + PADDING;
         if needed > self.height {
             while self.height < needed {
-                self.height *= 2;
+                self.height = (self.height * 2).min(self.max_height);
             }
             self.pixels
                 .resize((ATLAS_WIDTH * self.height * 4) as usize, 0);

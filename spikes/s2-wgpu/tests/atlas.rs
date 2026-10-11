@@ -253,3 +253,56 @@ fn metrics_give_the_grid_size() {
     assert_eq!((cols, rows), (80, 24));
     assert_eq!(m.grid_for(0, 0), (1, 1), "never a zero-sized grid");
 }
+
+#[test]
+fn atlas_height_is_capped_at_the_device_limit() {
+    let mut atlas = Atlas::new(
+        FontSpec {
+            family: None,
+            size: 200.0,
+        },
+        1.0,
+    );
+    let fill = |atlas: &mut Atlas, limit: u32| {
+        for subpx in 0..SUBPIXEL_BINS {
+            for ch in '!'..='~' {
+                let shaped = atlas.shape(&ch.to_string(), REGULAR);
+                let key = atlas.key(&shaped[0], subpx);
+                if let Some(glyph) = atlas.glyph(key) {
+                    assert!((glyph.y + glyph.h) as u32 <= limit, "{ch:?}: {glyph:?}");
+                }
+                let image = atlas.image();
+                assert!(image.height <= limit, "{} rows", image.height);
+                assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
+            }
+        }
+    };
+
+    // A cap set before anything is rasterised changes nothing visible yet.
+    let start = atlas.generation();
+    assert!(!atlas.set_max_height(2048));
+    assert_eq!(atlas.generation(), start);
+    fill(&mut atlas, 2048);
+    assert_eq!(atlas.image().height, 2048, "376 glyphs of 200 px fill it");
+    assert!(
+        atlas.generation() > start,
+        "full at 2048 rows: it restarted"
+    );
+
+    // Lowering the cap below the current height cuts the image down and starts over.
+    let before = atlas.generation();
+    assert!(atlas.set_max_height(1000));
+    assert!(atlas.generation() > before);
+    assert_eq!(atlas.image().height, 1000);
+    assert!(atlas.take_dirty().is_some());
+    fill(&mut atlas, 1000);
+    let shaped = atlas.shape("A", REGULAR);
+    let key = atlas.key(&shaped[0], 0);
+    let glyph = atlas.glyph(key).expect("still rasterises");
+    assert!(ink(&atlas, &glyph) > 0);
+
+    // A limit above the built-in maximum does not raise it.
+    assert!(!atlas.set_max_height(1 << 20));
+    fill(&mut atlas, 4096);
+    assert!(atlas.image().height <= 4096);
+}
