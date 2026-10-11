@@ -47,8 +47,8 @@ use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
-    OFFLINE, PIN, PIN_RGB, SIDEBAR_COLS, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
-    mark_rgb, tool_letter,
+    OFFLINE, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
+    tool_letter,
 };
 
 /// What a tab whose session ended shows over its last screen.
@@ -122,12 +122,14 @@ pub const BUTTONS: [&[(Button, &str)]; 2] = [
 /// Each button with its label, its row, the column the label starts at and how many columns
 /// are the button's: its label's, and for the bell two more for the count (at most
 /// `MAX_ALERTS`).
-fn button_cells() -> impl Iterator<Item = (Button, &'static str, usize, usize, usize)> {
-    BUTTONS.iter().enumerate().flat_map(|(row, buttons)| {
+fn button_cells(
+    list_cols: usize,
+) -> impl Iterator<Item = (Button, &'static str, usize, usize, usize)> {
+    BUTTONS.iter().enumerate().flat_map(move |(row, buttons)| {
         buttons.iter().scan(1, move |col, (button, label)| {
             let cols = label.chars().count() + if *button == Button::Alerts { 2 } else { 0 };
             let start = match button {
-                Button::Quit => SIDEBAR_COLS - 2,
+                Button::Quit => list_cols.saturating_sub(2),
                 _ => *col,
             };
             *col += cols + 2;
@@ -152,6 +154,9 @@ pub struct Layout {
     pub sidebar: Rect,
     /// The line between the sidebar and the rest.
     pub separator: Rect,
+    /// Pixels right of the separator that are still its handle for dragging: the padding
+    /// left of the terminal's text, six logical pixels at most.
+    pub grab: f32,
     /// The session list: `list_lines` lines of a cell's height.
     pub list: Rect,
     pub list_lines: usize,
@@ -183,8 +188,11 @@ pub enum Hit {
     },
     /// A button at the foot of the sidebar.
     Button(Button),
-    /// The sidebar or the separator, where nothing is to click.
+    /// The sidebar, where nothing is to click.
     Sidebar,
+    /// The line right of the list and a few pixels right of it: dragging it makes the list
+    /// wider or narrower.
+    Separator,
     /// A tab, anywhere but its `×`.
     Tab(usize),
     /// The `×` of a tab.
@@ -211,7 +219,7 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
     let line = px(theme.border).max(1.0);
 
     // The sidebar never takes more than half the window.
-    let side_w = (SIDEBAR_COLS as f32 * cell_w).min((win_w / 2.0).floor());
+    let side_w = (theme.sidebar_cols as f32 * cell_w).min((win_w / 2.0).floor());
     let sep_w = line.min((win_w - side_w).max(0.0));
     let right_x = side_w + sep_w;
     let right_w = (win_w - right_x).max(0.0);
@@ -261,6 +269,8 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
             w: side_w,
             h: win_h,
         },
+        // Not into the terminal's cells: the padding left of them at most.
+        grab: px(6.0).min(pad),
         separator: Rect {
             x: side_w,
             y: 0.0,
@@ -363,6 +373,9 @@ impl Layout {
         if !window.contains(x, y) {
             return Hit::Outside;
         }
+        if x >= self.separator.x && x < self.separator.x + self.separator.w + self.grab {
+            return Hit::Separator;
+        }
         if x < self.tab_bar.x {
             let col = (x / self.cell.0).floor() as usize;
             if self.list.contains(x, y) {
@@ -370,7 +383,7 @@ impl Layout {
                 return Hit::List { line, col };
             }
             let row = ((y - self.buttons.y) / self.cell.1).floor() as usize;
-            let button = button_cells()
+            let button = button_cells(self.list_cols)
                 .find(|(_, _, at, start, cols)| *at == row && (*start..start + cols).contains(&col))
                 .filter(|_| self.buttons.contains(x, y));
             return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
@@ -831,7 +844,7 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), word);
         p.span(origin, &word.colour(theme.muted_fg));
     }
-    for (button, label, row, col, cols) in button_cells() {
+    for (button, label, row, col, cols) in button_cells(l.list_cols) {
         if button == Button::Sketch && !view.sketch {
             continue;
         }

@@ -61,7 +61,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
@@ -71,7 +71,7 @@ use crate::links;
 use crate::mouse::{self, Effect, Pointer};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
-use crate::theme::{Theme, host_rgb, mark_rgb};
+use crate::theme::{SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -366,6 +366,10 @@ struct Running {
     retry_at: Option<Instant>,
     /// The ✕ at the foot of the list was clicked: the event loop is to stop.
     quit: bool,
+    /// The list's right edge is being dragged.
+    dragging_separator: bool,
+    /// The pointer is drawn as the resize arrows.
+    resize_cursor: bool,
     /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
     sketchpad: Option<String>,
 }
@@ -522,6 +526,8 @@ impl Running {
             ime_allowed: false,
             retry_at: None,
             quit: false,
+            dragging_separator: false,
+            resize_cursor: false,
             sketchpad: Config::sketchpad(config_dir),
         })
     }
@@ -558,8 +564,21 @@ impl Running {
         }
     }
 
-    /// Window size, scale factor or font size changed: lays the window out again and tells
-    /// the tabs how many cells fit now.
+    /// The list's right edge follows the pointer, a whole column at a time, between
+    /// `SIDEBAR_MIN_COLS` and half the window. The terminals get their new size at once.
+    fn drag_separator(&mut self, x: f32) {
+        let cell_w = self.layout.cell.0.max(1.0);
+        let most = ((self.config.width as f32 / 2.0) / cell_w).floor() as usize;
+        let cols = ((x / cell_w).round().max(0.0) as usize)
+            .clamp(SIDEBAR_MIN_COLS, most.max(SIDEBAR_MIN_COLS));
+        if cols != self.theme.sidebar_cols {
+            self.theme.sidebar_cols = cols;
+            self.relayout();
+        }
+    }
+
+    /// Window size, scale factor, font size or the list's width changed: lays the window out
+    /// again and tells the tabs how many cells fit now.
     fn relayout(&mut self) {
         self.layout = draw::layout(
             (self.config.width, self.config.height),
@@ -1377,8 +1396,22 @@ impl Running {
             }
         }
         let (x, y) = self.pointer;
-        let over_terminal =
-            self.modal.is_none() && self.layout.hit(x, y, self.tabs.len()) == Hit::Terminal;
+        let hit = self.layout.hit(x, y, self.tabs.len());
+        if self.dragging_separator {
+            self.drag_separator(x);
+        }
+        let resize = self.dragging_separator || (self.modal.is_none() && hit == Hit::Separator);
+        if resize != self.resize_cursor {
+            self.resize_cursor = resize;
+            self.window.set_cursor(match resize {
+                true => CursorIcon::ColResize,
+                false => CursorIcon::Default,
+            });
+        }
+        if self.dragging_separator {
+            return;
+        }
+        let over_terminal = self.modal.is_none() && hit == Hit::Terminal;
         if !(self.mouse.held() || over_terminal) {
             return;
         }
@@ -1398,6 +1431,9 @@ impl Running {
             _ => None,
         };
         if state == ElementState::Released {
+            if std::mem::take(&mut self.dragging_separator) {
+                return;
+            }
             if let Some(button) = terminal_button {
                 let acts = self
                     .mouse
@@ -1428,6 +1464,7 @@ impl Running {
             return;
         }
         match hit {
+            Hit::Separator => self.dragging_separator = true,
             Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);

@@ -83,7 +83,13 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     assert_eq!(l.hit(279.0, 23.0, 2), Hit::List { line: 1, col: 27 });
     assert_eq!(l.hit(0.0, 562.9, 2), Hit::List { line: 27, col: 0 });
     assert_eq!(l.hit(50.0, 563.0, 2), Hit::Sidebar, "under the last line");
-    assert_eq!(l.hit(280.5, 26.0, 2), Hit::Sidebar, "the separator");
+    // The separator and the padding right of it are its handle, at any height.
+    for y in [0.0, 26.0, 400.0, 725.0] {
+        assert_ne!(l.hit(279.9, y, 2), Hit::Separator, "y {y}");
+        assert_eq!(l.hit(280.0, y, 2), Hit::Separator, "y {y}");
+        assert_eq!(l.hit(285.9, y, 2), Hit::Separator, "y {y}");
+        assert_ne!(l.hit(286.0, y, 2), Hit::Separator, "y {y}");
+    }
     assert_eq!(l.hit(50.0, 2.0, 2), Hit::Sidebar, "above the first row");
     // The last three cells of a line are the `+` of a host's header.
     assert!(!l.on_add(24) && l.on_add(25) && l.on_add(27));
@@ -126,7 +132,8 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
 
     // Two tabs of TAB_MAX_COLS cells; the last three cells of each close it.
     assert_eq!(l.tab_cols(2), TAB_MAX_COLS);
-    assert_eq!(l.hit(281.0, 10.0, 2), Hit::Tab(0));
+    // (Its first five pixels are the separator's handle.)
+    assert_eq!(l.hit(286.0, 10.0, 2), Hit::Tab(0));
     assert_eq!(l.hit(281.0 + 209.0, 10.0, 2), Hit::Tab(0));
     assert_eq!(l.hit(281.0 + 210.0, 10.0, 2), Hit::TabClose(0));
     assert_eq!(l.hit(281.0 + 239.0, 10.0, 2), Hit::TabClose(0));
@@ -140,9 +147,9 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     assert_eq!(l.hit(300.0, 10.0, 0), Hit::TabBar, "no tab is open");
 
     assert_eq!(
-        l.hit(281.0, 26.0, 2),
+        l.hit(287.0, 26.0, 2),
         Hit::Terminal,
-        "the padding left of the text"
+        "right of the separator's handle"
     );
     assert_eq!(l.hit(286.0, 26.0, 2), Hit::Terminal);
     assert_eq!(l.hit(1280.0, 699.0, 2), Hit::Terminal);
@@ -202,4 +209,41 @@ fn a_form_is_in_the_middle_and_a_menu_at_the_pointer_inside_the_window() {
     assert_eq!(l.panel_cell(form, 340.0, 260.0), (0.0, 0.0));
     assert_eq!(l.panel_cell(form, 345.0, 290.0), (0.5, 1.5));
     assert!(l.panel_cell(form, 330.0, 250.0).0 < 0.0);
+}
+
+#[test]
+fn the_list_is_as_wide_as_the_theme_says() {
+    let wide = Theme {
+        sidebar_cols: 40,
+        ..Theme::default()
+    };
+    let l = layout((1281, 726), 1.0, &cell(), &wide);
+    assert_eq!(
+        (l.sidebar.w, l.list_cols, l.separator.x),
+        (400.0, 40, 400.0)
+    );
+    assert_eq!(l.terminal.right(), 1281.0);
+    assert_eq!(
+        l.grid.0, 87,
+        "the terminal gives the columns up: (1281 - 401 - 5) / 10"
+    );
+    // Quit stays the last but one column; the host's `+` the last three.
+    assert_eq!(l.hit(385.0, 710.0, 0), Hit::Button(Button::Quit));
+    assert_eq!(l.hit(265.0, 710.0, 0), Hit::Sidebar);
+    assert!(!l.on_add(36) && l.on_add(37));
+    assert_eq!(l.hit(403.0, 300.0, 0), Hit::Separator);
+
+    let narrow = Theme {
+        sidebar_cols: 20,
+        ..Theme::default()
+    };
+    let l = layout((1281, 726), 1.0, &cell(), &narrow);
+    assert_eq!((l.sidebar.w, l.list_cols), (200.0, 20));
+    assert_eq!(l.hit(185.0, 710.0, 0), Hit::Button(Button::Quit));
+    // Never more than half the window.
+    let greedy = Theme {
+        sidebar_cols: 500,
+        ..Theme::default()
+    };
+    assert_eq!(layout((1281, 726), 1.0, &cell(), &greedy).sidebar.w, 640.0);
 }

@@ -201,6 +201,7 @@ sends a key to a session.
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |
 | click the red `✕` at the foot of the list | quit (sessions keep running) |
+| drag the line right of the list | make the list wider or narrower (20 columns to half the window; not kept across a restart) |
 | click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |

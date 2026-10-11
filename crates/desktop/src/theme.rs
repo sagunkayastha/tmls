@@ -55,8 +55,15 @@ pub const LEGEND: [(Status, &str); 5] = [
     (Status::Idle, "idle"),
 ];
 
+/// The narrowest the list can be dragged to: its legend and buttons are made for 20 columns
+/// up (tmls line 90).
+pub const SIDEBAR_MIN_COLS: usize = 20;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
+    /// Columns of the session list: `SIDEBAR_COLS` until its right edge is dragged. Never
+    /// more than half the window (`draw::layout`).
+    pub sidebar_cols: usize,
     /// The terminal's own colours; `terminal.bg` clears the window.
     pub terminal: grid::Theme,
     /// Family and logical size at zoom level zero.
@@ -106,6 +113,7 @@ impl Default for Theme {
     fn default() -> Self {
         let terminal = grid::Theme::default();
         Theme {
+            sidebar_cols: SIDEBAR_COLS,
             terminal,
             font: FontSpec::default(),
             sidebar_bg: [0x12, 0x12, 0x12],
