@@ -165,7 +165,14 @@ fn no_thread_is_left_after_dropping_a_quiet_or_exited_emulator() {
         assert!(start.elapsed() < Duration::from_secs(5), "the child did not exit");
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(core_threads().iter().filter(|name| *name == "s2-pty-read").count(), 1, "{:?}", core_threads());
+    // The exited emulator's reader ends by itself, a moment after it reported the exit; the
+    // quiet one's keeps waiting for output.
+    let readers = || core_threads().iter().filter(|name| *name == "s2-pty-read").count();
+    let start = Instant::now();
+    while readers() != 1 {
+        assert!(start.elapsed() < Duration::from_secs(2), "expected one reader thread: {:?}", core_threads());
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(drops_within(quiet, Duration::from_secs(2)));
     assert!(drops_within(exited, Duration::from_secs(2)));
     assert_no_core_threads();

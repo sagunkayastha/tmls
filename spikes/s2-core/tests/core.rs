@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -125,7 +125,13 @@ fn pty_echo_roundtrip() {
     // Once the child is gone the reader reports end of file instead of waiting forever.
     drop(pty);
     let start = Instant::now();
-    while rx.recv_timeout(WAIT.checked_sub(start.elapsed()).expect("the reader to end")).is_ok() {}
+    loop {
+        match rx.recv_timeout(WAIT.saturating_sub(start.elapsed())) {
+            Ok(_) => {} // output read before the end
+            Err(RecvTimeoutError::Disconnected) => break, // `read` returned 0 and the thread ended
+            Err(RecvTimeoutError::Timeout) => panic!("the reader did not end within {WAIT:?} of the child's exit"),
+        }
+    }
 }
 
 #[test]
