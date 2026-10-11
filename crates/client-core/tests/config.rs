@@ -103,6 +103,51 @@ fn pins_round_trip() {
     done(d.parent().unwrap().to_path_buf());
 }
 
+fn files(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> =
+        std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn pins_are_replaced_whole_and_leave_no_other_file() {
+    let d = dir("pins-atomic");
+    std::fs::write(d.join("hosts"), "nas\n").unwrap();
+    std::fs::write(d.join("pins"), "local-work-b12e6407\n").unwrap();
+    let before = std::fs::metadata(d.join("pins")).unwrap();
+    let pins: BTreeSet<String> = ["a-1".to_string(), "b-2".to_string()].into();
+    Config::save_pins(&d, &pins).unwrap();
+    assert_eq!(std::fs::read_to_string(d.join("pins")).unwrap(), "a-1\nb-2\n");
+    assert_eq!(files(&d), ["hosts", "pins"], "no temp file stays behind, nothing else is touched");
+    assert_eq!(std::fs::read_to_string(d.join("hosts")).unwrap(), "nas\n");
+    // a new file took the old one's place (the old one is never cut short in place), with its mode
+    use std::os::unix::fs::MetadataExt;
+    let after = std::fs::metadata(d.join("pins")).unwrap();
+    assert_ne!(after.ino(), before.ino(), "written beside and renamed over");
+    assert_eq!(after.mode(), before.mode());
+
+    // a `pins` that is a symlink (dotfiles kept elsewhere) stays one; its target gets the pins
+    let linked = d.join("linked");
+    std::fs::create_dir_all(linked.join("real")).unwrap();
+    std::fs::write(linked.join("real/pins"), "old-0\n").unwrap();
+    std::os::unix::fs::symlink("real/pins", linked.join("pins")).unwrap();
+    Config::save_pins(&linked, &pins).unwrap();
+    assert!(linked.join("pins").is_symlink());
+    assert_eq!(std::fs::read_to_string(linked.join("real/pins")).unwrap(), "a-1\nb-2\n");
+    assert_eq!((files(&linked), files(&linked.join("real"))), (vec!["pins".to_string(), "real".to_string()], vec!["pins".to_string()]));
+
+    // a save that cannot finish leaves the old pins as they were and no temp file:
+    // `pins` is a directory here, so the rename over it fails
+    let blocked = d.join("blocked");
+    std::fs::create_dir_all(blocked.join("pins")).unwrap();
+    let error = Config::save_pins(&blocked, &pins).unwrap_err();
+    assert!(format!("{error:#}").contains("pins"), "{error:#}");
+    assert_eq!(files(&blocked), ["pins"]);
+    assert!(blocked.join("pins").is_dir());
+    done(d);
+}
+
 #[test]
 fn pins_made_in_tmls_survive_a_save() {
     let d = dir("pins-tmls");

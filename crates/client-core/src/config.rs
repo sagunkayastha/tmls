@@ -113,11 +113,32 @@ impl Config {
 
     /// Writes `dir/pins` as tmls does: the whole set, one slug per line, sorted. Creates `dir`
     /// if needed.
+    ///
+    /// The file is tmls's too, so it is never cut short in place: the text goes to a temp file
+    /// beside it, which is then renamed over it — a reader sees the old pins or the new ones,
+    /// and a write that fails leaves the old ones and no temp file. The new file keeps the old
+    /// one's mode; a `pins` that is a symlink keeps being one (its target is replaced).
     pub fn save_pins(dir: &Path, pins: &BTreeSet<String>) -> anyhow::Result<()> {
         let path = dir.join("pins");
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let text: String = pins.iter().map(|slug| format!("{slug}\n")).collect();
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+        // where the bytes really live: the file itself, or what the symlink points at
+        let target = if path.is_symlink() { std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) } else { path.clone() };
+        let temp = target.with_file_name(format!(".pins.tmp-{}", std::process::id()));
+        let written = (|| {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp)?;
+            file.write_all(text.as_bytes())?;
+            if let Ok(old) = std::fs::metadata(&target) {
+                file.set_permissions(old.permissions())?;
+            }
+            file.sync_all()?;
+            std::fs::rename(&temp, &target)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        written.with_context(|| format!("writing {}", path.display()))
     }
 }
 
