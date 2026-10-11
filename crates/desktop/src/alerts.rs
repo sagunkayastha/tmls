@@ -3,9 +3,11 @@
 //! No window and no process here: `observe` says what to notify, the app runs the command.
 //!
 //! **What alerts.** A session whose mark *changes to* `?` (waiting), `◆` (finished unwatched)
-//! or `✕` (error) at a listing of its host. As in tmls, a session that was not known at the
-//! host's previous listing is not news: nothing alerts at the first listing after the start,
-//! for a session that appears already waiting, or when a host comes back from offline.
+//! or `✕` (error) at a listing of its host. As in tmls, a session that was not known before
+//! is not news: nothing alerts at the first listing after the start or for a session that
+//! appears already waiting. A listing of a host that did not answer changes nothing here
+//! (unlike tmls): what its sessions did meanwhile alerts when the host is back, as the list
+//! then shows it (`Seen` forgets nothing for an offline host either).
 //!
 //! **Silence focused** (on by default): no alert for the session of the tab in front while
 //! the window has the keyboard focus — the user is looking at it. With the window *not*
@@ -147,15 +149,22 @@ impl Alerts {
     }
 
     /// A host's new listing: `listed` are its sessions as the list shows them now (after
-    /// `Seen` marked the unseen ones); none for a host that is offline. Adds an alert for
-    /// every session that started to need the user, and returns the notifications to send.
+    /// `Seen` marked the unseen ones). Adds an alert for every session that started to need
+    /// the user, and returns the notifications to send. A listing of a host that did not
+    /// answer (`online` false) says nothing about its sessions: their marks are kept, so what
+    /// changed while it was away alerts at its next listing. A session that is not in an
+    /// online listing is forgotten.
     pub fn observe<'a>(
         &mut self,
         host: &str,
+        online: bool,
         listed: impl IntoIterator<Item = &'a SessionInfo>,
         watching: Watching,
         now: Instant,
     ) -> Vec<Notification> {
+        if !online {
+            return Vec::new();
+        }
         let mut before = HashMap::new();
         self.marks.retain(|key, status| {
             let of_host = key.host == host;
@@ -231,12 +240,20 @@ pub enum PanelResult {
     Jump(SessionKey),
 }
 
-/// What a jump to an alert's session does: opens its tab, or — the session was renamed or
-/// killed since — says so in the status line. `listed`: the list has the session now;
-/// `has_tab`: a tab of it is open (ended, perhaps).
-pub fn jump(key: &SessionKey, listed: bool, has_tab: bool) -> Result<(), String> {
+/// What a jump to an alert's session does: opens its tab, or says in the status line why
+/// not — its host does not answer now, or the session was renamed or killed since. `listed`:
+/// the list has the session now; `has_tab`: a tab of it is open (ended, perhaps);
+/// `host_online`: the host answered its last listing.
+pub fn jump(
+    key: &SessionKey,
+    listed: bool,
+    has_tab: bool,
+    host_online: bool,
+) -> Result<(), String> {
     if listed || has_tab {
         Ok(())
+    } else if !host_online {
+        Err(format!("{} is offline", key.host))
     } else {
         Err(format!(
             "{} on {} is gone (renamed or ended)",

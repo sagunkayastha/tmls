@@ -61,7 +61,7 @@ fn list_as(alerts: &mut Alerts, sessions: &[(&str, Status)], who: Watching) -> V
         .iter()
         .map(|(name, status)| session(HOST, name, *status))
         .collect();
-    alerts.observe(HOST, &sessions, who, Instant::now())
+    alerts.observe(HOST, true, &sessions, who, Instant::now())
 }
 
 fn alerted(alerts: &Alerts) -> Vec<(&str, Status)> {
@@ -92,7 +92,7 @@ fn a_session_turning_waiting_done_or_failed_alerts() {
         session(HOST, "crash", Status::Error),
         session(HOST, "idle", Status::Waiting),
     ];
-    let notes = alerts.observe(HOST, &now, AWAY, Instant::now());
+    let notes = alerts.observe(HOST, true, &now, AWAY, Instant::now());
     // Newest first: the last of the listing is on top.
     assert_eq!(
         alerted(&alerts),
@@ -157,7 +157,7 @@ fn what_is_not_news_does_not_alert() {
 }
 
 #[test]
-fn nothing_alerts_at_the_start_or_when_a_host_comes_back() {
+fn nothing_alerts_at_the_start_and_an_offline_listing_loses_no_alert() {
     let mut alerts = Alerts::new(Settings::default());
     let needy = [
         ("a", Status::Waiting),
@@ -167,14 +167,46 @@ fn nothing_alerts_at_the_start_or_when_a_host_comes_back() {
     // The first listing after the start: every session is unknown before.
     assert!(list(&mut alerts, &needy).is_empty());
     assert_eq!((alerts.unread(), alerts.entries().len()), (0, 0));
-    // Offline (no sessions), then back with everything changed: unknown before again.
-    list(
-        &mut alerts,
-        &[("a", Status::Running), ("b", Status::Running)],
+
+    // The host does not answer once (an ssh timeout): nothing alerts, nothing is forgotten.
+    let working = [
+        ("a", Status::Running),
+        ("b", Status::Running),
+        ("c", Status::Running),
+        ("d", Status::Waiting),
+        ("e", Status::Running),
+    ];
+    list(&mut alerts, &working);
+    assert!(
+        alerts
+            .observe(HOST, false, &[], AWAY, Instant::now())
+            .is_empty()
     );
-    list(&mut alerts, &[]);
-    assert!(list(&mut alerts, &needy).is_empty());
-    assert_eq!((alerts.unread(), alerts.entries().len()), (0, 0));
+    assert!(
+        alerts
+            .observe(HOST, false, &[], AWAY, Instant::now())
+            .is_empty()
+    );
+    assert_eq!(alerts.entries().len(), 0);
+    // It is back: what changed across the gap alerts, once; what did not change does not,
+    // nor does a session that is new. `e` is gone and forgotten.
+    let back = [
+        ("a", Status::Waiting),
+        ("b", Status::Unseen),
+        ("c", Status::Running),
+        ("d", Status::Waiting),
+        ("new", Status::Waiting),
+    ];
+    let notes = list(&mut alerts, &back);
+    assert_eq!(
+        alerted(&alerts),
+        [("b", Status::Unseen), ("a", Status::Waiting)]
+    );
+    assert_eq!((notes.len(), alerts.unread()), (2, 2));
+    assert!(list(&mut alerts, &back).is_empty());
+    // `e` again, already waiting: unknown before, as it was forgotten when the host was back.
+    list(&mut alerts, &[("e", Status::Waiting)]);
+    assert_eq!(alerts.entries().len(), 2);
 }
 
 #[test]
@@ -184,12 +216,12 @@ fn a_listing_of_another_host_changes_nothing_here() {
     let other = [session("laptop", "a", Status::Waiting)];
     assert!(
         alerts
-            .observe("laptop", &other, AWAY, Instant::now())
+            .observe("laptop", true, &other, AWAY, Instant::now())
             .is_empty()
     );
     assert!(
         alerts
-            .observe("laptop", &[], AWAY, Instant::now())
+            .observe("laptop", false, &[], AWAY, Instant::now())
             .is_empty()
     );
     list(&mut alerts, &[("a", Status::Waiting)]);
@@ -240,7 +272,7 @@ fn only_the_newest_fifty_are_kept() {
         list(&mut alerts, &[("a", Status::Running)]);
         let mut waits = session(HOST, "a", Status::Waiting);
         waits.reason = Some(format!("round {round}"));
-        alerts.observe(HOST, &[waits], AWAY, Instant::now());
+        alerts.observe(HOST, true, &[waits], AWAY, Instant::now());
     }
     assert_eq!(alerts.entries().len(), MAX_ALERTS);
     assert_eq!(
@@ -342,12 +374,14 @@ fn the_notification_is_one_command_without_a_shell() {
     let host = "--help";
     alerts.observe(
         host,
+        true,
         &[session(host, hostile, Status::Running)],
         AWAY,
         Instant::now(),
     );
     let notes = alerts.observe(
         host,
+        true,
         &[session(host, hostile, Status::Unseen)],
         AWAY,
         Instant::now(),
@@ -390,9 +424,16 @@ fn a_machine_without_notify_send_shows_no_notification_and_no_error() {
     send(&notes, &mut |_| forms::spawn_detached(&missing));
 }
 
+/// A directory of this test's own under cargo's target tmp dir, new at every run (in a
+/// container the process id is the same each time); never `~/.config/tmls`, never /tmp.
 fn scratch(test: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("tmlsrs-test-alerts-{}-{test}", std::process::id()));
+    let run = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "tmlsrs-test-alerts-{}-{run}-{test}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -470,12 +511,12 @@ fn with_alerts(count: usize) -> Alerts {
             .collect()
     };
     let start = Instant::now();
-    alerts.observe(HOST, &all(Status::Running), AWAY, start);
+    alerts.observe(HOST, true, &all(Status::Running), AWAY, start);
     let mut now = all(Status::Waiting);
     if let Some(second) = now.get_mut(1) {
         second.status = Status::Error;
     }
-    alerts.observe(HOST, &now, AWAY, start);
+    alerts.observe(HOST, true, &now, AWAY, start);
     alerts
 }
 
@@ -599,12 +640,18 @@ fn a_long_list_follows_the_cursor() {
 fn a_jump_to_a_session_that_is_gone_says_so() {
     let gone = key(HOST, "old name");
     // Listed, or a tab of it is still open (ended, perhaps): its tab is opened.
-    assert_eq!(jump(&gone, true, false), Ok(()));
-    assert_eq!(jump(&gone, false, true), Ok(()));
+    assert_eq!(jump(&gone, true, false, true), Ok(()));
+    assert_eq!(jump(&gone, false, true, true), Ok(()));
+    assert_eq!(jump(&gone, false, true, false), Ok(()));
     // Renamed or killed since the alert: a line for the status line, nothing opened.
     assert_eq!(
-        jump(&gone, false, false),
+        jump(&gone, false, false, true),
         Err("old name on nas is gone (renamed or ended)".to_string())
+    );
+    // Its host does not answer now: the session may well be there.
+    assert_eq!(
+        jump(&gone, false, false, false),
+        Err("nas is offline".to_string())
     );
 }
 
@@ -630,7 +677,7 @@ fn deliver(
         Row::Session(info) if info.key.host == HOST => Some(info),
         _ => None,
     });
-    alerts.observe(HOST, listed, who, Instant::now())
+    alerts.observe(HOST, true, listed, who, Instant::now())
 }
 
 #[test]
@@ -671,8 +718,11 @@ fn a_session_that_finishes_in_the_list_alerts_and_its_alert_outlives_it() {
     };
     assert_eq!(to, key(HOST, "back"));
     assert_eq!(
-        jump(&to, list.status(&to).is_some(), false),
+        jump(&to, list.status(&to).is_some(), false, true),
         Err("back on nas is gone (renamed or ended)".to_string())
     );
-    assert_eq!(jump(&front, list.status(&front).is_some(), false), Ok(()));
+    assert_eq!(
+        jump(&front, list.status(&front).is_some(), false, true),
+        Ok(())
+    );
 }

@@ -161,7 +161,8 @@ need not have that glyph.
 `a` in the list or a click on the bell opens the list of alerts: newest first, the last 50,
 each with its age, mark, session, host and what happened. Opening it sets the count back to
 zero. Enter or a click goes to the session (opens its tab or brings it to the front) and
-closes the list. If that session was renamed or has ended since, the status line says so.
+closes the list. If that session was renamed or has ended since, or its host is offline now,
+the status line says so.
 
 For `?` and `◆` the app also runs `notify-send -- "tmls · HOST" "◆ NAME · done"` (for `?`:
 what the session waits for, else `waiting`). Without `notify-send` on this machine there is
@@ -169,10 +170,13 @@ no notification and no error.
 
 What does not alert:
 
-- anything at the first listing after the start, a session that is new in the list, and a
-  host that comes back from offline (as in tmls: unknown before is not news);
+- anything at the first listing after the start, and a session that is new in the list (as
+  in tmls: unknown before is not news);
 - the session of the tab in front while this window has the keyboard focus ("silence
   focused"). When the window is not focused, that session does alert, also when it finishes.
+
+A host that does not answer for a while loses no alert: when it is back, every session whose
+mark changed meanwhile alerts once, as the list then shows it.
 
 Switches, read once at start from `~/.config/tmls/notifications.json` (the file tmls's alert
 panel saves): `"desktop": false` turns the notifications off, `"silence_focused": false`

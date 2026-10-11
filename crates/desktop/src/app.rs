@@ -562,7 +562,7 @@ impl Running {
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, snapshot: HostSnapshot) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
-        let host = snapshot.host.clone();
+        let (host, online) = (snapshot.host.clone(), snapshot.online);
         self.sidebar.deliver(&mut self.seen, snapshot, front);
         // The host's sessions as the list has them now, marks included.
         let listed = self.sidebar.rows().iter().filter_map(|row| match row {
@@ -573,7 +573,9 @@ impl Running {
             front,
             window_focused: self.window_focused,
         };
-        let notes = self.alerts.observe(&host, listed, watching, Instant::now());
+        let notes = self
+            .alerts
+            .observe(&host, online, listed, watching, Instant::now());
         alerts::send(&notes, &mut forms::spawn_detached);
         if let Some(key) = &self.select_when_listed
             && self.sidebar.status(key).is_some()
@@ -743,7 +745,11 @@ impl Running {
             PanelResult::Jump(key) => {
                 self.close_modal();
                 let listed = self.sidebar.status(&key).is_some();
-                match alerts::jump(&key, listed, self.tabs.index_of(&key).is_some()) {
+                let has_tab = self.tabs.index_of(&key).is_some();
+                let host_online = self.sidebar.rows().iter().any(|row| {
+                    matches!(row, sidebar::Row::Host { host, online: true, .. } if *host == key.host)
+                });
+                match alerts::jump(&key, listed, has_tab, host_online) {
                     Ok(()) => self.open(&key),
                     // Not a problem to keep in the status line: gone with the next key.
                     Err(gone) => self.say(Ok(gone)),
