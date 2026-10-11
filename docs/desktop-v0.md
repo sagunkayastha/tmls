@@ -26,9 +26,8 @@ but does nothing yet, it says "not built yet".
 `ag`, `ct`, approvals, Ask / queue, prompts, the file viewer, image paste, quick select, the
 splits menu, kitty (non-tmux) sessions, web, Android, Windows.
 
-Separate tasks of the plan, which may land after this page was written: mouse reporting to
-the program in tmux, clickable links, alerts. As of this page none of them is wired: see
-"not built yet" below.
+A separate task of the plan, which may land after this page was written: alerts. As of this
+page they are not wired: see "not built yet" below.
 
 ## Build
 
@@ -119,8 +118,9 @@ In the terminal:
 | --- | --- |
 | Enter on an ended tab | reattach |
 | Ctrl+Shift+C | copy the selection |
+| Ctrl+C | with text selected: copy it and end the selection; else it goes to the session (interrupt) |
 | Ctrl+Shift+V | paste |
-| every other key | goes to the session unchanged (Tab, Esc, Ctrl+C, Alt+letters included) |
+| every other key | goes to the session unchanged (Tab, Esc, Alt+letters included) |
 
 Keys typed while the focus is on the list, in a form or in a menu reach no session.
 
@@ -156,8 +156,6 @@ command has 10 s to finish.
 | middle-click a session | pin or unpin it |
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |
-| drag in the terminal | select text |
-| wheel over the terminal | scroll back |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
 | `+` on a host's header | new-session form for that host |
@@ -167,14 +165,40 @@ command has 10 s to finish.
 | click in a form | focus a field, choose a Start, press a button; a click on Host shows the next host |
 | click beside an open menu | close it |
 
+### Mouse in the terminal
+
+A program in the session can ask for the mouse; tmux does with `set -g mouse on`. What the
+mouse does over the terminal depends on that:
+
+| Action | tmux has `mouse on` | no program asked for the mouse |
+| --- | --- | --- |
+| wheel | goes to tmux: it scrolls its own history (copy mode) | scrolls this window's scrollback |
+| click, drag, right-click, middle-click | go to tmux: select a pane, drag a border, tmux's own selection and menu | a left drag selects text here and copies it on release |
+| **Ctrl+drag** or **Shift+drag** | selects text here and copies it on release | the same |
+| **Ctrl+click** on a link | opens it | the same |
+| Shift+wheel | scrolls this window's scrollback | the same |
+
+With Ctrl or Shift held, nothing is sent to the program. Copied text has no trailing spaces
+at the ends of its lines. A selection stays highlighted until the text under it changes, a
+click, or Ctrl+C (which copies it again and ends it). On a tab whose session ended the
+mouse always selects here.
+
+### Links
+
+Ctrl+click on an `http://` or `https://` URL opens it with `xdg-open`. The URL is taken as it
+is shown: `localhost` stays `localhost`, also for a session on another host. Text marked as
+a link by the program (OSC 8) opens its target, if that is http or https. Nothing else is
+opened (no `file:`, no paths). A URL that wraps onto the next row is cut at the edge. The
+status line says what was opened, or why not.
+
 Not built yet:
 
 - the `⋯` at the end of a session row that tmls has (use right-click or `m`);
 - window and pane actions of tmls's menu (new window, split, kill pane);
 - a renamed session keeps its pin only if you pin it again;
 - the `?` button (key help);
-- mouse clicks and wheel passed to the program inside tmux;
-- clickable links;
+- file paths and `file:line` as links, and tmls's quick select (Alt+Shift+S);
+- right-click paste in the terminal;
 - alerts.
 
 ## Smoke test

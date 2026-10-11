@@ -381,6 +381,35 @@ if click 300 11; then
   fi
   check_typed "after the click the keys go to the new tab" "$ONE" clickrow
   check "screenshot 12-click-attached" shot 12-click-attached
+  # The wheel over the terminal ($ONE is in front; the pane is right of the list). tmux asks for
+  # mouse reports only with `mouse on`: without, the wheel is the app's own and tmux hears nothing.
+  in_mode() { [ "$(tmux display -p -t "=$ONE:" '#{pane_in_mode}' 2>/dev/null)" = "$1" ]; }
+  tmux send-keys -t "=$ONE:" 'seq 1 200' Enter
+  wait_for 5 pane_has_line "$ONE" 200
+  click 700 300 wheel-up 2
+  sleep 0.5
+  check "with tmux's mouse off the wheel is not sent to tmux (no copy mode)" in_mode 0
+  tmux set -g mouse on
+  sleep 0.7
+  click 700 300 wheel-up 2
+  if wait_for 5 in_mode 1; then
+    pass "with tmux's mouse on the wheel scrolls tmux's history (the pane is in copy mode)"
+  else
+    fail "with tmux's mouse on the wheel scrolls tmux's history (the pane is in copy mode)" \
+      "pane_in_mode: $(tmux display -p -t "=$ONE:" '#{pane_in_mode}' 2>&1)"
+  fi
+  check "screenshot 12a-wheel-history" shot 12a-wheel-history
+  click 700 300 wheel-down 4
+  if wait_for 5 in_mode 0; then
+    pass "wheeling back down to the end leaves copy mode"
+  else
+    fail "wheeling back down to the end leaves copy mode" \
+      "pane_in_mode: $(tmux display -p -t "=$ONE:" '#{pane_in_mode}' 2>&1)"
+    tmux send-keys -t "=$ONE:" -X cancel 2>/dev/null
+  fi
+  tmux set -g mouse off
+  sleep 0.5
+  check_typed "after the wheel typing still arrives" "$ONE" wheeled
 else
   fail "the headless seat takes a pointer (vptr.py)" "$(tail -2 "$OUT/vptr.log" | tr '\n' ' ')"
   # The later checks need $ONE in front.

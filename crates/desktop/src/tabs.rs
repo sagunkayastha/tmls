@@ -294,6 +294,14 @@ impl Tabs {
         (self.state(active) == TabState::Live).then(|| &mut self.tabs[active].session)
     }
 
+    /// The program in the tab in front asked for mouse reports and is there to get them. An
+    /// ended tab never is: on its last screen the mouse selects.
+    pub fn mouse_reporting(&self) -> bool {
+        self.active.is_some_and(|active| {
+            self.state(active) == TabState::Live && self.tabs[active].session.mouse_reporting()
+        })
+    }
+
     /// One key event for the tab in front, with the time it was received. Returns its key id;
     /// `None` (and nothing sent or logged) when no tab is open or its session ended.
     pub fn send_key(&mut self, t_key_ns: u128, ev: KeyEvent) -> Option<u64> {

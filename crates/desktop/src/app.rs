@@ -15,6 +15,10 @@
 //! List path: a polling thread delivers a host's listing → `UserEvent::Snapshot` →
 //! `Sidebar::deliver` (which marks what finished unwatched) → a redraw that rebuilds the chrome.
 //!
+//! Mouse over the terminal: `mouse::Pointer` decides whether an event is the program's (tmux
+//! with `mouse on` asked for reports) or a selection, a link or a scroll of our own;
+//! `mouse::perform` does it to the front tab's session; the clipboard and `xdg-open` are here.
+//!
 //! Request path: a form's `Request` (new, rename, kill) runs `forms::perform` on a thread of
 //! its own → `UserEvent::Done` → the status line says what happened, the hosts are listed
 //! again at once and the tab is opened, reopened or closed. The name a new session's folder
@@ -60,6 +64,8 @@ use winit::window::{Window, WindowId};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
+use crate::links;
+use crate::mouse::{self, Effect, Pointer};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{Theme, host_rgb, mark_rgb};
@@ -329,6 +335,8 @@ struct Running {
     mods: ModifiersState,
     pointer: (f32, f32),
     wheel_carry: f32,
+    /// The mouse over the terminal: which button is held, and for whom.
+    mouse: Pointer,
     /// A `Wake` event is on its way; the waker sends no second one.
     wake_pending: Arc<AtomicBool>,
     /// The pending `RedrawRequested` was asked for by a wake-up.
@@ -487,6 +495,7 @@ impl Running {
             mods: ModifiersState::empty(),
             pointer: (-1.0, -1.0),
             wheel_carry: 0.0,
+            mouse: Pointer::default(),
             wake_pending,
             woken: false,
             dirty: true,
@@ -628,6 +637,11 @@ impl Running {
             }
             Action::Ignore => return After::Stay,
         };
+        if let Some(text) = keys::copy_instead(&ev, self.focus, &mut self.gate, &mut self.tabs) {
+            self.set_clipboard(text);
+            self.invalidate();
+            return After::Stay;
+        }
         // A key for the terminal is sent in there, and nowhere else.
         let (route, ev) = keys::dispatch(t_key_ns, ev, self.focus, &mut self.gate, &mut self.tabs);
         match route {
@@ -1158,10 +1172,48 @@ impl Running {
         else {
             return;
         };
+        self.set_clipboard(text);
+    }
+
+    fn set_clipboard(&mut self, text: String) {
         if let Some(clipboard) = self.clipboard()
             && let Err(e) = clipboard.set_text(text)
         {
             eprintln!("tmls-rs: copy failed: {e}");
+        }
+    }
+
+    /// The modifiers held, for a mouse event.
+    fn mouse_mods(&self) -> s2_core::Mods {
+        s2_core::Mods {
+            shift: self.mods.shift_key(),
+            ctrl: self.mods.control_key(),
+            alt: self.mods.alt_key(),
+            logo: self.mods.super_key(),
+        }
+    }
+
+    /// The cell of the front tab nearest to the pointer.
+    fn pointer_cell(&self) -> Option<(u16, u16)> {
+        let (x, y) = self.pointer;
+        self.tabs.front_scene()?.nearest_cell(x, y)
+    }
+
+    /// Does what `mouse::Pointer` decided, to the tab in front.
+    fn mouse_acts(&mut self, acts: Vec<mouse::Act>) {
+        let Some(active) = self.tabs.active() else {
+            return;
+        };
+        for act in acts {
+            match mouse::perform(act, self.tabs.session_mut(active)) {
+                Some(Effect::Redraw) => self.invalidate(),
+                Some(Effect::Copy(text)) => self.set_clipboard(text),
+                Some(Effect::Open(url)) => {
+                    let said = links::open(&url).map(|()| format!("opened {url}"));
+                    self.say(said);
+                }
+                None => {}
+            }
         }
     }
 
@@ -1187,28 +1239,33 @@ impl Running {
                 self.invalidate();
             }
         }
-        let Some(active) = self.tabs.active() else {
-            return;
-        };
-        if !self.tabs.session(active).selecting() {
+        let (x, y) = self.pointer;
+        let over_terminal =
+            self.modal.is_none() && self.layout.hit(x, y, self.tabs.len()) == Hit::Terminal;
+        if !(self.mouse.held() || over_terminal) {
             return;
         }
-        let cell = self
-            .tabs
-            .front_scene()
-            .and_then(|scene| scene.nearest_cell(self.pointer.0, self.pointer.1));
-        if cell.is_some_and(|cell| self.tabs.session_mut(active).select_drag(cell)) {
-            self.invalidate();
+        if let Some(at) = self.pointer_cell() {
+            let reporting = self.tabs.mouse_reporting();
+            let acts = self.mouse.motion(at, self.mouse_mods(), reporting);
+            self.mouse_acts(acts);
         }
     }
 
     fn button(&mut self, state: ElementState, button: MouseButton) {
         let (x, y) = self.pointer;
+        let terminal_button = match button {
+            MouseButton::Left => Some(s2_core::MouseButton::Left),
+            MouseButton::Middle => Some(s2_core::MouseButton::Middle),
+            MouseButton::Right => Some(s2_core::MouseButton::Right),
+            _ => None,
+        };
         if state == ElementState::Released {
-            if button == MouseButton::Left
-                && let Some(active) = self.tabs.active()
-            {
-                self.tabs.session_mut(active).select_end();
+            if let Some(button) = terminal_button {
+                let acts = self
+                    .mouse
+                    .release(button, self.pointer_cell(), self.mouse_mods());
+                self.mouse_acts(acts);
             }
             return;
         }
@@ -1218,6 +1275,17 @@ impl Running {
         let hit = self.layout.hit(x, y, self.tabs.len());
         if let Hit::List { line, col } = hit {
             return self.list_click(button, line, col);
+        }
+        if hit == Hit::Terminal
+            && let Some(button) = terminal_button
+            && self.tabs.active().is_some()
+        {
+            self.set_focus(Focus::Terminal);
+            let reporting = self.tabs.mouse_reporting();
+            let acts = self
+                .mouse
+                .press(button, self.pointer_cell(), self.mouse_mods(), reporting);
+            return self.mouse_acts(acts);
         }
         if button != MouseButton::Left {
             return;
@@ -1229,23 +1297,17 @@ impl Running {
                 self.tab_changed();
             }
             Hit::TabClose(index) => self.close_tab(index),
-            Hit::Terminal => {
-                let Some(active) = self.tabs.active() else {
-                    return;
-                };
-                self.set_focus(Focus::Terminal);
-                let cell = self
-                    .tabs
-                    .front_scene()
-                    .and_then(|scene| scene.cell_at(x, y));
-                self.tabs.session_mut(active).select_start(cell);
-            }
-            Hit::List { .. } | Hit::Sidebar | Hit::TabBar | Hit::Status | Hit::Outside => {}
+            Hit::List { .. }
+            | Hit::Sidebar
+            | Hit::TabBar
+            | Hit::Terminal
+            | Hit::Status
+            | Hit::Outside => {}
         }
     }
 
-    /// The wheel scrolls what the pointer is over: the front tab's scrollback, or the session
-    /// list.
+    /// The wheel scrolls what the pointer is over: the front tab (its program's history or the
+    /// scrollback here, `mouse::Pointer::wheel`), or the session list.
     fn wheel(&mut self, delta: &MouseScrollDelta) {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
@@ -1255,10 +1317,13 @@ impl Running {
         }
         match self.layout.hit(x, y, self.tabs.len()) {
             Hit::Terminal => {
-                if let Some(active) = self.tabs.active() {
-                    // The frame at the new position comes back through the waker.
-                    self.tabs.session_mut(active).scroll(rows);
-                }
+                // To the program if it takes the mouse (tmux scrolls its history), else the
+                // viewport moves; the frame at the new position comes back through the waker.
+                let reporting = self.tabs.mouse_reporting();
+                let acts =
+                    self.mouse
+                        .wheel(rows, self.pointer_cell(), self.mouse_mods(), reporting);
+                self.mouse_acts(acts);
             }
             Hit::List { .. } | Hit::Button(_) | Hit::Sidebar if rows != 0 => {
                 self.sidebar.scroll(rows);

@@ -13,7 +13,7 @@
 //!   the key's echo. See `Photon`.
 
 use s2_core::latency::Log;
-use s2_core::{Emu, Frame, InputMsg, KeyEvent, Pty};
+use s2_core::{Emu, Frame, InputMsg, KeyEvent, Mods, MouseButton, MouseKind, Pty};
 
 use crate::gfx::atlas::Atlas;
 use crate::gfx::grid::{Overlays, Preedit, Scene, Theme};
@@ -196,6 +196,31 @@ impl Session {
         self.send(InputMsg::Focus(focused));
     }
 
+    /// The program asked for mouse reports (`Emu::mouse_reporting`): the front-end then sends
+    /// it the mouse (`mouse`) instead of scrolling and selecting itself.
+    pub fn mouse_reporting(&self) -> bool {
+        self.emu.mouse_reporting()
+    }
+
+    /// One mouse event at a 0-based viewport cell, for the program (`InputMsg::Mouse`; the
+    /// core sends nothing the program did not ask for). Not a key: no id, no latency line.
+    pub fn mouse(
+        &mut self,
+        kind: MouseKind,
+        button: Option<MouseButton>,
+        at: CellPos,
+        mods: Mods,
+    ) {
+        let (col, row) = at;
+        self.send(InputMsg::Mouse {
+            kind,
+            button,
+            col,
+            row,
+            mods,
+        });
+    }
+
     /// Moves the viewport (`input::wheel_rows`). Returning to the bottom on a key press is the
     /// core's job. The selection is in viewport cells, so it ends here.
     pub fn scroll(&mut self, rows: i32) {
@@ -300,6 +325,14 @@ impl Session {
     fn clear_selection(&mut self) {
         self.selection = None;
         self.dragging = false;
+    }
+
+    /// Ends the selection (a click that goes to the program, Ctrl+C that copied it). Returns
+    /// whether something has to be redrawn.
+    pub fn select_clear(&mut self) -> bool {
+        let had = self.selection.is_some_and(|s| !s.is_empty());
+        self.clear_selection();
+        had
     }
 
     /// Left button down on a cell (`Scene::cell_at`; `None` = outside the grid). Any earlier

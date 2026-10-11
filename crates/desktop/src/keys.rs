@@ -16,7 +16,8 @@
 //!
 //! Everything else belongs to whatever has the keyboard focus (`route`): with the terminal
 //! focused and a live tab it goes to that tab's session unchanged — Tab, Esc, Ctrl+C, Ctrl+Tab
-//! and Alt+letters included. A key for the list or a form reaches no session. While a form or
+//! and Alt+letters included. One exception: Ctrl+C while text is selected in the terminal
+//! copies it and is not sent (`copy_instead`). A key for the list or a form reaches no session. While a form or
 //! a session's menu is open the focus is `Focus::Form` and every key but quit and zoom is the
 //! form's (`forms::Form::key`): typing a session's name types nothing into the terminal behind. A key for a tab
 //! whose session ended, or with no tab open, is dropped: it would get a `key` line in the
@@ -180,6 +181,28 @@ pub fn dispatch(
         Route::Terminal => (Route::Drop, Some(ev)),
         other => (other, Some(ev)),
     }
+}
+
+/// Ctrl+C with a selection in the terminal copies instead of interrupting (as tmls does): the
+/// selected text is returned for the clipboard, the selection ends, and the key is not sent —
+/// call this before `dispatch`. `None` for every other key and without a selection: Ctrl+C
+/// then goes to the session like any key. The repeats of a Ctrl+C that copied are held back
+/// (`gate`), so holding it down does not interrupt after all.
+pub fn copy_instead(
+    ev: &KeyEvent,
+    focus: Focus,
+    gate: &mut RepeatGate,
+    tabs: &mut Tabs,
+) -> Option<String> {
+    let ctrl_c = ev.mods == CTRL && matches!(ev.key, Key::Char('c' | 'C'));
+    if !(ctrl_c && ev.pressed && !ev.repeat && focus == Focus::Terminal) {
+        return None;
+    }
+    let session = tabs.session_mut(tabs.active()?);
+    let text = session.selected_text()?;
+    session.select_clear();
+    gate.hold();
+    Some(text)
 }
 
 /// A key of the session list (tmls `keys.py`: j/k or the arrows move, Enter attaches, p pins,

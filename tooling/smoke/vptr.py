@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""A mouse for the headless compositor: one left click at X Y (output pixels).
+"""A mouse for the headless compositor: one click, or the wheel, at X Y (output pixels).
 
     vptr.py X Y [BUTTON]        BUTTON: left (default), middle, right
+    vptr.py X Y wheel-up [N]    N notches of the wheel (default 1); also wheel-down
 
 Speaks the Wayland wire protocol itself (no library in the image has it): binds
 zwlr_virtual_pointer_manager_v1, makes a pointer, moves it, presses and releases.
@@ -15,6 +16,10 @@ import sys
 import time
 
 BUTTONS = {"left": 0x110, "right": 0x111, "middle": 0x112}
+# Wayland's vertical axis grows downwards. One notch is sent as a smooth scroll of this many
+# pixels (protocol version 1 has no discrete steps): three cells of 17 px, the app's 3 rows.
+WHEELS = {"wheel-up": -1, "wheel-down": 1}
+NOTCH_PX = 51
 EXTENT = (1280, 800)
 
 
@@ -71,7 +76,10 @@ class Conn:
 
 def main():
     x, y = int(sys.argv[1]), int(sys.argv[2])
-    button = BUTTONS[sys.argv[3] if len(sys.argv) > 3 else "left"]
+    action = sys.argv[3] if len(sys.argv) > 3 else "left"
+    if action not in BUTTONS and action not in WHEELS:
+        raise SystemExit("vptr: unknown action %r" % action)
+    notches = int(sys.argv[4]) if len(sys.argv) > 4 else 1
     conn = Conn()
     registry = conn.new_id()
     conn.send(message(1, 1, struct.pack("=I", registry)))  # wl_display.get_registry
@@ -109,10 +117,19 @@ def main():
         conn.send(message(pointer, 1, struct.pack("=IIIII", now(), x + dx, y, *EXTENT)))
         frame()
         time.sleep(0.1)
-    for state in (1, 0):
-        conn.send(message(pointer, 2, struct.pack("=III", now(), button, state)))
-        frame()
-        time.sleep(0.08)
+    if action in WHEELS:
+        for _ in range(notches):
+            conn.send(message(pointer, 5, struct.pack("=I", 0)))  # axis_source(wheel)
+            # axis(time, vertical, value as wl_fixed)
+            value = WHEELS[action] * NOTCH_PX * 256
+            conn.send(message(pointer, 3, struct.pack("=IIi", now(), 0, value)))
+            frame()
+            time.sleep(0.08)
+    else:
+        for state in (1, 0):
+            conn.send(message(pointer, 2, struct.pack("=III", now(), BUTTONS[action], state)))
+            frame()
+            time.sleep(0.08)
     time.sleep(0.2)
 
 

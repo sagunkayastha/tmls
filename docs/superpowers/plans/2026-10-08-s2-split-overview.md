@@ -245,6 +245,11 @@ Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each r
   set, as of the newest frame **published** (an atomic, stored just before that frame is published; never blocks the
   caller or the emulator thread). `Frame` itself is unchanged. The front-end reads it on each mouse event to choose
   between "send to the program" and "act locally"; the core does not choose.
+- `s2-wgpu` (`session::Session`, new methods; nothing existing changed): `mouse_reporting() -> bool`
+  (`Emu::mouse_reporting`), `mouse(kind, button, at: CellPos, mods)` (sends `InputMsg::Mouse`; not a key: no id, no
+  `key` line, the photon square does not flip for it), `select_clear() -> bool` (ends the selection; returns whether
+  a redraw is due). `s2-wgpu`'s own app is unchanged: its wheel still scrolls the viewport and its drag still selects,
+  whatever the program asked for. The rules for who gets a mouse event are `crates/desktop/src/mouse.rs`.
 
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
