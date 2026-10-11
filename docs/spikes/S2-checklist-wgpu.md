@@ -60,6 +60,8 @@ With `ab你好cd` on the clipboard: click the field, Ctrl+V.
 - [ ] Click a list row: it is selected and the list has the focus outline: ________
 - [ ] Wheel over the sidebar scrolls the list; over the terminal it scrolls the scrollback: ________
 - [ ] Click in the field puts the caret at the click; a drag selects: ________
+- [ ] In the field, press and hold Tab for two seconds: the focus goes to the terminal and no tabs /
+      completion output appear there (the held key's repeats are dropped): ________
 - [ ] Create / Cancel buttons work with the mouse: ________
 - [ ] With the terminal focused, Tab completes in the shell (`ech` + Tab → `echo `); it does not move
       the focus: ________
@@ -83,13 +85,31 @@ System Settings → Display → scale 125 %, then start the app (and once more: 
       (`stty size`): ________
 - [ ] Latency at 125 % vs 100 % (commands below): ________
 
-Bench log commands (run each at 100 % and at 125 %; type ~200 keys into the shell, then `exit`):
+Bench log commands. **Run every measurement twice: with the UI and with `S2_WGPU_NO_UI=1`** (the same
+window without sidebar, form and menu — the terminal alone, as before the UI was built). The difference
+is what the hand-rolled UI costs per frame on this GPU; on software rendering (headless, lavapipe) it was
+about +3 ms submit → present, which says nothing about a real GPU. Do each at 100 % and at 125 %; type
+~200 keys into the shell, then `exit`:
 
 ```sh
 B=~/Others/tmls-rs/target-docker/release/s2-wgpu
-"$B" --bench ~/s2-logs/wgpu-scale100-quiet --photon --present fifo --load-label quiet --cmd bash
-"$B" --bench ~/s2-logs/wgpu-scale125-quiet --photon --present fifo --load-label quiet --cmd bash
+                  "$B" --bench ~/s2-logs/wgpu-scale100-quiet-ui   --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-ui.stderr
+S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale100-quiet-noui --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale100-quiet-noui.stderr
+                  "$B" --bench ~/s2-logs/wgpu-scale125-quiet-ui   --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-ui.stderr
+S2_WGPU_NO_UI=1   "$B" --bench ~/s2-logs/wgpu-scale125-quiet-noui --photon --present fifo --load-label quiet --cmd bash 2> ~/s2-logs/wgpu-scale125-quiet-noui.stderr
 ```
+
+(Create `~/s2-logs` first. Which variant a log came from is in its directory name and in the stderr line
+below — the `meta` line itself cannot say yet, see the task report.)
+
+- [ ] **`hz` in `meta` is the monitor's real refresh rate, not `0.0`**: ________
+      It was `0.0` on the first PC runs: the rate was asked for before the window was on a monitor. The
+      app now waits for it (up to 1 s after the first frame). Each stderr file has one line
+      `s2-wgpu: meta hz <rate> hz_source <current_monitor|only_monitor|unknown> ui <true|false> (after <n> ms)`.
+      Write down that line for one run: ________
+      `current_monitor` = the monitor the window is on (what is wanted). `only_monitor` = one monitor is
+      connected and it was used. `unknown` with `hz 0` = still not found — please report it.
+- [ ] `ui false` on the `S2_WGPU_NO_UI=1` runs and no sidebar on screen; `ui true` on the others: ________
 
 Numbers: Track B's `spikes/s2-bench/analyze.py <dir>/latency.jsonl` once it is merged. Until then this
 prints key → present (the time `present()` returned — not photons) from one log:
@@ -106,11 +126,13 @@ print(f"keys {len(key)} attributed {len(d)} key->present ms p50 {p(50):.2f} p95 
 EOF
 ```
 
-| Run | scale in `meta` | hz in `meta` | keys | p50 ms | p95 ms | p99 ms | max ms |
-|---|---|---|---|---|---|---|---|
-| 100 % quiet | | | | | | | |
-| 125 % quiet | | | | | | | |
-| other monitor (if any) | | | | | | | |
+| Run | scale in `meta` | hz in `meta` | hz_source (stderr) | keys | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100 % quiet, UI | | | | | | | | |
+| 100 % quiet, `S2_WGPU_NO_UI=1` | | | | | | | | |
+| 125 % quiet, UI | | | | | | | | |
+| 125 % quiet, `S2_WGPU_NO_UI=1` | | | | | | | | |
+| other monitor (if any), UI | | | | | | | | |
 
 Note for reading the logs: only keys typed while the terminal has the focus are in them. Keys typed into
 the list, the field or an open menu, and Ctrl+Tab / Ctrl+= / Ctrl+−, get no `key` line (they are never
@@ -123,7 +145,7 @@ echoed in a terminal frame). A redraw caused by the UI alone (focus change, typi
 |---|---|---|
 | Ctrl+Tab / Ctrl+Shift+Tab | everywhere | focus to the next / previous stop: list → field → terminal → list |
 | Tab / Shift+Tab | list, field | the same. **In the terminal Tab and Shift+Tab go to the program** (completion) |
-| Ctrl+= (or Ctrl++) / Ctrl+− (or Ctrl+_) | everywhere | font size one logical px up / down (6 … 48), terminal and UI together |
+| Ctrl+= (or Ctrl++) / Ctrl+− | everywhere | font size one logical px up / down (6 … 48), terminal and UI together |
 | ↑ ↓ or k j, PgUp PgDn, Home End | list | move the selection (the list scrolls with it) |
 | Enter | list | go to the terminal |
 | printable keys, IME | field | insert at the caret (replacing the selection) |
@@ -139,8 +161,15 @@ Mouse: left click focuses what it hits (list row, field, terminal); drag selects
 text); wheel scrolls the list or the scrollback, whichever is under the pointer; right click on the
 terminal opens Copy / Paste / Clear.
 
-Keys the terminal no longer receives: Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+=, Ctrl++, Ctrl+−, Ctrl+_ (the last
-is `0x1f`, "undo" in readline and Emacs).
+Keys the terminal no longer receives: Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+=, Ctrl++, Ctrl+−. (Ctrl+_ — `0x1f`,
+"undo" in readline and Emacs — still goes to the program.)
+
+A key that is held while it hands the keys to the terminal (Tab in the field, Enter on a list item, the
+key that closes the menu) types nothing into the terminal: its auto-repeats are dropped until the next
+fresh key press.
+
+With `S2_WGPU_NO_UI=1` none of the bindings above exist except the terminal's own (Ctrl+Shift+C / V):
+every key goes to the program.
 
 Where the focus is, is shown by a blue outline (list, field) or a blue line at the terminal's left edge.
 
@@ -152,23 +181,23 @@ A3 only — the non-terminal UI:
 
 | File | Lines | What |
 |---|---|---|
-| `spikes/s2-wgpu/src/ui/mod.rs` | 362 | `Ui` state, effects, `key_event` / `ime_event` |
-| `spikes/s2-wgpu/src/ui/draw.rs` | 340 | everything as quads, label truncation, cached layers |
+| `spikes/s2-wgpu/src/ui/mod.rs` | 487 | `Ui` state, effects, focus decisions, `key_event` / `ime_event` |
+| `spikes/s2-wgpu/src/ui/draw.rs` | 344 | everything as quads, label truncation, cached layers |
 | `spikes/s2-wgpu/src/ui/textfield.rs` | 335 | one-line editor: caret, selection, preedit, scrolling |
-| `spikes/s2-wgpu/src/ui/layout.rs` | 262 | rectangles, hit-testing, terminal origin + grid |
-| `spikes/s2-wgpu/src/ui/focus.rs` | 236 | focus ring, key routing |
+| `spikes/s2-wgpu/src/ui/layout.rs` | 293 | rectangles, hit-testing, terminal origin + grid |
+| `spikes/s2-wgpu/src/ui/focus.rs` | 237 | focus ring, key routing |
 | `spikes/s2-wgpu/src/ui/menu.rs` | 143 | context menu geometry + hit-testing |
 | `spikes/s2-wgpu/src/ui/list.rs` | 114 | list selection + scrolling |
 | `spikes/s2-wgpu/src/ui/theme.rs` | 108 | tokens, zoom steps |
-| **`src/ui/` total** | **1900** | |
-| `spikes/s2-wgpu/src/app.rs` | +228 / −78 (710 → 860) | wiring |
+| **`src/ui/` total** | **2061** | (1900 as first built; +161 in review fix round 1) |
+| `spikes/s2-wgpu/src/app.rs` | 710 → 904 | wiring (includes the refresh-rate query for `meta`, which is not UI) |
 | `spikes/s2-wgpu/src/gfx/grid.rs` | +8 / −5 | three helpers made `pub` |
-| tests: `tests/ui.rs` 1463, `tests/ui_draw.rs` 637, `tests/session.rs` +181, `tests/atlas.rs` +66 | 2347 | |
+| tests: `tests/ui.rs` 1672, `tests/ui_draw.rs` 678, `tests/session.rs` +396, `tests/atlas.rs` +66 | 2812 | |
 
-For scale — the whole crate after A3 (`wc -l`): `src/` 5474 (`ui/` 1900, `gfx/` 1746, `app.rs` 860, the
-other modules 968), `tests/` 5446.
+For scale — the whole crate after A3 and its fix round (`wc -l`): `src/` 5781 (`ui/` 2061, `gfx/` 1746,
+`app.rs` 904, the other modules 1070), `tests/` 6027.
 
-What the 1900 lines buy: one list, one single-line text field, two buttons, one three-item menu, three
+What the 2061 lines buy: one list, one single-line text field, two buttons, one three-item menu, three
 focus stops. No widget is reusable beyond this window: each is laid out by hand in `layout.rs` and drawn
 by hand in `draw.rs`.
 
@@ -210,7 +239,8 @@ and atlas at 1.25 are tested offscreen only. Item 1.7 of the checklist is the fi
 - No clipping (see 3.3 #7), no scrollbar on the list, no tooltip, no disabled state (Copy is offered
   without a selection and then does nothing), no hover highlight except in the menu.
 - Text field: single line; no undo; no word-wise movement (Ctrl+←/→), no double-click word selection,
-  no caret blink; the caret cannot be moved with the mouse while composing; no right-to-left text.
+  no caret blink; the caret cannot be moved with the mouse while composing (a click in the field is
+  ignored until the composition ends); no right-to-left text.
 - IME: the preedit's own cursor / segment highlighting is not drawn; no IME in the list.
 - Buttons are not focus stops (the ring is list ↔ field ↔ terminal, as specified): keyboard users
   press Enter / Escape in the field.
