@@ -2,6 +2,33 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-10 — S2 resumed: Task 0 on main, A1 `s2-core` built (review pending), B1 image deps
+
+The 10-08 "NEXT" list below is stale: its steps 1–2 were already done (`8eaf614` fix wave, merge `cfd0164`). The
+project was paused on 10-09 and resumed today on the user's decision (PLAN header). The user uses Python tmls
+(`feat/native-attach`) on the PC meanwhile.
+
+- **Task 0** — `b13133b` on `main`: workspace members + stub crates `s2-core`, `s2-wgpu`, `s2-gpui`.
+- **A1 `s2-core`** — `5f34f6b` on `spike/s2-wgpu`, **not merged**. PTY, emulator thread (libghostty-vt), `Frame` +
+  latest-wins slot, key encoding, latency log + report, sampler. 12 integration tests + 1 unit test; 150 consecutive
+  clean runs; clippy clean; golden log/report pair in `spikes/s2-core/tests/data/` (report computed independently in
+  Python). Found while testing: the tty echo can be read before `write()` returns, so attribution uses the time the
+  write began. Additive contract changes are listed in the split overview ("Contract notes from A1").
+  Tests and code were written together, not failing-tests-first.
+- **B1** — `37d949b` on `spike/s2-gpui` (worktree `/data/scratch/s2/wt-b1`): GUI build libs in `Dockerfile.build`.
+  Image built on archbox in 53 s (3.13 GB) to validate it; the PC image is not rebuilt yet (needs the user's yes).
+- An opus review of `5f34f6b` was started but the session was restarted before it reported: **run it again**.
+
+### NEXT (in order)
+1. Review `5f34f6b` (opus, read-only, brief: contract in the split overview + Track A plan §A1; look for races, key
+   attribution, dirty rows, shutdown, timing-dependent tests). Fix findings, merge `spike/s2-wgpu` → `main`.
+2. Merge B1 (`37d949b`) to `main`.
+3. A2 `s2-wgpu` on `spike/s2-wgpu` (Track A plan). Smoke-test on archbox first: build in the Docker image, render
+   offscreen and compare pixels, and try a headless Wayland compositor inside a container for the window + key path
+   (untried). Nothing is installed on a host.
+4. Only then the PC: image rebuild, release build, user-run latency runs and visual/IME checklist (each needs a yes).
+5. B2 gpui probe, B3 bench scripts (worktree `wt-b1`), then A3, B4, the 16-run matrix.
+
 ## 2026-10-08 — S1b round-2 fix wave at code commit 8eaf614
 
 Branch `spike/s1b-r2`. The focused ECH-on-wrapped-row and resize-epoch regressions now pass, as do wide-glyph hyperlink, alt-mode edge, and CSI-X parsing tests. `Tracker` carries the worker's scrollback setting into temporary restores. The whole-snapshot wrapped fallback was replaced by a row-aware path with conservative wide-spacer handling. `cargo test -p s1`: 73 passed, 2 ignored.
