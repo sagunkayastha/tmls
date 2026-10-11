@@ -9,6 +9,8 @@
 //!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
+//! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here the
+//!   panel never has the keys, so Esc stays the terminal's)
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
 //! - Enter on a tab whose session ended — reattach (`route`, which knows the tab's state)
 //!
@@ -45,6 +47,8 @@ pub enum Global {
     FocusSidebar,
     FocusTerminal,
     CloseTab,
+    /// Closes the file panel beside the terminal.
+    ClosePanel,
     NextWaiting,
     Quit,
     ZoomIn,
@@ -112,6 +116,7 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Named(Named::Up) => Some(Global::FocusSidebar),
             Key::Char(c) if c.eq_ignore_ascii_case(&'n') => Some(Global::NextWaiting),
             Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
             _ => None,
         };
     }

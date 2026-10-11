@@ -110,6 +110,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         panel: None,
         sketch: false,
         unread: 0,
+        side: None,
     }
 }
 

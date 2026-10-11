@@ -482,3 +482,27 @@ fn ctrl_c_copies_a_selection_and_interrupts_without_one() {
     assert_eq!(route, Route::Terminal);
     until_screen(&mut tabs, "^C is shown", |text| text.contains("^C"));
 }
+
+#[test]
+fn ctrl_click_on_a_path_gives_the_file_to_open() {
+    let mut tabs = cat("at src/main.rs:12:5 ok\\n");
+    until_screen(&mut tabs, "the line", |text| text.contains("ok"));
+    let mut pointer = Pointer::default();
+    let acts = pointer.press(LEFT, Some((7, 0)), CTRL, false);
+    perform(&mut tabs, acts);
+    let acts = pointer.release(LEFT, Some((7, 0)), CTRL);
+    assert_eq!(
+        perform(&mut tabs, acts),
+        [Effect::File(desktop::links::FileLink {
+            path: "src/main.rs".to_string(),
+            line: Some(12),
+        })]
+    );
+    // A plain click on it is no link.
+    let acts = pointer.press(LEFT, Some((7, 0)), NONE, false);
+    perform(&mut tabs, acts);
+    let acts = pointer.release(LEFT, Some((7, 0)), NONE);
+    assert_eq!(perform(&mut tabs, acts), []);
+    let text = flushed(&mut tabs);
+    assert!(!text.contains("^["), "the click reached no program: {text}");
+}

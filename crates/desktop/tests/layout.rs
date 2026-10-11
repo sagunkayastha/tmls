@@ -1,6 +1,6 @@
 //! The window's layout and what a click hits. No atlas: the cell box is given.
 
-use desktop::draw::{Button, Hit, Layout, layout};
+use desktop::draw::{Button, Hit, Layout, Rect, SideHeader, layout, layout_with, side_header};
 use desktop::theme::{SIDEBAR_COLS, TAB_MAX_COLS, Theme};
 use s2_wgpu::gfx::atlas::CellMetrics;
 
@@ -251,4 +251,182 @@ fn the_list_is_as_wide_as_the_theme_says() {
         ..Theme::default()
     };
     assert_eq!(layout((1281, 726), 1.0, &cell(), &greedy).sidebar.w, 640.0);
+}
+
+// --- the file panel -----------------------------------------------------------------------------
+
+fn with_panel(width: u32, height: u32) -> Layout {
+    layout_with((width, height), 1.0, &cell(), &Theme::default(), true)
+}
+
+#[test]
+fn without_a_panel_nothing_is_laid_out_for_one() {
+    for (width, height) in [(1281, 726), (640, 480), (40, 30)] {
+        let l = at(width, height);
+        assert_eq!(
+            l,
+            layout_with((width, height), 1.0, &cell(), &Theme::default(), false)
+        );
+        assert_eq!(
+            (l.side.w, l.side_divider.w, l.side_cols, l.side_lines),
+            (0.0, 0.0, 0, 0)
+        );
+        assert_eq!(
+            (l.side_header.w, l.side_body.w, l.side_body.h),
+            (0.0, 0.0, 0.0)
+        );
+        for (x, y) in [(width as f32 - 1.0, 30.0), (width as f32 - 1.0, 60.0)] {
+            assert!(!matches!(
+                l.hit(x, y, 1),
+                Hit::Side | Hit::SideOpen | Hit::SideClose
+            ));
+        }
+    }
+}
+
+#[test]
+fn an_open_panel_has_the_right_half_of_the_terminals_area() {
+    let (closed, l) = (at(1281, 726), with_panel(1281, 726));
+    // Everything around the terminal stays where it is.
+    assert_eq!(
+        (
+            l.sidebar,
+            l.separator,
+            l.tab_bar,
+            l.status,
+            l.list,
+            l.legend,
+            l.buttons
+        ),
+        (
+            closed.sidebar,
+            closed.separator,
+            closed.tab_bar,
+            closed.status,
+            closed.list,
+            closed.legend,
+            closed.buttons
+        )
+    );
+    // 1000 px right of the list's line: the panel has 500 of them, its divider included.
+    let rect = |x, y, w, h| Rect { x, y, w, h };
+    assert_eq!(l.side, rect(781.0, 26.0, 500.0, 674.0));
+    assert_eq!(l.side_divider, rect(781.0, 26.0, 1.0, 674.0));
+    assert_eq!(l.terminal, rect(286.0, 26.0, 495.0, 674.0));
+    assert_eq!(
+        l.terminal.right(),
+        l.side_divider.x,
+        "nothing between, nothing shared"
+    );
+    assert_eq!(
+        l.grid,
+        (49, 33),
+        "the sessions are resized to the narrower terminal"
+    );
+    assert_eq!(closed.grid, (99, 33));
+    // The header is a row like the tab bar; the text is half a cell right of the divider.
+    assert_eq!(l.side_header, rect(782.0, 26.0, 499.0, 26.0));
+    assert_eq!(l.side_body, rect(787.0, 52.0, 490.0, 640.0));
+    assert_eq!((l.side_cols, l.side_lines), (49, 32));
+    assert!(l.side_body.right() <= 1281.0 && l.side_body.bottom() <= l.status.y);
+}
+
+#[test]
+fn the_header_has_the_path_then_open_in_app_then_the_close_mark() {
+    let header = |title_cols, open, close| SideHeader {
+        title_cols,
+        open,
+        close,
+    };
+    // 49 columns: × on 47 (cells 46-48), a column, `Open in app` on 34-44, two columns.
+    assert_eq!(side_header(49), header(32, Some(34), Some(47)));
+    // The label goes when the path would have fewer than eight columns beside it.
+    assert_eq!(side_header(25), header(8, Some(10), Some(23)));
+    assert_eq!(side_header(24), header(19, None, Some(22)));
+    assert_eq!(side_header(4), header(0, None, Some(2)));
+    assert_eq!(side_header(3), header(0, None, Some(1)));
+    assert_eq!(side_header(2), header(0, None, None));
+    assert_eq!(side_header(0), header(0, None, None));
+}
+
+#[test]
+fn clicks_hit_the_panels_close_mark_and_open_in_app() {
+    let l = with_panel(1281, 726);
+    // The divider is the panel's; left of it is the terminal.
+    assert_eq!(l.hit(780.9, 300.0, 1), Hit::Terminal);
+    assert_eq!(l.hit(781.0, 300.0, 1), Hit::Side);
+    assert_eq!(l.hit(1000.0, 300.0, 1), Hit::Side, "the text");
+    assert_eq!(l.hit(1270.0, 699.0, 1), Hit::Side, "under the last line");
+    // The header's columns start at x 787, ten pixels each.
+    let col = |col: usize| 787.0 + col as f32 * 10.0;
+    for (x, hit) in [
+        (781.0, Hit::Side),
+        (786.0, Hit::Side),
+        (col(0), Hit::Side),
+        (col(33) + 9.0, Hit::Side),
+        (col(34), Hit::SideOpen),
+        (col(44) + 9.0, Hit::SideOpen),
+        (col(45), Hit::Side),
+        (col(46), Hit::SideClose),
+        (col(48) + 9.0, Hit::SideClose),
+        // The four pixels right of the last column.
+        (1280.0, Hit::SideClose),
+    ] {
+        assert_eq!(l.hit(x, 30.0, 1), hit, "header, x {x}");
+        assert_eq!(l.hit(x, 51.9, 1), hit, "header's last pixel row, x {x}");
+        assert_eq!(l.hit(x, 52.0, 1), Hit::Side, "first line of text, x {x}");
+    }
+    // Above and below it the window is as before.
+    assert_eq!(l.hit(1270.0, 10.0, 0), Hit::TabBar);
+    assert_eq!(l.hit(1270.0, 25.9, 0), Hit::TabBar);
+    assert_eq!(l.hit(1270.0, 700.0, 1), Hit::Status);
+    assert_eq!(l.hit(1281.0, 30.0, 1), Hit::Outside);
+    assert_eq!(l.hit(283.0, 30.0, 1), Hit::Separator);
+    assert_eq!(l.hit(50.0, 30.0, 1), Hit::List { line: 1, col: 5 });
+}
+
+#[test]
+fn a_narrow_window_has_a_narrow_panel_or_none() {
+    // 159 px right of the list: 79 for the panel, seven columns each side.
+    let l = with_panel(320, 200);
+    assert_eq!((l.side.x, l.side.w), (241.0, 79.0));
+    assert_eq!((l.grid.0, l.side_cols), (7, 7));
+    assert_eq!(
+        side_header(7),
+        SideHeader {
+            title_cols: 2,
+            open: None,
+            close: Some(5)
+        }
+    );
+    assert_eq!(l.hit(300.0, 30.0, 0), Hit::SideClose);
+    assert_eq!(l.hit(260.0, 30.0, 0), Hit::Side);
+    // No room for a column of text on both sides: no panel, and the terminal keeps it all.
+    for (width, height) in [(1, 1), (40, 30), (56, 300)] {
+        let (closed, l) = (at(width, height), with_panel(width, height));
+        assert_eq!(l, closed, "{width}x{height}");
+    }
+    // Any size lays out, with whole pixels and nothing negative.
+    for width in (1..700).step_by(7) {
+        for height in [1, 50, 400] {
+            let l = with_panel(width, height);
+            for r in [
+                l.terminal,
+                l.side,
+                l.side_divider,
+                l.side_header,
+                l.side_body,
+            ] {
+                assert!(r.w >= 0.0 && r.h >= 0.0, "{width}x{height}: {r:?}");
+                assert_eq!(
+                    (r.x.fract(), r.w.fract()),
+                    (0.0, 0.0),
+                    "{width}x{height}: {r:?}"
+                );
+            }
+            assert!(l.side_body.right() <= width as f32 || l.side.w == 0.0);
+            assert!(l.terminal.right() <= l.side.x, "{width}x{height}");
+            assert!(l.grid.0 >= 1);
+        }
+    }
 }

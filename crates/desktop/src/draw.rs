@@ -13,6 +13,22 @@
 //! +-----------------------+-+----------------------------------------+
 //! ```
 //!
+//! With a file open (`viewer::SidePanel`) the terminal's area is split: the terminal keeps the
+//! left half, a line divides, and the panel has the right half — a header of one row (the
+//! path, `Open in app`, `×`) over the file's text with its line numbers. `layout_with` lays
+//! that out, and `Layout::grid` is then the smaller terminal.
+//!
+//! ```text
+//! +-- sidebar --+s+-- tab bar ---------------------------------------+
+//! |             |e+---------------------+d+--------------------------+
+//! |             |p|  terminal           |i| …/src/main.rs  Open in app × |
+//! |             | |                     |v|  11 fn main() {          |
+//! |             | |                     | |  12     run();           |
+//! |             | +---------------------+-+--------------------------+
+//! |             | | status line                                      |
+//! +-------------+-+--------------------------------------------------+
+//! ```
+//!
 //! `layout` gives the rectangles in physical pixels, all on whole pixels (atlas texels are
 //! copied 1:1), `Layout::hit` what is under a pixel. `Layout::terminal` is the origin of the
 //! tabs' scenes and `Layout::grid` the size the sessions are resized to.
@@ -27,7 +43,9 @@
 //! `[chrome.base, scene.bg, scene.glyphs, scene.overlay, chrome.top]` (`layer_order`) — `base`
 //! is the sidebar, the tab bar and the status line, `top` the notice over the terminal of a tab
 //! whose session ended and, over everything, the open form or menu (`forms::Panel`, placed by
-//! `Layout::panel_rect`: a form in the middle of the window, a menu at the pointer). `Chrome` caches both: they are rebuilt when `invalidate` was called or
+//! `Layout::panel_rect`: a form in the middle of the window, a menu at the pointer). The file
+//! panel is in `top` as well, under those: a frame the terminal drew before it was made
+//! narrower never shows through it. `Chrome` caches both: they are rebuilt when `invalidate` was called or
 //! the atlas started a new generation, not on every frame, so a key echo pays nothing for them.
 //! A rebuild sets the text of the rows in view only.
 //!
@@ -50,6 +68,7 @@ use crate::theme::{
     OFFLINE, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
     tool_letter,
 };
+use crate::viewer::{SideBody, SideView, TextRow};
 
 /// What a tab whose session ended shows over its last screen.
 pub const ENDED_NOTICE: &str = "session ended — Enter to reattach";
@@ -80,6 +99,15 @@ const LEGEND_TOOLS: [(Tool, &str); 3] = [
 const LEGEND_ENTRY_COLS: usize = 11;
 /// The legend and the buttons are left out when fewer lines than this would be the list's.
 const MIN_LIST_LINES: usize = 4;
+
+/// The label in the file panel's header that opens the file in the desktop's app.
+pub const OPEN_IN_APP: &str = "Open in app";
+/// Cells at the right end of the file panel's header that close it when clicked: the `×` and
+/// one cell either side.
+const SIDE_CLOSE_COLS: usize = 3;
+/// The file panel's header has `Open in app` only when this many columns are left for the
+/// path beside it.
+const SIDE_TITLE_MIN_COLS: usize = 8;
 
 /// A button at the foot of the sidebar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +203,19 @@ pub struct Layout {
     pub grid: (u16, u16),
     /// Width of the host colour bar at a tab's left edge.
     pub host_bar: f32,
+    /// The file panel, its divider included: the right half of what the terminal has
+    /// without one. Empty, like the four below, when no panel is open or the window is too
+    /// narrow for one.
+    pub side: Rect,
+    /// The line between the terminal and the panel.
+    pub side_divider: Rect,
+    /// The panel's header: one row, as high as the tab bar.
+    pub side_header: Rect,
+    /// The panel's text: `side_lines` lines of `side_cols` columns, half a cell right of the
+    /// divider. The header's text is on the same columns.
+    pub side_body: Rect,
+    pub side_cols: usize,
+    pub side_lines: usize,
 }
 
 /// What is under a window pixel.
@@ -200,13 +241,57 @@ pub enum Hit {
     /// The tab bar right of the last tab.
     TabBar,
     Terminal,
+    /// The file panel, where nothing is to click: its text, its divider, the path.
+    Side,
+    /// `Open in app` in the file panel's header.
+    SideOpen,
+    /// The `×` of the file panel.
+    SideClose,
     Status,
     Outside,
 }
 
-/// Lays the window out. `window` is the surface size in physical pixels, `m` the cell box of
-/// the atlas at the current scale and font size.
+/// The columns of the file panel's header, of `cols` in all: the path from the first one,
+/// then `Open in app` and the `×` at the right end. A narrow panel has no `Open in app`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SideHeader {
+    /// Columns the path may take.
+    pub title_cols: usize,
+    /// The column `Open in app` starts at.
+    pub open: Option<usize>,
+    /// The column of the `×`.
+    pub close: Option<usize>,
+}
+
+pub fn side_header(cols: usize) -> SideHeader {
+    let close = (cols >= SIDE_CLOSE_COLS).then(|| cols - 2);
+    let label = OPEN_IN_APP.chars().count();
+    // From the right: the `×` and its cells, a column, the label, two columns, the path.
+    let open = cols
+        .checked_sub(SIDE_CLOSE_COLS + 1 + label)
+        .filter(|open| *open >= SIDE_TITLE_MIN_COLS + 2);
+    let title_end = open.or(close.map(|close| close - 1)).unwrap_or(cols);
+    SideHeader {
+        title_cols: title_end.saturating_sub(2),
+        open,
+        close,
+    }
+}
+
+/// Lays the window out with no file panel. `window` is the surface size in physical pixels,
+/// `m` the cell box of the atlas at the current scale and font size.
 pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) -> Layout {
+    layout_with(window, scale, m, theme, false)
+}
+
+/// `layout`, and with `side_open` the terminal's area split for the file panel.
+pub fn layout_with(
+    window: (u32, u32),
+    scale: f32,
+    m: &CellMetrics,
+    theme: &Theme,
+    side_open: bool,
+) -> Layout {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -228,11 +313,38 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
     let bar_h = (cell_h + 2.0 * inset).min((win_h / 3.0).floor());
     // (tmls's terminal is a kitty window with kitty's own padding; half a cell here.)
     let pad = (cell_w / 2.0).round().min((right_w - cell_w).max(0.0));
+    // The file panel: the right half, if that leaves a column each for the terminal and for
+    // the panel's text beside the divider and the padding.
+    let half = (right_w / 2.0).floor();
+    let panel_w = if side_open && half >= line + pad + cell_w && right_w - half >= pad + cell_w {
+        half
+    } else {
+        0.0
+    };
     let terminal = Rect {
         x: right_x + pad,
         y: bar_h,
-        w: right_w - pad,
+        w: right_w - pad - panel_w,
         h: (win_h - 2.0 * bar_h).max(0.0),
+    };
+    let side = Rect {
+        x: win_w - panel_w,
+        w: panel_w,
+        ..terminal
+    };
+    let side_line = if panel_w > 0.0 { line } else { 0.0 };
+    let side_header = Rect {
+        x: side.x + side_line,
+        w: panel_w - side_line,
+        h: bar_h.min(side.h),
+        ..side
+    };
+    let side_pad = if panel_w > 0.0 { pad } else { 0.0 };
+    let side_cols = ((side_header.w - side_pad).max(0.0) / cell_w).floor() as usize;
+    let side_lines = if panel_w > 0.0 {
+        ((side.h - side_header.h) / cell_h).floor() as usize
+    } else {
+        0
     };
     // The foot of the sidebar: a line, the legend, the buttons. The buttons' last row is
     // level with the terminal's last row, not with the window's bottom edge: a desktop panel
@@ -305,6 +417,20 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
         },
         grid: m.grid_for(terminal.w as u32, terminal.h as u32),
         host_bar: px(theme.host_bar).clamp(1.0, cell_w),
+        side,
+        side_divider: Rect {
+            w: side_line,
+            ..side
+        },
+        side_header,
+        side_body: Rect {
+            x: side_header.x + side_pad,
+            y: side_header.bottom(),
+            w: side_cols as f32 * cell_w,
+            h: side_lines as f32 * cell_h,
+        },
+        side_cols,
+        side_lines,
     }
 }
 
@@ -361,6 +487,27 @@ impl Layout {
         ((x - rect.x) / self.cell.0, (y - rect.y) / self.cell.1)
     }
 
+    /// What of the file panel is under a pixel inside `side`.
+    fn side_hit(&self, x: f32, y: f32) -> Hit {
+        if !self.side_header.contains(x, y) || x < self.side_body.x {
+            return Hit::Side;
+        }
+        let col = ((x - self.side_body.x) / self.cell.0).floor() as usize;
+        let header = side_header(self.side_cols);
+        let label = OPEN_IN_APP.chars().count();
+        // The cells of the `×`, and what is left of the window right of the last column.
+        if header.close.is_some() && col + SIDE_CLOSE_COLS >= self.side_cols {
+            Hit::SideClose
+        } else if header
+            .open
+            .is_some_and(|open| (open..open + label).contains(&col))
+        {
+            Hit::SideOpen
+        } else {
+            Hit::Side
+        }
+    }
+
     /// Whether a click at this column of a host's header is on its `+`.
     pub fn on_add(&self, col: usize) -> bool {
         col + ADD_COLS >= self.list_cols
@@ -391,6 +538,9 @@ impl Layout {
                 .find(|(_, _, at, start, cols)| *at == row && (*start..start + cols).contains(&col))
                 .filter(|_| self.buttons.contains(x, y));
             return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
+        }
+        if self.side.contains(x, y) {
+            return self.side_hit(x, y);
         }
         // The terminal's rows, the padding at its left included.
         if y >= self.terminal.y && y < self.terminal.bottom() {
@@ -443,6 +593,8 @@ pub struct View {
     pub sketch: bool,
     /// Alerts not looked at yet, for the bell.
     pub unread: usize,
+    /// The file panel, as far as it is in view.
+    pub side: Option<SideView>,
 }
 
 impl View {
@@ -626,6 +778,67 @@ pub fn rule_spans(label: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>>
     ]
 }
 
+/// `text` cut to `cols` columns at its start: a path that does not fit keeps its end, the
+/// file's name, after "…".
+pub fn keep_end(text: &str, cols: usize) -> String {
+    let all = clusters(text);
+    let total: usize = all.iter().map(|(_, width)| width).sum();
+    if total <= cols {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1;
+    for (cluster, width) in all.iter().rev() {
+        if used + width > cols {
+            break;
+        }
+        used += width;
+        kept.push(cluster.as_str());
+    }
+    let tail: String = kept.into_iter().rev().collect();
+    if cols == 0 {
+        tail
+    } else {
+        format!("…{tail}")
+    }
+}
+
+/// The file panel's header on `cols` columns: the path, `Open in app`, `×` (`side_header`).
+pub fn side_header_spans(title: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let header = side_header(cols);
+    let title = keep_end(title, header.title_cols);
+    let mut out = vec![Span::new(0, 0, header.title_cols, title).colour(theme.sidebar_fg)];
+    if let Some(open) = header.open {
+        out.push(Span::whole(0, open, OPEN_IN_APP).colour(COPY_RGB).bold());
+    }
+    if let Some(close) = header.close {
+        out.push(Span::whole(0, close, CLOSE_MARK).colour(theme.muted_fg));
+    }
+    out
+}
+
+/// A file's rows on `cols` columns, one line each: the number, right-aligned in the gutter's
+/// columns but the last, then the text, cut with "…" where the panel ends. The marked line's
+/// number is in the accent colour.
+pub fn side_text_spans<'a>(
+    gutter: usize,
+    rows: &'a [TextRow],
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    let digits = gutter.saturating_sub(1);
+    let mut out = Vec::with_capacity(2 * rows.len());
+    for (line, row) in rows.iter().enumerate() {
+        let number = format!("{:>digits$}", row.number);
+        let colour = if row.marked { CURSOR_RGB } else { theme.dim_fg };
+        out.push(Span::new(line, 0, digits.min(cols), number).colour(colour));
+        let text_cols = cols.saturating_sub(gutter);
+        let text = Span::new(line, gutter.min(cols), text_cols, row.text.as_str());
+        out.push(text.colour(theme.sidebar_fg));
+    }
+    out
+}
+
 fn opaque(c: [u8; 3]) -> [u8; 4] {
     [c[0], c[1], c[2], 255]
 }
@@ -748,6 +961,7 @@ impl Chrome {
             tab_bar(&mut p, view, layout, theme);
             status_line(&mut p, view, layout, theme);
             p.out = &mut self.top;
+            side_panel(&mut p, view, layout, theme);
             notice(&mut p, view, layout, theme);
             panel(&mut p, view, layout, theme);
             if atlas.generation() == generation {
@@ -962,6 +1176,42 @@ fn status_line(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             cols,
             theme.muted_fg,
         );
+    }
+}
+
+/// The file panel: its divider, its header and the rows of the file in view, the marked one
+/// on a band.
+fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
+    let Some(side) = &view.side else {
+        return;
+    };
+    if l.side.w <= 0.0 {
+        return;
+    }
+    p.rect(l.side, theme.sidebar_bg);
+    p.rect(l.side_divider, theme.sidebar_rule);
+    p.rect(l.side_header, theme.bar_bg);
+    if l.side_header.h >= p.m.height {
+        let origin = (l.side_body.x, p.text_y(l.side_header));
+        for span in side_header_spans(&side.title, l.side_cols, theme) {
+            p.span(origin, &span);
+        }
+    }
+    match &side.body {
+        SideBody::Text { gutter, rows } => {
+            let rows = &rows[..rows.len().min(l.side_lines)];
+            if let Some(marked) = rows.iter().position(|row| row.marked) {
+                let band = Rect {
+                    y: l.side_body.y + marked as f32 * p.m.height,
+                    h: p.m.height,
+                    ..l.side_header
+                };
+                p.rect(band, theme.row_selected_bg);
+            }
+            for span in side_text_spans(*gutter, rows, l.side_cols, theme) {
+                p.span((l.side_body.x, l.side_body.y), &span);
+            }
+        }
     }
 }
 
