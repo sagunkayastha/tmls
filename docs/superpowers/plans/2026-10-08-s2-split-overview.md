@@ -60,7 +60,8 @@ impl Pty {
 }
 // emulator thread (libghostty-vt objects are not Send → they live on this thread only)
 pub struct Emu { pub input_tx: Sender<InputMsg>, pub frames: FrameSlot }
-pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Shutdown }
+pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Focus(bool),
+                    Scroll(i32 /* rows; negative = up, into scrollback */), ScrollToBottom, Shutdown }
 impl Emu { pub fn start(pty: Pty, cols: u16, rows: u16, log: Option<latency::Log>) -> anyhow::Result<Emu>; }
 // FrameSlot = latest-wins single slot (Mutex<Option<Frame>> + wake callback). Frames may drop; PTY bytes never.
 pub struct FrameSlot; impl FrameSlot { pub fn take(&self) -> Option<Frame>; pub fn set_waker(&self, f: Box<dyn Fn() + Send + Sync>); }
@@ -79,6 +80,56 @@ pub fn now_ns() -> u128;                          // CLOCK_MONOTONIC; every time
 Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each rendered frame call
 `log.frame(seq, t_submit_ns, t_present_ns, t_present_kind)`.
 
+**Contract notes from A1 (2026-10-10, `s2-core` as built; all additive):**
+- `InputMsg::Focus(bool)` — the front-end sends it on window focus change. `false` drops queued key repeats, and no
+  repeat is sent until the next fresh press; both values report `CSI I` / `CSI O` to the PTY under mode 1004.
+- `Emu::exited() -> bool` — true once the child closed the PTY; the waker fires when it turns true.
+- `Pty::reader()`; `PtyWriter::write_all(&[u8])` (plus `start_recording()` / `recorded()` for tests).
+- `Frame::row_text(y)`. When the slot replaces an unread frame, the new frame inherits its `keys` and dirty rows.
+- `latency::Log`: `create(dir)`, `key(id, t_key_ns)`, `write(id, t_write_ns)` (called by the core), `frame(…)`,
+  `frame_with_work_done(…, Option<t_work_done_ns>)`, `event(&Event)` for `meta`, `flush()`. `latency::Event` is the serde
+  type of a log line. Times are written as unsigned 64-bit ns; `frame` may carry an optional `t_work_done_ns`.
+- **Key attribution is `frame.keys`, not the timestamps.** The core assigns a key to the first frame *with PTY output*
+  whose output was read at or after the key's PTY write *began*: the tty echo can be read before `write()` returns, so
+  `t_output_ns` may be a few microseconds earlier than the logged `t_write_ns`. Treat a negative write→output span as 0.
+- Only keys with a `key` line, a `write` line and a presented frame count. Percentiles are nearest-rank:
+  `sorted[ceil(p/100 · n) − 1]`. Golden pair: `spikes/s2-core/tests/data/golden-latency.jsonl` + `golden-report.json`
+  (generator `make-golden.py` beside them computes the report independently of the Rust code).
+
+**Contract changes from the A1 fix wave (2026-10-10, review `docs/reviews/2026-10-10-opus-s2-core.md`):**
+- **New: viewport scrolling.** `InputMsg::Scroll(i32)` moves the viewport by that many rows — negative is up, into the
+  scrollback (wheel up); positive is back towards the live screen — clamped at both ends; `InputMsg::ScrollToBottom`
+  returns to the live screen. Each is followed by a frame (rows that now show other text are dirty; `cursor` is `None`
+  while the cursor row is outside the viewport). PTY output does not move a scrolled viewport; a `Key` or `Paste` that
+  sends bytes returns it to the bottom, so front-ends need not send `ScrollToBottom` before typing.
+- **`Frame::t_output_ns` as implemented:** the read time of the *last* PTY chunk parsed into the frame (a frame can
+  cover several chunks). A frame published without new PTY output — the first frame, a resize, a scroll — carries the
+  time it was built instead, and **its `keys` are always empty**: only a frame with output can show a key's echo
+  (review B3). Such frames still get a `frame` line if presented; they just carry no keys.
+- **`set_waker` never loses a wake-up (B7):** if a frame is already waiting in the slot or the child has already exited,
+  the waker is called once from inside `set_waker`, before it returns. The waker can run on any thread and can run
+  spuriously; it must not call `set_waker` itself. No "poll once after `set_waker`" is needed.
+- **`log.frame(seq, …)` covers every frame taken up to `seq` (B8):** the line carries the keys of all frames taken from
+  the slot with a seq ≤ `seq` that no earlier `frame` line covered, and the `t_output_ns` of the newest of them. So a
+  front-end may take several frames and present only the last; call `log.frame` once per *presented* frame with the seq
+  that was drawn. Frames taken but not yet covered are bounded (256 entries; older ones merge, keys kept).
+- **Input never blocks.** `PtyWriter::write_all` returns at once: what the PTY takes now is written inline, the rest is
+  queued and written in order by a writer thread (large pastes, a child that does not read stdin). `t_write_ns` is when
+  the key's last byte was accepted by the kernel. `Pty::reader()` returns `Ok(0)` when the child side is closed.
+  Dropping `Emu` joins its threads (`s2-emu`, `s2-pty-read`, `s2-pty-write`) and drops input still queued.
+- **Keys:** with Ctrl held, pass `text: None` or the control character the toolkit reports (winit's `"\x03"`); control
+  characters in `text` are ignored and key + modifiers decide. Ctrl+`[ \ ] / _ @ ^ ?` and Ctrl+`i`/`m` send their C0
+  byte in legacy mode. *Printable* text with Ctrl (`text: Some("[")`) is passed to libghostty-vt as is, which then uses
+  its fixterms CSI-u form for a few chords (`ESC[91;5u` for Ctrl+`[`) — so do not pass it.
+- **Public API Track B calls that the notes above omit:** `bench::Sampler::start(Log) -> Sampler` (writes a `sample`
+  line every 500 ms and flushes the log; stops when dropped), `Log::frames_logged() -> u64` (what the sampler's `fps`
+  counts — one per `log.frame` call), `keys::Encoder` (`new()`, `encode(&KeyEvent, &Terminal) -> Vec<u8>`; front-ends
+  normally send `InputMsg::Key` instead) and `keys::paste_bytes(text, bracketed)`, and the `Mods` fields
+  `shift`, `ctrl`, `alt`, `logo` (all `bool`, `Default` = none).
+- **Measurement validity — flood runs:** under `--load-label flood`, key→present (and the `--photon` square) means
+  "the next frame with output after the key was written", not "the frame in which the echo is visible": any PTY output
+  read after the write began counts. Quiet runs measure echo-visible latency. State this next to flood results.
+
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
 One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns()`:
@@ -91,8 +142,8 @@ One JSON object per line, `"ev"` discriminator, all times `u128` ns from `now_ns
 {"ev":"sample","t_ns":0,"cpu_pct":0.0,"rss_kb":0,"fps":0.0,"gpu_util":null,"gpu_w":null}
 ```
 
-Key attribution: a key belongs to the **first frame whose `t_output_ns` ≥ its `t_write_ns`** (emulator fills `keys`).
-`present_kind` must be honest: `present()` return ≠ photon; gpui may only offer a frame callback.
+Key attribution is the `keys` array of the `frame` line (the emulator fills it; rule in "Contract notes from A1" and
+"A1 fix wave" above) — do not re-derive it from the timestamps. `present_kind` must be honest: `present()` return ≠ photon; gpui may only offer a frame callback.
 
 ### App CLI (identical for `s2-wgpu` and `s2-gpui`, so `run.sh` is shared)
 

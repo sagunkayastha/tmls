@@ -31,12 +31,12 @@ Replace the Task 0 stubs with the real implementation of the contract API.
   --query-gpu=utilization.gpu,power.draw --format=csv,noheader,nounits` if on PATH else `null`.
 
 Steps:
-- [ ] 1. Failing tests: `pty_echo_roundtrip` (spawn `cat`), `emu_frame_after_output` (feed `printf ok` → row 0 has "ok";
+- [x] 1. Failing tests: `pty_echo_roundtrip` (spawn `cat`), `emu_frame_after_output` (feed `printf ok` → row 0 has "ok";
       100 feeds → ≤100 frames, last frame = final state), `keys_encode_letter_and_ctrl` (`a`→`a`, Ctrl+C→`\x03`,
       Up+DECCKM→`\x1bOA`), `keys_no_repeat_after_focus_loss`, `paste_bracketed_when_mode_set`, `reply_goes_through_writer`
       (`printf '\e[6n'` → a CPR reply appears on the PTY writer, nowhere else), `latency_report_percentiles` (synthetic).
-- [ ] 2. Implement until green on archbox (`source spikes/s1/build-env.sh; cargo test -p s2-core`).
-- [ ] 3. Write the golden log `spikes/s2-core/tests/data/golden-latency.jsonl` (~50 keys, hand-checkable numbers) and its
+- [x] 2. Implement until green on archbox (`source spikes/s1/build-env.sh; cargo test -p s2-core`).
+- [x] 3. Write the golden log `spikes/s2-core/tests/data/golden-latency.jsonl` (~50 keys, hand-checkable numbers) and its
       expected report `golden-report.json` — Track B tests `analyze.py` against the same pair.
 - [ ] 4. Commit `s2-core: PTY + emulator thread + Frame + key encoding + latency log + sampler`. Tell the user: **"A1 ready
       for Claude review"** — stop until it is merged to `main` (Claude reviews + merges; B rebases).
