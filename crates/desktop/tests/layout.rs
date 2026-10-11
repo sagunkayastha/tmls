@@ -88,7 +88,7 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     // The last three cells of a line are the `+` of a host's header.
     assert!(!l.on_add(24) && l.on_add(25) && l.on_add(27));
 
-    // The legend is not for clicking; the buttons are, each on its label: New  Open  Copy  ?
+    // The legend is not for clicking; the buttons are, each on its label: New  Open  Copy  ?  !
     assert_eq!(l.hit(50.0, 650.0, 2), Hit::Sidebar, "the legend");
     for (x, hit) in [
         (9.0, Hit::Sidebar),
@@ -100,6 +100,11 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
         (120.0, Hit::Button(Button::Copy)),
         (180.0, Hit::Button(Button::Help)),
         (190.0, Hit::Sidebar),
+        // The bell: its mark and two columns for the count.
+        (209.0, Hit::Sidebar),
+        (210.0, Hit::Button(Button::Alerts)),
+        (239.0, Hit::Button(Button::Alerts)),
+        (240.0, Hit::Sidebar),
     ] {
         assert_eq!(l.hit(x, 710.0, 2), hit, "x {x}");
     }

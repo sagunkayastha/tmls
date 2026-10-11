@@ -287,6 +287,9 @@ fn list_keys() {
     assert_eq!(list_key(&ch('n', NONE)), Some(ListKey::NextWaiting));
     assert_eq!(list_key(&ch('c', NONE)), Some(ListKey::New));
     assert_eq!(list_key(&ch('m', NONE)), Some(ListKey::Menu));
+    assert_eq!(list_key(&ch('a', NONE)), Some(ListKey::Alerts));
+    assert_eq!(list_key(&repeat(&ch('a', NONE))), None);
+    assert_eq!(list_key(&ch('a', ALT_SHIFT)), None);
     assert_eq!(list_key(&repeat(&ch('c', NONE))), None);
     assert_eq!(list_key(&repeat(&ch('m', NONE))), None);
     assert_eq!(list_key(&repeat(&ch('p', NONE))), None);

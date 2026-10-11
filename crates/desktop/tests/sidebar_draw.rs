@@ -107,6 +107,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         status: String::new(),
         notice: None,
         panel: None,
+        unread: 0,
     }
 }
 
@@ -655,12 +656,25 @@ fn legend_and_buttons_sit_at_the_bottom() {
         ..l.legend
     };
     assert_eq!(solids(&quads, above, theme.sidebar_rule).len(), 1);
-    // The buttons' labels: 4 + 4 + 3 + 1 letters.
-    let labels: usize = [theme::ADD_RGB, theme::COPY_RGB, theme.muted_fg]
-        .iter()
-        .map(|colour| glyphs(&quads, l.buttons, *colour).len())
-        .sum();
-    assert_eq!(labels, 12, "New  Open  Copy  ?");
+    // The buttons' labels: 3 + 4 + 4 + 1 letters and the bell.
+    let labels = |quads: &[Instance]| -> usize {
+        [theme::ADD_RGB, theme::COPY_RGB, theme.muted_fg]
+            .iter()
+            .map(|colour| glyphs(quads, l.buttons, *colour).len())
+            .sum()
+    };
+    assert_eq!(labels(&quads), 13, "New  Open  Copy  ?  !");
+    assert!(glyphs(&quads, l.buttons, theme::CURSOR_RGB).is_empty());
+    // With alerts not looked at yet the bell has their count, in the accent colour, and
+    // still ends inside the sidebar.
+    let mut unread = view(&[], None, false);
+    unread.unread = 50;
+    let (quads, l, _atlas) = built(&unread, &list, &theme);
+    assert_eq!(labels(&quads), 12);
+    let bell = glyphs(&quads, l.buttons, theme::CURSOR_RGB);
+    assert_eq!(bell.len(), 3, "!50");
+    let right = bell.iter().map(|quad| quad.pos[0] + quad.size[0]);
+    assert!(right.fold(0.0, f32::max) <= l.sidebar.right());
 }
 
 /// A minimal PNG: 8-bit RGB, stored (not compressed) deflate blocks.

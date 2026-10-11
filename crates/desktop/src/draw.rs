@@ -83,23 +83,39 @@ pub enum Button {
     Copy,
     /// The keys.
     Help,
+    /// The bell: the list of alerts. Its label is followed by how many are new.
+    Alerts,
 }
 
+/// The bell. tmls draws 🔔, which the terminal's font need not have; this is in every font.
+pub const BELL: &str = "!";
+
 /// The buttons from left to right with their labels, two columns apart.
-pub const BUTTONS: [(Button, &str); 4] = [
+pub const BUTTONS: [(Button, &str); 5] = [
     (Button::New, "New"),
     (Button::Open, "Open"),
     (Button::Copy, "Copy"),
     (Button::Help, "?"),
+    (Button::Alerts, BELL),
 ];
 
-/// Each button with its label and the column the label starts at.
-fn button_columns() -> impl Iterator<Item = (Button, &'static str, usize)> {
+/// Each button with its label, the column the label starts at and how many columns are the
+/// button's: its label's, and for the bell two more for the count (at most `MAX_ALERTS`).
+fn button_columns() -> impl Iterator<Item = (Button, &'static str, usize, usize)> {
     BUTTONS.iter().scan(1, |col, (button, label)| {
         let start = *col;
-        *col += label.len() + 2;
-        Some((*button, *label, start))
+        let cols = label.len() + if *button == Button::Alerts { 2 } else { 0 };
+        *col += cols + 2;
+        Some((*button, *label, start, cols))
     })
+}
+
+/// What the bell shows: `!`, or `!3` with three alerts not looked at yet.
+pub fn bell_label(unread: usize) -> String {
+    match unread {
+        0 => BELL.to_string(),
+        unread => format!("{BELL}{unread}"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -328,7 +344,7 @@ impl Layout {
                 return Hit::List { line, col };
             }
             let button = button_columns()
-                .find(|(_, label, start)| (*start..start + label.len()).contains(&col))
+                .find(|(.., start, cols)| (*start..start + cols).contains(&col))
                 .filter(|_| self.buttons.contains(x, y));
             return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
         }
@@ -379,6 +395,8 @@ pub struct View {
     pub notice: Option<String>,
     /// The open form or menu, and the window pixel a menu was opened at.
     pub panel: Option<(Panel, Option<(u32, u32)>)>,
+    /// Alerts not looked at yet, for the bell.
+    pub unread: usize,
 }
 
 impl View {
@@ -746,11 +764,11 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
             }
         }
     }
-    foot(p, l, theme);
+    foot(p, view, l, theme);
 }
 
 /// The legend of the marks under a line, and the buttons.
-fn foot(p: &mut Painter, l: &Layout, theme: &Theme) {
+fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     if l.legend.h <= 0.0 {
         return;
     }
@@ -774,13 +792,20 @@ fn foot(p: &mut Painter, l: &Layout, theme: &Theme) {
         let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), *word);
         p.span(origin, &word.colour(theme.muted_fg));
     }
-    for (button, label, col) in button_columns() {
+    for (button, label, col, cols) in button_columns() {
         let colour = match button {
             Button::New | Button::Open => ADD_RGB,
             Button::Copy => COPY_RGB,
             Button::Help => theme.muted_fg,
+            // tmls's accent while something is new.
+            Button::Alerts if view.unread > 0 => CURSOR_RGB,
+            Button::Alerts => theme.muted_fg,
         };
-        let fits = col + label.len() < l.list_cols;
+        let fits = col + cols < l.list_cols;
+        let label = match button {
+            Button::Alerts => Cow::Owned(bell_label(view.unread)),
+            _ => Cow::Borrowed(label),
+        };
         let span = Span::whole(0, col, label).colour(colour).bold();
         if fits {
             p.span((l.buttons.x, l.buttons.y), &span);

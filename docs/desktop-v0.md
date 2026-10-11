@@ -20,14 +20,13 @@ but does nothing yet, it says "not built yet".
 - Pins sessions (`★`). Pinned sessions sort first within their host.
 - Makes a new session from a form, renames a session, and kills one after a confirm.
 - Opens a session in a new terminal window, and copies its attach command.
+- Alerts: notes every session that turns `?`, `◆` or `✕`, counts the new ones on the bell
+  (`!3`), lists them, and sends a desktop notification for `?` and `◆`. See "Alerts".
 
 ## Not in v0
 
 `ag`, `ct`, approvals, Ask / queue, prompts, the file viewer, image paste, quick select, the
 splits menu, kitty (non-tmux) sessions, web, Android, Windows.
-
-A separate task of the plan, which may land after this page was written: alerts. As of this
-page they are not wired: see "not built yet" below.
 
 ## Build
 
@@ -64,6 +63,7 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `name` | what this machine is called in the list (default: its hostname) | read |
 | `host-colors.json` | accent colour per host | read |
 | `agent-presets.json` | agent commands for a new session: the form's Start choices after `shell` and `claude` | read |
+| `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.
@@ -95,6 +95,7 @@ In the session list:
 | n | open the next session that waits for you |
 | c | new-session form, for the host of the session under the cursor |
 | m | menu of the session under the cursor: Rename, Kill…, Open in new terminal, Copy attach command |
+| a | the list of alerts |
 | Esc | focus back to the terminal |
 
 In a form (new session, rename, kill confirm):
@@ -109,6 +110,8 @@ In a form (new session, rename, kill confirm):
 | Ctrl+Shift+V | paste into the field |
 
 In the menu: Up / Down or k / j move, Enter picks, any other key closes it.
+
+In the list of alerts: Up / Down or k / j move, Enter goes to the session, Esc closes.
 
 The Alt+Shift keys do nothing while a form or menu is open. Ctrl+Q and zoom still work.
 
@@ -148,6 +151,37 @@ without `$TERMINAL`, kitty if it is installed, else `x-terminal-emulator`.
 The status line says what each of these did, or why it failed, until the next key. Each
 command has 10 s to finish.
 
+## Alerts
+
+When a session's mark changes to `?` (waiting), `◆` (done while you were not looking) or `✕`
+(error), the app notes it. The bell at the foot of the list, right of `?`, shows how many are
+new: `!` with none, `!3` with three. It is `!` and not tmls's 🔔 because the terminal's font
+need not have that glyph.
+
+`a` in the list or a click on the bell opens the list of alerts: newest first, the last 50,
+each with its age, mark, session, host and what happened. Opening it sets the count back to
+zero. Enter or a click goes to the session (opens its tab or brings it to the front) and
+closes the list. If that session was renamed or has ended since, the status line says so.
+
+For `?` and `◆` the app also runs `notify-send -- "tmls · HOST" "◆ NAME · done"` (for `?`:
+what the session waits for, else `waiting`). Without `notify-send` on this machine there is
+no notification and no error.
+
+What does not alert:
+
+- anything at the first listing after the start, a session that is new in the list, and a
+  host that comes back from offline (as in tmls: unknown before is not news);
+- the session of the tab in front while this window has the keyboard focus ("silence
+  focused"). When the window is not focused, that session does alert, also when it finishes.
+
+Switches, read once at start from `~/.config/tmls/notifications.json` (the file tmls's alert
+panel saves): `"desktop": false` turns the notifications off, `"silence_focused": false`
+alerts for the tab you are looking at too. The app never writes that file and has no switches
+of its own. tmls's `sound` switch is ignored: the app plays no sound.
+
+Not built: approvals (tmls's Yes / No on a Claude permission prompt). Nothing in the alerts
+sends a key to a session.
+
 ## Mouse
 
 | Action | Does |
@@ -164,6 +198,8 @@ command has 10 s to finish.
 | `Copy` button | copy the `tmux attach` command of that session |
 | click in a form | focus a field, choose a Start, press a button; a click on Host shows the next host |
 | click beside an open menu | close it |
+| the bell (`!`, or `!3` with three new alerts) | the list of alerts |
+| click an alert | go to its session; a click beside the list closes it |
 
 ### Mouse in the terminal
 
@@ -199,7 +235,7 @@ Not built yet:
 - the `?` button (key help);
 - file paths and `file:line` as links, and tmls's quick select (Alt+Shift+S);
 - right-click paste in the terminal;
-- alerts.
+- in the alerts: approvals (Yes / No), sound, and switches in the app.
 
 ## Smoke test
 

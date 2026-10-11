@@ -14,6 +14,8 @@
 //!
 //! List path: a polling thread delivers a host's listing → `UserEvent::Snapshot` →
 //! `Sidebar::deliver` (which marks what finished unwatched) → a redraw that rebuilds the chrome.
+//! `Alerts::observe` then compares the host's rows with its last listing: a session that started
+//! to need the user is added to the bell's list and `notify-send` is started for it.
 //!
 //! Mouse over the terminal: `mouse::Pointer` decides whether an event is the program's (tmux
 //! with `mouse on` asked for reports) or a selection, a link or a scroll of our own;
@@ -61,6 +63,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
+use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
@@ -116,6 +119,7 @@ pub enum UserEvent {
 enum Modal {
     Menu(RowMenu),
     Form(Form),
+    Alerts(AlertsPanel),
 }
 
 /// Runs the app until the window is closed or the user quits. `config_dir` is `~/.config/tmls`.
@@ -309,6 +313,8 @@ struct Running {
     sidebar: Sidebar,
     /// Which sessions finished while their tab was not in front.
     seen: Seen,
+    /// Which sessions started to need the user; the bell's count.
+    alerts: Alerts,
     /// The last thing that went wrong (a tab that could not be opened), for the status line.
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
@@ -482,6 +488,7 @@ impl Running {
             gate: RepeatGate::default(),
             sidebar,
             seen: Seen::new(),
+            alerts: Alerts::new(Settings::load(config_dir)),
             problem: None,
             note: None,
             modal: None,
@@ -555,7 +562,19 @@ impl Running {
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, snapshot: HostSnapshot) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
+        let host = snapshot.host.clone();
         self.sidebar.deliver(&mut self.seen, snapshot, front);
+        // The host's sessions as the list has them now, marks included.
+        let listed = self.sidebar.rows().iter().filter_map(|row| match row {
+            sidebar::Row::Session(info) if info.key.host == host => Some(info),
+            _ => None,
+        });
+        let watching = Watching {
+            front,
+            window_focused: self.window_focused,
+        };
+        let notes = self.alerts.observe(&host, listed, watching, Instant::now());
+        alerts::send(&notes, &mut forms::spawn_detached);
         if let Some(key) = &self.select_when_listed
             && self.sidebar.status(key).is_some()
         {
@@ -570,6 +589,7 @@ impl Running {
         let panel = self.modal.as_mut().map(|(modal, at)| match modal {
             Modal::Menu(menu) => (menu.panel(), *at),
             Modal::Form(form) => (form.panel(), *at),
+            Modal::Alerts(alerts) => (alerts.panel(), *at),
         });
         let status_of = |key: &SessionKey| {
             let status = self.sidebar.status(key)?;
@@ -605,6 +625,7 @@ impl Running {
             status,
             notice: ended.then(|| ENDED_NOTICE.to_string()),
             panel,
+            unread: self.alerts.unread(),
         }
     }
 
@@ -700,7 +721,34 @@ impl Running {
                 let result = form.key(ev);
                 self.form_result(result);
             }
+            Some((Modal::Alerts(alerts), _)) => {
+                let result = alerts.key(ev);
+                self.alerts_result(result);
+            }
             None => {}
+        }
+        self.invalidate();
+    }
+
+    /// Opens the list of alerts; they count as read from now on.
+    fn open_alerts(&mut self) {
+        let panel = self.alerts.open(Instant::now());
+        self.open_modal(Modal::Alerts(panel), None);
+    }
+
+    fn alerts_result(&mut self, result: PanelResult) {
+        match result {
+            PanelResult::Pending => {}
+            PanelResult::Closed => self.close_modal(),
+            PanelResult::Jump(key) => {
+                self.close_modal();
+                let listed = self.sidebar.status(&key).is_some();
+                match alerts::jump(&key, listed, self.tabs.index_of(&key).is_some()) {
+                    Ok(()) => self.open(&key),
+                    // Not a problem to keep in the status line: gone with the next key.
+                    Err(gone) => self.say(Ok(gone)),
+                }
+            }
         }
         self.invalidate();
     }
@@ -903,6 +951,17 @@ impl Running {
                 self.form_result(result);
             }
             Modal::Form(_) => {}
+            Modal::Alerts(alerts) => {
+                let panel = alerts.panel();
+                let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let (cx, cy) = self.layout.panel_cell(rect, x, y);
+                let result = match button {
+                    MouseButton::Left => alerts.click(cx, cy),
+                    _ if panel.contains(cx, cy) => PanelResult::Pending,
+                    _ => PanelResult::Closed,
+                };
+                self.alerts_result(result);
+            }
         }
         self.invalidate();
     }
@@ -965,6 +1024,7 @@ impl Running {
             ListKey::Pin => self.toggle_pin(),
             ListKey::NextWaiting => self.next_waiting(),
             ListKey::New => self.foot_button(Button::New),
+            ListKey::Alerts => self.open_alerts(),
             ListKey::Menu => {
                 if let Some(key) = self.sidebar.selected().cloned() {
                     self.open_modal(Modal::Menu(RowMenu::new(key)), None);
@@ -1018,6 +1078,7 @@ impl Running {
     fn foot_button(&mut self, button: Button) {
         let selected = self.sidebar.selected().cloned();
         match (button, selected) {
+            (Button::Alerts, _) => self.open_alerts(),
             (Button::Open, Some(key)) => self.open(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
@@ -1236,6 +1297,14 @@ impl Running {
             let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
             let (x, y) = self.layout.panel_cell(rect, self.pointer.0, self.pointer.1);
             if menu.hover(x, y) {
+                self.invalidate();
+            }
+        }
+        if let Some((Modal::Alerts(alerts), at)) = &mut self.modal {
+            let panel = alerts.panel();
+            let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+            let (x, y) = self.layout.panel_cell(rect, self.pointer.0, self.pointer.1);
+            if alerts.hover(x, y) {
                 self.invalidate();
             }
         }

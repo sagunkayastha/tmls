@@ -5,7 +5,7 @@
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the
-//!   cursor's session menu (rename, kill, open in a terminal, copy)
+//!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
@@ -218,6 +218,8 @@ pub enum ListKey {
     New,
     /// The menu of the session under the cursor.
     Menu,
+    /// The list of alerts.
+    Alerts,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -233,6 +235,7 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('n') if !ev.repeat => Some(ListKey::NextWaiting),
         Key::Char('c') if !ev.repeat => Some(ListKey::New),
         Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
+        Key::Char('a') if !ev.repeat => Some(ListKey::Alerts),
         _ => None,
     }
 }

@@ -196,7 +196,7 @@ pub struct Panel {
 }
 
 impl Panel {
-    fn new(cols: usize) -> Panel {
+    pub(crate) fn new(cols: usize) -> Panel {
         Panel {
             cols,
             lines: 0,
@@ -205,7 +205,14 @@ impl Panel {
     }
 
     /// Adds `text`, cut to `cols` columns.
-    fn put(&mut self, line: usize, col: usize, cols: usize, text: &str, look: Look) -> &mut Cell {
+    pub(crate) fn put(
+        &mut self,
+        line: usize,
+        col: usize,
+        cols: usize,
+        text: &str,
+        look: Look,
+    ) -> &mut Cell {
         let text: String = fit(text, cols)
             .into_iter()
             .map(|(cluster, _)| cluster)
@@ -277,7 +284,7 @@ impl Panel {
     }
 
     /// The piece under a position in cells that a click means something on.
-    fn target_at(&self, x: f32, y: f32) -> Option<(Target, usize)> {
+    pub(crate) fn target_at(&self, x: f32, y: f32) -> Option<(Target, usize)> {
         if x < 0.0 || y < 0.0 {
             return None;
         }
