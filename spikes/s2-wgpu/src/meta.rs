@@ -22,6 +22,8 @@
 
 use std::time::Duration;
 
+use s2_core::latency::{Event, Log, MetaExtra};
+
 /// Where `meta.hz` came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HzSource {
@@ -97,4 +99,33 @@ pub const NO_UI_ENV: &str = "S2_WGPU_NO_UI";
 /// an empty one, `0` and `false`.
 pub fn ui_enabled(env: Option<&str>) -> bool {
     matches!(env.map(str::trim), None | Some("" | "0" | "false"))
+}
+
+/// The values of the `meta` line that do not come from this module.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fixed<'a> {
+    pub git: &'a str,
+    pub profile: &'a str,
+    pub scale: f64,
+    pub present_mode: &'a str,
+    pub load: &'a str,
+}
+
+/// Writes the `meta` line: the contract's fixed fields, then the two optional ones this
+/// front-end knows — `ui` (false under `S2_WGPU_NO_UI`) and `hz_source`.
+pub fn write(log: &Log, fixed: &Fixed, refresh: &Refresh, ui: bool) {
+    let meta = Event::Meta {
+        app: "wgpu".to_string(),
+        git: fixed.git.to_string(),
+        profile: fixed.profile.to_string(),
+        hz: refresh.hz(),
+        scale: fixed.scale,
+        present_mode: fixed.present_mode.to_string(),
+        load: fixed.load.to_string(),
+    };
+    let extra = MetaExtra {
+        ui: Some(ui),
+        hz_source: Some(refresh.source.as_str().to_string()),
+    };
+    log.meta_with(&meta, &extra);
 }

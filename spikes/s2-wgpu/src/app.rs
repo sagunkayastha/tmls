@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use s2_core::bench::Sampler;
-use s2_core::latency::{Event, Log};
+use s2_core::latency::Log;
 use s2_core::{Pty, now_ns};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -809,23 +809,19 @@ impl Running {
             return;
         }
         self.meta.written = true;
-        log.event(&Event::Meta {
-            app: "wgpu".to_string(),
-            git: env!("S2_GIT").to_string(),
+        let fixed = meta::Fixed {
+            git: env!("S2_GIT"),
             profile: if cfg!(debug_assertions) {
                 "debug"
             } else {
                 "release"
-            }
-            .to_string(),
-            // 0.0: unknown (`hz_source: unknown`).
-            hz: refresh.hz(),
+            },
             scale: self.window.scale_factor(),
-            present_mode: self.meta.present_mode.to_string(),
-            load: self.meta.load.to_string(),
-        });
-        // `s2_core::latency::Event::Meta` has no field for these two; until it has, they are
-        // on stderr only.
+            present_mode: self.meta.present_mode,
+            load: self.meta.load,
+        };
+        meta::write(log, &fixed, &refresh, self.ui.enabled());
+        // The log line is the record; this is for someone watching the terminal.
         eprintln!(
             "s2-wgpu: meta hz {} hz_source {} ui {} (after {} ms)",
             refresh.hz(),

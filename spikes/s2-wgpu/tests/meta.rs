@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use s2_wgpu::meta::{HzSource, META_WAIT, Refresh, refresh, ui_enabled, write_now};
+use s2_core::latency::{Event, Log, MetaExtra};
+use s2_wgpu::meta::{Fixed, HzSource, META_WAIT, Refresh, refresh, ui_enabled, write, write_now};
 
 #[test]
 fn refresh_rate_comes_from_the_windows_monitor_first() {
@@ -113,4 +114,56 @@ fn the_ui_is_on_unless_the_switch_says_otherwise() {
     assert!(!ui_enabled(Some(" 1 ")));
     assert!(!ui_enabled(Some("yes")));
     assert_eq!(s2_wgpu::meta::NO_UI_ENV, "S2_WGPU_NO_UI");
+}
+
+#[test]
+fn the_meta_line_says_whether_the_ui_was_on_and_where_hz_came_from() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("meta_line");
+    let log = Log::create(&dir).unwrap();
+    let fixed = Fixed {
+        git: "abc1234",
+        profile: "release",
+        scale: 1.15,
+        present_mode: "fifo",
+        load: "quiet",
+    };
+    write(&log, &fixed, &refresh(Some(Some(165_000)), &[]), true);
+    write(&log, &fixed, &refresh(None, &[Some(60_000)]), false);
+    write(&log, &fixed, &refresh(None, &[]), false);
+    log.flush();
+    let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        r#"{"ev":"meta","app":"wgpu","git":"abc1234","profile":"release","hz":165.0,"scale":1.15,"present_mode":"fifo","load":"quiet","ui":true,"hz_source":"current_monitor"}"#
+    );
+    let expected = [
+        (165.0, true, "current_monitor"),
+        (60.0, false, "only_monitor"),
+        (0.0, false, "unknown"),
+    ];
+    assert_eq!(lines.len(), expected.len());
+    for (line, (hz, ui, source)) in lines.iter().zip(expected) {
+        // The contract's fixed fields, readable as before…
+        assert_eq!(
+            serde_json::from_str::<Event>(line).unwrap(),
+            Event::Meta {
+                app: "wgpu".to_string(),
+                git: "abc1234".to_string(),
+                profile: "release".to_string(),
+                hz,
+                scale: 1.15,
+                present_mode: "fifo".to_string(),
+                load: "quiet".to_string(),
+            }
+        );
+        // …and both extras, always (this front-end knows both).
+        assert_eq!(
+            serde_json::from_str::<MetaExtra>(line).unwrap(),
+            MetaExtra {
+                ui: Some(ui),
+                hz_source: Some(source.to_string()),
+            }
+        );
+    }
 }
