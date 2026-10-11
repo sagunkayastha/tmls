@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use client_core::listing::SessionKey;
 use client_core::tmux::{
     MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv, new_session_argv,
-    rename_argv, run, valid_session_name,
+    rename_argv, run, running_commands_argv, valid_session_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -228,6 +228,17 @@ fn attach_and_ops_quote_hostile_names() {
 
         let kill = remote(&kill_argv(&key("ph", name), LOCAL), &SSH);
         assert_eq!(words(&kill), v(&["kill-session", "-t", &exact]), "kill {name:?}");
+
+        let running = remote(&running_commands_argv(&key("ph", name), LOCAL), &SSH);
+        assert_eq!(
+            words(&running),
+            v(&["list-panes", "-s", "-t", &exact, "-F", "#{pane_current_command}"]),
+            "running commands of {name:?}"
+        );
+        assert_eq!(
+            running_commands_argv(&key(LOCAL, name), LOCAL),
+            v(&["tmux", "list-panes", "-s", "-t", &exact, "-F", "#{pane_current_command}"])
+        );
 
         let rename = remote(&rename_argv(&key("ph", name), &other, LOCAL), &SSH);
         assert_eq!(words(&rename), v(&["rename-session", "-t", &exact, "--", &other]), "rename {name:?}");

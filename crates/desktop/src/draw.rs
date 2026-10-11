@@ -26,7 +26,8 @@
 //! The quads are two layers of `gfx::grid::Instance`s around the terminal's own:
 //! `[chrome.base, scene.bg, scene.glyphs, scene.overlay, chrome.top]` (`layer_order`) — `base`
 //! is the sidebar, the tab bar and the status line, `top` the notice over the terminal of a tab
-//! whose session ended. `Chrome` caches both: they are rebuilt when `invalidate` was called or
+//! whose session ended and, over everything, the open form or menu (`forms::Panel`, placed by
+//! `Layout::panel_rect`: a form in the middle of the window, a menu at the pointer). `Chrome` caches both: they are rebuilt when `invalidate` was called or
 //! the atlas started a new generation, not on every frame, so a key echo pays nothing for them.
 //! A rebuild sets the text of the rows in view only.
 //!
@@ -41,12 +42,13 @@ use s2_wgpu::gfx::grid::{self, Instance, Scene, clusters, push_text, solid};
 use s2_wgpu::ui::draw::fit;
 pub use s2_wgpu::ui::layout::Rect;
 
+use crate::forms::{Cell, Look, Panel, Stop, Target};
 use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
-    ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, LEGEND, OFFLINE, PIN,
-    PIN_RGB, SIDEBAR_COLS, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
-    tool_letter,
+    ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
+    OFFLINE, PIN, PIN_RGB, SIDEBAR_COLS, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
+    mark_rgb, tool_letter,
 };
 
 /// What a tab whose session ended shows over its last screen.
@@ -277,6 +279,32 @@ impl Layout {
         }
     }
 
+    /// Where a panel of `cols` x `lines` cells goes: in the middle of the window, or with its
+    /// corner at the pixel `at` — left of or above it where the window ends too soon. Never
+    /// past the window's top-left corner.
+    pub fn panel_rect(&self, cols: usize, lines: usize, at: Option<(u32, u32)>) -> Rect {
+        let (w, h) = (cols as f32 * self.cell.0, lines as f32 * self.cell.1);
+        let place = |at: Option<f32>, size: f32, limit: f32| {
+            let at = match at {
+                Some(at) if at + size > limit => at - size,
+                Some(at) => at,
+                None => (limit - size) / 2.0,
+            };
+            at.floor().max(0.0)
+        };
+        Rect {
+            x: place(at.map(|at| at.0 as f32), w, self.window.0),
+            y: place(at.map(|at| at.1 as f32), h, self.window.1),
+            w,
+            h,
+        }
+    }
+
+    /// A window pixel in cells from the corner of the panel at `rect` (`Form::click`).
+    pub fn panel_cell(&self, rect: Rect, x: f32, y: f32) -> (f32, f32) {
+        ((x - rect.x) / self.cell.0, (y - rect.y) / self.cell.1)
+    }
+
     /// Whether a click at this column of a host's header is on its `+`.
     pub fn on_add(&self, col: usize) -> bool {
         col + ADD_COLS >= self.list_cols
@@ -349,6 +377,8 @@ pub struct View {
     pub status: String,
     /// Shown centred over the terminal (`ENDED_NOTICE`, or that no session is open).
     pub notice: Option<String>,
+    /// The open form or menu, and the window pixel a menu was opened at.
+    pub panel: Option<(Panel, Option<(u32, u32)>)>,
 }
 
 impl View {
@@ -637,6 +667,7 @@ impl Chrome {
             status_line(&mut p, view, layout, theme);
             p.out = &mut self.top;
             notice(&mut p, view, layout, theme);
+            panel(&mut p, view, layout, theme);
             if atlas.generation() == generation {
                 break;
             }
@@ -850,6 +881,102 @@ fn notice(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         used,
         theme.notice_fg,
     );
+}
+
+/// The open form or menu: a bordered box over everything, its pieces on the cell grid.
+fn panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
+    let Some((panel, at)) = &view.panel else {
+        return;
+    };
+    let r = l.panel_rect(panel.cols, panel.lines, *at);
+    let line = l.separator.w.max(1.0);
+    // tmls: `border: round $accent; background: $panel`.
+    p.rect(
+        Rect {
+            x: r.x - line,
+            y: r.y - line,
+            w: r.w + 2.0 * line,
+            h: r.h + 2.0 * line,
+        },
+        CURSOR_RGB,
+    );
+    p.rect(r, theme.panel_bg);
+    for cell in &panel.cells {
+        panel_cell(p, cell, r, line, theme);
+    }
+}
+
+/// One piece of a panel whose corner is at `r`.
+fn panel_cell(p: &mut Painter, cell: &Cell, r: Rect, line: f32, theme: &Theme) {
+    let (cw, ch) = (p.m.width, p.m.height);
+    let at = Rect {
+        x: r.x + cell.col as f32 * cw,
+        y: r.y + cell.line as f32 * ch,
+        w: cell.cols as f32 * cw,
+        h: ch,
+    };
+    let plain = FontStyle::default();
+    let bold = FontStyle {
+        bold: true,
+        ..plain
+    };
+    let (bg, fg, style) = match cell.look {
+        Look::Title => (None, CURSOR_RGB, bold),
+        Look::Label => (None, theme.muted_fg, plain),
+        Look::Text => (None, theme.sidebar_fg, plain),
+        Look::Dim => (None, theme.dim_fg, plain),
+        Look::Error => (None, DANGER_RGB, plain),
+        Look::Field { .. } => (Some(theme.field_bg), theme.sidebar_fg, plain),
+        Look::Choice { focused: true, .. } => (Some(theme.row_selected_bg), CURSOR_RGB, bold),
+        Look::Choice { on: true, .. } => (None, theme.sidebar_fg, plain),
+        Look::Choice { .. } => (None, theme.muted_fg, plain),
+        Look::Button { focused, danger } => {
+            let cancel = cell.target == Some(Target::Stop(Stop::Cancel));
+            let colour = match (cancel, danger) {
+                (true, _) => theme.sidebar_fg,
+                (false, true) => DANGER_RGB,
+                (false, false) => ADD_RGB,
+            };
+            match focused {
+                true => (Some(colour), theme.sidebar_bg, bold),
+                false => (Some(theme.button_bg), colour, plain),
+            }
+        }
+        Look::Item { hovered, danger } => {
+            let fg = if danger { DANGER_RGB } else { theme.sidebar_fg };
+            (hovered.then_some(theme.row_selected_bg), fg, plain)
+        }
+    };
+    if let Some(bg) = bg {
+        p.rect(at, bg);
+    }
+    if let Some((from, to)) = cell.selection {
+        let from = from.min(cell.cols);
+        let selected = Rect {
+            x: at.x + from as f32 * cw,
+            w: to.min(cell.cols).saturating_sub(from) as f32 * cw,
+            ..at
+        };
+        p.rect(selected, theme.row_selected_bg);
+    }
+    if let Look::Field { focused: true } = cell.look {
+        // The focused field is underlined in the accent colour.
+        let under = Rect {
+            y: at.bottom() - line,
+            h: line,
+            ..at
+        };
+        p.rect(under, CURSOR_RGB);
+    }
+    p.styled(&cell.text, at.x, at.y, cell.cols, fg, style);
+    if let Some(col) = cell.caret {
+        let caret = Rect {
+            x: at.x + col.min(cell.cols) as f32 * cw,
+            w: (2.0 * line).min(cw),
+            ..at
+        };
+        p.rect(caret, theme.sidebar_fg);
+    }
 }
 
 /// The draw order for `Renderer::prepare`: the chrome under the terminal's three layers, the

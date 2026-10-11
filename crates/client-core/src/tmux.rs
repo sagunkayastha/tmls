@@ -189,8 +189,20 @@ pub fn kill_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     }
 }
 
+/// Prints the command each pane of the session runs, one per line (shells included): what a
+/// kill would end.
+pub fn running_commands_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+    let target = format!("={}", key.name);
+    let format = "#{pane_current_command}";
+    if key.host == local_name {
+        strings(&["tmux", "list-panes", "-s", "-t", &target, "-F", format])
+    } else {
+        ssh(&key.host, format!("tmux list-panes -s -t {} -F {}", quote(&target), quote(format)))
+    }
+}
+
 /// tmls's name for a session in `folder` when git knows nothing: the folder's own name.
-fn folder_name(folder: &str) -> &str {
+pub fn folder_name(folder: &str) -> &str {
     if folder.trim_matches(['~', '/']).is_empty() {
         return "home";
     }

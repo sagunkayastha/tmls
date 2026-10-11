@@ -1,12 +1,14 @@
 //! Keys typed while the focus is not on the terminal reach no PTY and no latency log.
 //!
 //! Through `keys::dispatch`, the one place the window sends a key to a session, against real
-//! PTYs (`cat > file`); no window.
+//! PTYs (`cat > file`); no window. With the focus in a form the keys are given to a real
+//! new-session form, as the window does.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use client_core::SessionKey;
+use desktop::forms::{Form, FormResult, Request};
 use desktop::keys::{self, Focus, RepeatGate, Route};
 use desktop::tabs::Tabs;
 use s2_core::latency::Log;
@@ -123,6 +125,39 @@ fn sidebar_and_form_keys_reach_no_pty() {
             );
         }
     }
+
+    // A real form has the keys: a session name typed into it, and the Enter that creates,
+    // arrive in the form — and in neither session behind it.
+    for front in [1, 0] {
+        tabs.select(front);
+        let mut form = Form::new_session(&["here".to_string()], "here", &[]);
+        let tab = KeyEvent {
+            key: Key::Named(Named::Tab),
+            mods: Mods::default(),
+            text: None,
+            repeat: false,
+            pressed: true,
+        };
+        let mut last = FormResult::Pending;
+        for ev in [tab.clone(), tab].into_iter().chain(line_keys()) {
+            let (route, back) = keys::dispatch(now_ns(), ev, Focus::Form, &mut gate, &mut tabs);
+            assert_eq!(route, Route::Form);
+            last = form.key(&back.expect("a key for the form comes back"));
+        }
+        let FormResult::Submit(Request::New(asked)) = last else {
+            panic!("Enter in the name field creates: {last:?}");
+        };
+        assert_eq!(
+            asked.name, LINE,
+            "the form got every key, tab {front} in front"
+        );
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        read(&file_a) + &read(&file_b),
+        "",
+        "nothing was typed behind the form"
+    );
     assert_eq!(
         key_lines(&log, &log_path),
         0,

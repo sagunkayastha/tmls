@@ -36,6 +36,9 @@ pub const CURRENT_RGB: [u8; 3] = [0xff, 0x8c, 0x00];
 pub const ADD_RGB: [u8; 3] = [0x4e, 0xbf, 0x71];
 /// The Copy button (tmls line 534: `variant="primary"`, `$primary`).
 pub const COPY_RGB: [u8; 3] = [0x01, 0x78, 0xd4];
+/// What is wrong or ends something: a form's error line, the Kill button (tmls `$error`;
+/// the colour of the error mark).
+pub const DANGER_RGB: [u8; 3] = [0xe0, 0x6c, 0x75];
 /// The mark after a pinned session's name and its colour (tmls line 64: `PIN`).
 pub const PIN: &str = "★";
 pub const PIN_RGB: [u8; 3] = [0xe5, 0xc0, 0x7b];
@@ -86,6 +89,11 @@ pub struct Theme {
     /// Background of the "session ended" notice over the terminal.
     pub notice_bg: [u8; 3],
     pub notice_fg: [u8; 3],
+    /// Behind a form or a menu (tmls `$panel`), behind a text field in it, and behind a button
+    /// that does not have the focus.
+    pub panel_bg: [u8; 3],
+    pub field_bg: [u8; 3],
+    pub button_bg: [u8; 3],
     /// Space above and below the text of a row, the tab bar and the status line.
     pub inset: f32,
     /// Thickness of lines.
@@ -116,6 +124,9 @@ impl Default for Theme {
             tab_active_fg: [0xf0, 0xf0, 0xf4],
             notice_bg: [0x2a, 0x2c, 0x38],
             notice_fg: [0xf0, 0xf0, 0xf4],
+            panel_bg: [0x24, 0x26, 0x30],
+            field_bg: [0x12, 0x12, 0x12],
+            button_bg: [0x34, 0x36, 0x42],
             inset: 3.0,
             border: 1.0,
             host_bar: 3.0,

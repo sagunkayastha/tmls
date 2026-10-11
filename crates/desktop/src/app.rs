@@ -8,11 +8,18 @@
 //! - the time stamp of an event is the first thing taken in `window_event`;
 //! - `Marks::begin_redraw` is the first thing done in `redraw`;
 //! - frames are taken only by `Tabs::take_frames`, which passes each to the tab's scene;
-//! - a key reaches a session only through `keys::route` → `Route::Terminal`, so keys typed
-//!   while the list has the focus, or at a tab whose session ended, reach no PTY and no log.
+//! - a key reaches a session only through `keys::dispatch` → `Route::Terminal`, so keys typed
+//!   while the list, a form or a menu has the focus, or at a tab whose session ended, reach
+//!   no PTY and no log.
 //!
 //! List path: a polling thread delivers a host's listing → `UserEvent::Snapshot` →
 //! `Sidebar::deliver` (which marks what finished unwatched) → a redraw that rebuilds the chrome.
+//!
+//! Request path: a form's `Request` (new, rename, kill) runs `forms::perform` on a thread of
+//! its own → `UserEvent::Done` → the status line says what happened, the hosts are listed
+//! again at once and the tab is opened, reopened or closed. The name a new session's folder
+//! gives (`UserEvent::Derived`) and what runs in a session about to be killed
+//! (`UserEvent::Running`) come the same way.
 //!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
@@ -28,11 +35,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use client_core::{Config, HostSnapshot, Poller, Seen, SessionKey, default_color, tmux};
+use client_core::{Config, HostSnapshot, Poller, Seen, SessionKey, default_color};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -51,6 +58,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
+use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
@@ -64,6 +72,10 @@ const WORK_DONE_POLL: Duration = Duration::from_micros(500);
 /// offline.
 const POLL_PERIOD: Duration = Duration::from_secs(5);
 const POLL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the new-session form waits after a change of the folder before it asks the host
+/// for the name (tmls `create_form.py`: 0.25 s).
+const LOOKUP_DELAY: Duration = Duration::from_millis(250);
 
 /// What the command line asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -80,6 +92,24 @@ pub enum UserEvent {
     Wake,
     /// A host's listing changed.
     Snapshot(HostSnapshot),
+    /// A form's request ran; the line for the status line, or why it failed.
+    Done(Request, Result<String, String>),
+    /// The name a new session in `folder` on `host` gets by default.
+    Derived {
+        host: String,
+        folder: String,
+        name: String,
+    },
+    /// What runs in a session the user is asked about killing.
+    Running(SessionKey, Vec<String>),
+}
+
+/// What is open over the window and has the keys. There is at most one, so the size of a
+/// form does not matter.
+#[allow(clippy::large_enum_variant)]
+enum Modal {
+    Menu(RowMenu),
+    Form(Form),
 }
 
 /// Runs the app until the window is closed or the user quits. `config_dir` is `~/.config/tmls`.
@@ -133,6 +163,19 @@ impl ApplicationHandler<UserEvent> for App {
                 running.window.request_redraw();
             }
             UserEvent::Snapshot(snapshot) => running.snapshot(snapshot),
+            UserEvent::Done(request, result) => running.done(request, result),
+            UserEvent::Derived { host, folder, name } => {
+                if let Some((Modal::Form(Form::New(new)), _)) = &mut running.modal {
+                    new.derived(&host, &folder, &name);
+                    running.invalidate();
+                }
+            }
+            UserEvent::Running(key, commands) => {
+                if let Some((Modal::Form(form), _)) = &mut running.modal {
+                    form.set_running(&key, commands);
+                    running.invalidate();
+                }
+            }
         }
     }
 
@@ -262,8 +305,21 @@ struct Running {
     seen: Seen,
     /// The last thing that went wrong (a tab that could not be opened), for the status line.
     problem: Option<String>,
-    /// Keeps the polling threads alive.
-    _poller: Poller,
+    /// What a request did ("created x on host"), for the status line until the next key.
+    note: Option<String>,
+    /// The open form or menu, and the window pixel a menu was opened at.
+    modal: Option<(Modal, Option<(u32, u32)>)>,
+    /// What had the keys before `modal` opened.
+    focus_before: Focus,
+    /// A session just made or renamed here that the listing does not have yet: the list's
+    /// cursor goes to it when it is listed, unless the user moved the cursor first.
+    select_when_listed: Option<SessionKey>,
+    /// Counts the new-session form's lookups: an answer is asked for only by the latest.
+    lookups: Arc<AtomicU64>,
+    /// For the threads that run requests.
+    proxy: EventLoopProxy<UserEvent>,
+    /// The polling threads.
+    poller: Poller,
 
     log: Option<Log>,
     marks: Option<Marks<Log>>,
@@ -371,6 +427,7 @@ impl Running {
         let mut tabs = Tabs::new(&cfg.local_name);
         let wake_pending = Arc::new(AtomicBool::new(false));
         let (pending, wake_proxy) = (wake_pending.clone(), proxy.clone());
+        let poll_proxy = proxy.clone();
         tabs.set_waker(Arc::new(move || {
             if !pending.swap(true, Ordering::SeqCst) {
                 let _ = wake_proxy.send_event(UserEvent::Wake);
@@ -384,7 +441,7 @@ impl Running {
             POLL_PERIOD,
             POLL_TIMEOUT,
             Box::new(move |snapshot| {
-                let _ = proxy.send_event(UserEvent::Snapshot(snapshot));
+                let _ = poll_proxy.send_event(UserEvent::Snapshot(snapshot));
             }),
         );
 
@@ -418,7 +475,13 @@ impl Running {
             sidebar,
             seen: Seen::new(),
             problem: None,
-            _poller: poller,
+            note: None,
+            modal: None,
+            focus_before: Focus::Sidebar,
+            select_when_listed: None,
+            lookups: Arc::new(AtomicU64::new(0)),
+            proxy,
+            poller,
             log,
             clipboard: None,
             mods: ModifiersState::empty(),
@@ -484,11 +547,21 @@ impl Running {
     fn snapshot(&mut self, snapshot: HostSnapshot) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         self.sidebar.deliver(&mut self.seen, snapshot, front);
+        if let Some(key) = &self.select_when_listed
+            && self.sidebar.status(key).is_some()
+        {
+            self.sidebar.select_key(key);
+            self.select_when_listed = None;
+        }
         self.invalidate();
     }
 
     /// What `chrome` draws besides the session list, from the state as it is now.
-    fn build_view(&self) -> View {
+    fn build_view(&mut self) -> View {
+        let panel = self.modal.as_mut().map(|(modal, at)| match modal {
+            Modal::Menu(menu) => (menu.panel(), *at),
+            Modal::Form(form) => (form.panel(), *at),
+        });
         let status_of = |key: &SessionKey| {
             let status = self.sidebar.status(key)?;
             Some((status.mark(), mark_rgb(status)))
@@ -507,8 +580,8 @@ impl Running {
             .collect();
         let active = self.tabs.active();
         let ended = matches!(self.tabs.active_state(), Some(TabState::Ended { .. }));
-        let status = match (&self.problem, active) {
-            (Some(problem), _) => problem.clone(),
+        let status = match (self.problem.as_ref().or(self.note.as_ref()), active) {
+            (Some(said), _) => said.clone(),
             (None, Some(index)) => {
                 let key = self.tabs.key(index);
                 let state = if ended { " · ended" } else { "" };
@@ -522,6 +595,7 @@ impl Running {
             active,
             status,
             notice: ended.then(|| ENDED_NOTICE.to_string()),
+            panel,
         }
     }
 
@@ -534,8 +608,15 @@ impl Running {
             pressed,
             event.repeat,
         );
+        if pressed && self.note.take().is_some() {
+            self.invalidate();
+        }
         let ev = match action {
             Action::Send(ev) => ev,
+            Action::Paste if self.focus == Focus::Form => {
+                self.paste_into_form();
+                return After::Stay;
+            }
             Action::Copy | Action::Paste if self.focus != Focus::Terminal => return After::Stay,
             Action::Copy => {
                 self.copy();
@@ -557,9 +638,259 @@ impl Running {
                     self.list_key(key);
                 }
             }
-            Route::Terminal | Route::Form | Route::Drop => {}
+            Route::Form => {
+                if let Some(ev) = ev {
+                    self.form_key(&ev);
+                }
+            }
+            Route::Terminal | Route::Drop => {}
         }
         After::Stay
+    }
+
+    /// Opens a form or a menu over the window and gives it the keys.
+    fn open_modal(&mut self, modal: Modal, at: Option<(u32, u32)>) {
+        if self.modal.is_none() {
+            self.focus_before = self.focus;
+        }
+        self.modal = Some((modal, at));
+        self.set_focus(Focus::Form);
+    }
+
+    /// Closes the form or menu; the keys go back to where they were.
+    fn close_modal(&mut self) {
+        if self.modal.take().is_none() {
+            return;
+        }
+        let back = match self.focus_before {
+            Focus::Terminal if !self.tabs.is_empty() => Focus::Terminal,
+            _ => Focus::Sidebar,
+        };
+        self.set_focus(back);
+    }
+
+    /// The new-session form for `host`.
+    fn new_session_form(&mut self, host: &str) {
+        let form = Form::new_session(&self.cfg.hosts, host, &self.cfg.presets);
+        self.open_modal(Modal::Form(form), None);
+    }
+
+    /// A key for the open form or menu.
+    fn form_key(&mut self, ev: &s2_core::KeyEvent) {
+        match &mut self.modal {
+            Some((Modal::Menu(menu), _)) => {
+                let result = menu.key(ev);
+                self.menu_result(result);
+            }
+            Some((Modal::Form(form), _)) => {
+                let result = form.key(ev);
+                self.form_result(result);
+            }
+            None => {}
+        }
+        self.invalidate();
+    }
+
+    fn menu_result(&mut self, result: MenuResult) {
+        let Some((Modal::Menu(menu), _)) = &self.modal else {
+            return;
+        };
+        let key = menu.key.clone();
+        match result {
+            MenuResult::Pending => {}
+            MenuResult::Closed => self.close_modal(),
+            MenuResult::Pick(MenuItem::Rename) => {
+                self.modal = Some((Modal::Form(Form::rename(key)), None));
+            }
+            MenuResult::Pick(MenuItem::Kill) => {
+                // The question is asked at once; what runs in the session is added to it
+                // when the host has said.
+                self.modal = Some((Modal::Form(Form::confirm_kill(key.clone())), None));
+                let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+                std::thread::spawn(move || {
+                    let commands = forms::running_commands(&key, &local, &forms::run_tmux);
+                    let _ = proxy.send_event(UserEvent::Running(key, commands));
+                });
+            }
+            MenuResult::Pick(MenuItem::OpenTerminal) => {
+                self.close_modal();
+                let terminal = std::env::var("TERMINAL").ok();
+                let said = forms::open_terminal(
+                    &key,
+                    &self.cfg.local_name,
+                    terminal.as_deref(),
+                    &forms::on_path,
+                    &mut forms::spawn_detached,
+                );
+                self.say(said);
+            }
+            MenuResult::Pick(MenuItem::CopyAttach) => {
+                self.close_modal();
+                self.copy_attach(&key);
+            }
+        }
+        self.invalidate();
+    }
+
+    fn form_result(&mut self, result: FormResult) {
+        match result {
+            FormResult::Pending => self.lookup_name(),
+            FormResult::Cancelled => self.close_modal(),
+            FormResult::Submit(mut request) => {
+                self.close_modal();
+                if let Request::New(new) = &mut request {
+                    // At the view's size, so what starts in it lays out for this window.
+                    new.size = Some(self.layout.grid);
+                }
+                let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+                std::thread::spawn(move || {
+                    let result = forms::perform(&request, &local, &forms::run_tmux);
+                    let _ = proxy.send_event(UserEvent::Done(request, result));
+                });
+            }
+        }
+        self.invalidate();
+    }
+
+    /// Asks the host for the name the new-session form's folder gives, a moment after the
+    /// last change; an older question that has not been asked yet is dropped.
+    fn lookup_name(&mut self) {
+        let Some((Modal::Form(Form::New(new)), _)) = &mut self.modal else {
+            return;
+        };
+        let Some((host, folder)) = new.lookup() else {
+            return;
+        };
+        let lookups = self.lookups.clone();
+        let mine = lookups.fetch_add(1, Ordering::SeqCst) + 1;
+        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(LOOKUP_DELAY);
+            if lookups.load(Ordering::SeqCst) != mine {
+                return;
+            }
+            if let Some(name) = forms::derived_name(&host, &folder, &local, &forms::run_tmux) {
+                let _ = proxy.send_event(UserEvent::Derived { host, folder, name });
+            }
+        });
+    }
+
+    /// A request ran: says so in the status line, lists the hosts again, and opens the new
+    /// session's tab, reopens a renamed session's tab under the new name, or closes a killed
+    /// session's tab.
+    fn done(&mut self, request: Request, result: Result<String, String>) {
+        let ok = result.is_ok();
+        self.say(result);
+        if !ok {
+            return;
+        }
+        self.poller.refresh_now();
+        match request {
+            Request::New(new) => {
+                let key = SessionKey {
+                    host: new.host,
+                    name: new.name,
+                };
+                self.select_when_listed = Some(key.clone());
+                // A form or menu opened since then keeps the keys.
+                if self.modal.is_none() {
+                    self.open(&key);
+                }
+            }
+            Request::Rename(old, name) => {
+                if let Some(index) = self.tabs.index_of(&old) {
+                    let front = self.tabs.active() == Some(index);
+                    self.close_tab(index);
+                    let key = SessionKey {
+                        host: old.host,
+                        name,
+                    };
+                    let back = self.tabs.active();
+                    self.select_when_listed = Some(key.clone());
+                    if self.modal.is_none() {
+                        self.open(&key);
+                        // A tab that was in the back stays there.
+                        if let (false, Some(back)) = (front, back) {
+                            self.tabs.select(back);
+                            self.tab_changed();
+                        }
+                    }
+                }
+            }
+            Request::Kill(key) => {
+                if let Some(index) = self.tabs.index_of(&key) {
+                    self.close_tab(index);
+                }
+            }
+        }
+    }
+
+    /// What an action did, for the status line: a line to show until the next key, or what
+    /// went wrong.
+    fn say(&mut self, said: Result<String, String>) {
+        match said {
+            Ok(note) => (self.note, self.problem) = (Some(note), None),
+            Err(problem) => {
+                eprintln!("tmls-rs: {problem}");
+                (self.note, self.problem) = (None, Some(problem));
+            }
+        }
+        self.invalidate();
+    }
+
+    /// Copies the command that attaches `key`.
+    fn copy_attach(&mut self, key: &SessionKey) {
+        let local = self.cfg.local_name.clone();
+        let said = match self.clipboard() {
+            Some(clipboard) => forms::copy_attach(key, &local, &mut |text| {
+                clipboard.set_text(text).map_err(|e| e.to_string())
+            }),
+            None => Err("copy failed: no clipboard".to_string()),
+        };
+        self.say(said);
+    }
+
+    /// Ctrl+Shift+V in a form: the clipboard's text goes into the focused field.
+    fn paste_into_form(&mut self) {
+        let text = match self.clipboard().map(|clipboard| clipboard.get_text()) {
+            Some(Ok(text)) => text,
+            _ => return,
+        };
+        if let Some((Modal::Form(form), _)) = &mut self.modal {
+            form.paste(&text);
+            self.lookup_name();
+            self.invalidate();
+        }
+    }
+
+    /// A mouse button pressed while a form or menu is open: it is theirs, wherever it lands.
+    fn modal_click(&mut self, button: MouseButton) {
+        let (x, y) = self.pointer;
+        let Some((modal, at)) = &mut self.modal else {
+            return;
+        };
+        match modal {
+            Modal::Menu(menu) => {
+                let panel = menu.panel();
+                let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let (cx, cy) = self.layout.panel_cell(rect, x, y);
+                let result = match button {
+                    MouseButton::Left => menu.click(cx, cy),
+                    _ if panel.contains(cx, cy) => MenuResult::Pending,
+                    _ => MenuResult::Closed,
+                };
+                self.menu_result(result);
+            }
+            Modal::Form(form) if button == MouseButton::Left => {
+                let panel = form.panel();
+                let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let (cx, cy) = self.layout.panel_cell(rect, x, y);
+                let result = form.click(cx, cy);
+                self.form_result(result);
+            }
+            Modal::Form(_) => {}
+        }
+        self.invalidate();
     }
 
     /// One of the window's own bindings (`Quit` is the event loop's).
@@ -608,6 +939,7 @@ impl Running {
     }
 
     fn list_key(&mut self, key: ListKey) {
+        self.select_when_listed = None;
         match key {
             ListKey::Up => self.sidebar.move_by(-1),
             ListKey::Down => self.sidebar.move_by(1),
@@ -618,6 +950,12 @@ impl Running {
             }
             ListKey::Pin => self.toggle_pin(),
             ListKey::NextWaiting => self.next_waiting(),
+            ListKey::New => self.foot_button(Button::New),
+            ListKey::Menu => {
+                if let Some(key) = self.sidebar.selected().cloned() {
+                    self.open_modal(Modal::Menu(RowMenu::new(key)), None);
+                }
+            }
         }
         self.invalidate();
     }
@@ -626,9 +964,12 @@ impl Running {
     fn act(&mut self, action: sidebar::Action) {
         match action {
             sidebar::Action::Attach(key) => self.open(&key),
-            // The new-session form and the session menu are not built yet (Tasks 5 and 6 of
-            // the plan); the list already asks for them.
-            sidebar::Action::NewSessionOn(_) | sidebar::Action::Menu(_) => {}
+            sidebar::Action::NewSessionOn(host) => self.new_session_form(&host),
+            sidebar::Action::Menu(key) => {
+                let (x, y) = self.pointer;
+                let at = (x.max(0.0) as u32, y.max(0.0) as u32);
+                self.open_modal(Modal::Menu(RowMenu::new(key)), Some(at));
+            }
         }
     }
 
@@ -638,6 +979,7 @@ impl Running {
         let Some(row) = self.sidebar.row_at(line, self.layout.list_lines) else {
             return;
         };
+        self.select_when_listed = None;
         let header = matches!(self.sidebar.rows()[row], sidebar::Row::Host { .. });
         let action = match button {
             MouseButton::Left if header && !self.layout.on_add(col) => None,
@@ -663,14 +1005,7 @@ impl Running {
         let selected = self.sidebar.selected().cloned();
         match (button, selected) {
             (Button::Open, Some(key)) => self.open(&key),
-            (Button::Copy, Some(key)) => {
-                let text = tmux::attach_text(&key, &self.cfg.local_name);
-                if let Some(clipboard) = self.clipboard()
-                    && let Err(e) = clipboard.set_text(text)
-                {
-                    eprintln!("tmls-rs: copy failed: {e}");
-                }
-            }
+            (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
                 let host = selected.map(|key| key.host);
                 if let Some(host) = host.or_else(|| self.cfg.hosts.first().cloned()) {
@@ -717,13 +1052,18 @@ impl Running {
             .active()
             .map(|active| self.tabs.key(active).clone());
         self.tabs.close(index);
+        // One client fewer on that session: the row's count is read again now.
+        self.poller.refresh_now();
         let now = self.tabs.active().map(|active| self.tabs.key(active));
         let front_changed = now != front.as_ref();
         let focus = keys::focus_after_close(self.focus, front_changed, self.tabs.is_empty());
         if front_changed {
             self.tab_changed();
         }
-        if focus != self.focus {
+        if self.modal.is_some() {
+            // The open form keeps the keys; they go there when it closes.
+            self.focus_before = focus;
+        } else if focus != self.focus {
             self.set_focus(focus);
         }
         self.invalidate();
@@ -746,7 +1086,9 @@ impl Running {
             }
             None => self.window.set_title(TITLE),
         }
-        if !self.tabs.is_empty() {
+        if self.modal.is_some() {
+            self.focus_before = Focus::Terminal;
+        } else if !self.tabs.is_empty() {
             self.set_focus(Focus::Terminal);
         }
         self.invalidate();
@@ -837,6 +1179,14 @@ impl Running {
 
     fn pointer_moved(&mut self, position: PhysicalPosition<f64>) {
         self.pointer = (position.x as f32, position.y as f32);
+        if let Some((Modal::Menu(menu), at)) = &mut self.modal {
+            let panel = menu.panel();
+            let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+            let (x, y) = self.layout.panel_cell(rect, self.pointer.0, self.pointer.1);
+            if menu.hover(x, y) {
+                self.invalidate();
+            }
+        }
         let Some(active) = self.tabs.active() else {
             return;
         };
@@ -861,6 +1211,9 @@ impl Running {
                 self.tabs.session_mut(active).select_end();
             }
             return;
+        }
+        if self.modal.is_some() {
+            return self.modal_click(button);
         }
         let hit = self.layout.hit(x, y, self.tabs.len());
         if let Hit::List { line, col } = hit {
@@ -897,6 +1250,9 @@ impl Running {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
         let (x, y) = self.pointer;
+        if self.modal.is_some() {
+            return;
+        }
         match self.layout.hit(x, y, self.tabs.len()) {
             Hit::Terminal => {
                 if let Some(active) = self.tabs.active() {
@@ -919,7 +1275,11 @@ impl Running {
             marks.begin_redraw();
         }
         // A tab whose command ended looks different in the tab bar, in front or not.
-        self.dirty |= self.tabs.state_changes();
+        if self.tabs.state_changes() {
+            self.dirty = true;
+            // A session ended (killed, exited, ssh dropped): the list hears of it now.
+            self.poller.refresh_now();
+        }
         let origin = (self.layout.terminal.x, self.layout.terminal.y);
         let new_frame = self
             .tabs

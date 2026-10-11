@@ -106,6 +106,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         active,
         status: String::new(),
         notice: None,
+        panel: None,
     }
 }
 

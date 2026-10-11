@@ -285,6 +285,10 @@ fn list_keys() {
     // Pin and "next waiting" act once per press.
     assert_eq!(list_key(&ch('p', NONE)), Some(ListKey::Pin));
     assert_eq!(list_key(&ch('n', NONE)), Some(ListKey::NextWaiting));
+    assert_eq!(list_key(&ch('c', NONE)), Some(ListKey::New));
+    assert_eq!(list_key(&ch('m', NONE)), Some(ListKey::Menu));
+    assert_eq!(list_key(&repeat(&ch('c', NONE))), None);
+    assert_eq!(list_key(&repeat(&ch('m', NONE))), None);
     assert_eq!(list_key(&repeat(&ch('p', NONE))), None);
     assert_eq!(list_key(&repeat(&ch('n', NONE))), None);
     assert_eq!(list_key(&ch('P', SHIFT)), None);

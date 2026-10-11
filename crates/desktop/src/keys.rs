@@ -4,7 +4,8 @@
 //! - Alt+Shift+Right / Left — next / previous tab (repeats while held)
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
-//!   next session that waits
+//!   next session that waits, c opens the new-session form for the cursor's host, m the
+//!   cursor's session menu (rename, kill, open in a terminal, copy)
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
@@ -15,7 +16,9 @@
 //!
 //! Everything else belongs to whatever has the keyboard focus (`route`): with the terminal
 //! focused and a live tab it goes to that tab's session unchanged — Tab, Esc, Ctrl+C, Ctrl+Tab
-//! and Alt+letters included. A key for the list or a form reaches no session. A key for a tab
+//! and Alt+letters included. A key for the list or a form reaches no session. While a form or
+//! a session's menu is open the focus is `Focus::Form` and every key but quit and zoom is the
+//! form's (`forms::Form::key`): typing a session's name types nothing into the terminal behind. A key for a tab
 //! whose session ended, or with no tab open, is dropped: it would get a `key` line in the
 //! latency log and never a frame.
 
@@ -188,6 +191,10 @@ pub enum ListKey {
     Open,
     Pin,
     NextWaiting,
+    /// The new-session form, for the host of the session under the cursor.
+    New,
+    /// The menu of the session under the cursor.
+    Menu,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -201,6 +208,8 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Named(Named::Enter) if !ev.repeat => Some(ListKey::Open),
         Key::Char('p') if !ev.repeat => Some(ListKey::Pin),
         Key::Char('n') if !ev.repeat => Some(ListKey::NextWaiting),
+        Key::Char('c') if !ev.repeat => Some(ListKey::New),
+        Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
         _ => None,
     }
 }

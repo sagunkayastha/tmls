@@ -155,3 +155,32 @@ fn a_low_window_has_no_legend_and_no_buttons() {
     assert_eq!(l.hit(15.0, 150.0, 0), Hit::List { line: 7, col: 1 });
     assert_eq!(l.hit(15.0, 165.0, 0), Hit::Sidebar);
 }
+
+#[test]
+fn a_form_is_in_the_middle_and_a_menu_at_the_pointer_inside_the_window() {
+    let l = at(1280, 720);
+    // 60 x 10 cells of 10 x 20 px.
+    let form = l.panel_rect(60, 10, None);
+    assert_eq!(
+        (form.x, form.y, form.w, form.h),
+        (340.0, 260.0, 600.0, 200.0)
+    );
+    let menu = l.panel_rect(24, 5, Some((100, 50)));
+    assert_eq!((menu.x, menu.y), (100.0, 50.0));
+    // Too close to the right and bottom edges: left of and above the pointer.
+    let menu = l.panel_rect(24, 5, Some((1200, 700)));
+    assert_eq!((menu.x, menu.y), (960.0, 600.0));
+    assert!(menu.right() <= 1280.0 && menu.bottom() <= 720.0);
+    // A window smaller than the panel: never past the top-left corner.
+    let small = at(300, 120);
+    let form = small.panel_rect(60, 10, None);
+    assert_eq!((form.x, form.y), (0.0, 0.0));
+    let menu = small.panel_rect(24, 5, Some((20, 10)));
+    assert!(menu.x >= 0.0 && menu.y >= 0.0);
+
+    // A pixel in cells from the panel's corner, as `Form::click` takes it.
+    let form = l.panel_rect(60, 10, None);
+    assert_eq!(l.panel_cell(form, 340.0, 260.0), (0.0, 0.0));
+    assert_eq!(l.panel_cell(form, 345.0, 290.0), (0.5, 1.5));
+    assert!(l.panel_cell(form, 330.0, 250.0).0 < 0.0);
+}
