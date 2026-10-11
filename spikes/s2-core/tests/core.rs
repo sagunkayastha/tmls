@@ -1,0 +1,241 @@
+use std::io::Read;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use libghostty_vt::terminal::{Options, Terminal};
+use s2_core::keys::{paste_bytes, Encoder};
+use s2_core::latency::{self, Event, Log, Pcts};
+use s2_core::{now_ns, Emu, Frame, InputMsg, Key, KeyEvent, Mods, Named, Pty};
+
+const WAIT: Duration = Duration::from_secs(5);
+
+fn cat(cols: u16, rows: u16) -> Pty {
+    Pty::spawn(&["cat".to_string()], cols, rows).expect("spawn cat")
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Takes frames until `done` accepts one; returns it and how many frames were taken.
+fn frames_until(emu: &Emu, done: impl Fn(&Frame) -> bool) -> (Frame, usize) {
+    let start = Instant::now();
+    let mut taken = 0;
+    loop {
+        if let Some(frame) = emu.frames.take() {
+            taken += 1;
+            if done(&frame) {
+                return (frame, taken);
+            }
+        }
+        assert!(start.elapsed() < WAIT, "no matching frame within {WAIT:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn wait_for(what: &str, cond: impl Fn() -> bool) {
+    let start = Instant::now();
+    while !cond() {
+        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn press(key: Key, mods: Mods, text: Option<&str>) -> KeyEvent {
+    KeyEvent { key, mods, text: text.map(str::to_string), repeat: false, pressed: true }
+}
+
+#[test]
+fn pty_echo_roundtrip() {
+    let pty = cat(80, 24);
+    let mut reader = pty.reader().unwrap();
+    pty.writer().write_all(b"hi\n").unwrap();
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 256];
+    let start = Instant::now();
+    // The tty echoes "hi" and cat prints it again.
+    while seen.iter().filter(|&&b| b == b'h').count() < 2 {
+        assert!(start.elapsed() < WAIT, "read back {:?}", String::from_utf8_lossy(&seen));
+        let n = reader.read(&mut buf).unwrap();
+        seen.extend_from_slice(&buf[..n]);
+    }
+    assert!(contains(&seen, b"hi"));
+}
+
+#[test]
+fn emu_frame_after_output() {
+    let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Bytes(b"ok".to_vec(), now_ns())).unwrap();
+    let (frame, _) = frames_until(&emu, |f| f.row_text(0) == "ok");
+    assert_eq!((frame.cols, frame.rows, frame.cells.len()), (80, 24, 80 * 24));
+    assert!(frame.dirty_rows[0]);
+
+    // 100 feeds give at most 100 frames, and the last one holds the final state.
+    for i in 0..100 {
+        emu.input_tx.send(InputMsg::Bytes(format!("\r\nline {i}").into_bytes(), now_ns())).unwrap();
+    }
+    let (last, taken) = frames_until(&emu, |f| f.row_text(23) == "line 99");
+    assert!(taken <= 100, "{taken} frames for 100 feeds");
+    assert_eq!(last.row_text(22), "line 98");
+    let cursor = last.cursor.expect("cursor in viewport");
+    assert_eq!((cursor.col, cursor.row), (7, 23));
+}
+
+#[test]
+fn emu_reports_wide_cells_and_colors() {
+    let emu = Emu::start(cat(20, 4), 20, 4, None).unwrap();
+    emu.input_tx.send(InputMsg::Bytes("\x1b[1;31m你a".as_bytes().to_vec(), now_ns())).unwrap();
+    let (frame, _) = frames_until(&emu, |f| f.row_text(0) == "你a");
+    assert_eq!(frame.cells[0].wide, s2_core::Wide::Lead);
+    assert_eq!(frame.cells[1].wide, s2_core::Wide::Spacer);
+    assert_eq!(frame.cells[2].text, "a");
+    assert!(frame.cells[0].flags.bold);
+    assert!(frame.cells[0].fg.is_some());
+}
+
+#[test]
+fn keys_encode_letter_and_ctrl() {
+    let mut term = Terminal::new(Options { cols: 80, rows: 24, max_scrollback: 0 }).unwrap();
+    let mut enc = Encoder::new().unwrap();
+    let ctrl = Mods { ctrl: true, ..Mods::default() };
+    assert_eq!(enc.encode(&press(Key::Char('a'), Mods::default(), Some("a")), &term).unwrap(), b"a");
+    assert_eq!(enc.encode(&press(Key::Char('c'), ctrl, None), &term).unwrap(), b"\x03");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Up), Mods::default(), None), &term).unwrap(), b"\x1b[A");
+    term.vt_write(b"\x1b[?1h"); // DECCKM
+    assert_eq!(enc.encode(&press(Key::Named(Named::Up), Mods::default(), None), &term).unwrap(), b"\x1bOA");
+    assert_eq!(enc.encode(&press(Key::Named(Named::Enter), Mods::default(), None), &term).unwrap(), b"\r");
+}
+
+#[test]
+fn key_reaches_pty_and_is_attributed_to_a_frame() {
+    let dir = scratch("key_attribution");
+    let log = Log::create(&dir).unwrap();
+    let emu = Emu::start(cat(80, 24), 80, 24, Some(log.clone())).unwrap();
+    log.key(7, now_ns());
+    emu.input_tx.send(InputMsg::Key(press(Key::Char('x'), Mods::default(), Some("x")), 7)).unwrap();
+    // The tty echoes the key; the frame showing the echo carries the key id.
+    let (frame, _) = frames_until(&emu, |f| f.keys.contains(&7));
+    assert_eq!(frame.row_text(0), "x");
+    log.frame(frame.seq, now_ns(), now_ns(), "present_return");
+    log.flush();
+    let report = latency::report(&dir.join("latency.jsonl")).unwrap();
+    assert_eq!(report.key_to_present.n, 1);
+    assert!(report.key_to_present.p50 > 0);
+}
+
+#[test]
+fn paste_bracketed_when_mode_set() {
+    assert_eq!(paste_bytes("a\nb", false).unwrap(), b"a\rb");
+    assert_eq!(paste_bytes("hi", true).unwrap(), b"\x1b[200~hi\x1b[201~");
+
+    let pty = cat(80, 24);
+    let writer = pty.writer();
+    writer.start_recording();
+    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Paste("one".into())).unwrap();
+    wait_for("the plain paste", || contains(&writer.recorded(), b"one"));
+    assert!(!contains(&writer.recorded(), b"\x1b[200~"));
+
+    emu.input_tx.send(InputMsg::Bytes(b"\x1b[?2004hset".to_vec(), now_ns())).unwrap();
+    // The tty echo of "one" may land before or after "set" on the row.
+    frames_until(&emu, |f| f.row_text(0).contains("set"));
+    emu.input_tx.send(InputMsg::Paste("two".into())).unwrap();
+    wait_for("the bracketed paste", || contains(&writer.recorded(), b"\x1b[200~two\x1b[201~"));
+}
+
+#[test]
+fn reply_goes_through_writer() {
+    let pty = cat(80, 24);
+    let writer = pty.writer();
+    writer.start_recording();
+    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    assert!(writer.recorded().is_empty());
+    // A cursor position query: the emulator's reply must appear on the one PTY writer.
+    emu.input_tx.send(InputMsg::Bytes(b"\x1b[6n".to_vec(), now_ns())).unwrap();
+    wait_for("the CPR reply", || contains(&writer.recorded(), b"\x1b[1;1R"));
+}
+
+#[test]
+fn resize_changes_frame_and_pty_size() {
+    let emu = Emu::start(cat(80, 24), 80, 24, None).unwrap();
+    emu.input_tx.send(InputMsg::Resize(100, 30)).unwrap();
+    let (frame, _) = frames_until(&emu, |f| f.cols == 100);
+    assert_eq!((frame.rows, frame.cells.len()), (30, 3000));
+    assert!(frame.dirty_rows.iter().all(|&d| d));
+}
+
+#[test]
+fn exit_is_reported() {
+    let pty = Pty::spawn(&["true".to_string()], 80, 24).unwrap();
+    let emu = Emu::start(pty, 80, 24, None).unwrap();
+    wait_for("the child to exit", || emu.exited());
+}
+
+#[test]
+fn latency_report_percentiles() {
+    assert_eq!(Pcts::of((1..=100).collect()), Pcts { n: 100, p50: 50, p95: 95, p99: 99 });
+    assert_eq!(Pcts::of(vec![30, 10, 20]), Pcts { n: 3, p50: 20, p95: 30, p99: 30 });
+    assert_eq!(Pcts::of(vec![]), Pcts::default());
+
+    // Ten keys, one per frame: key at i ms, write +10 us, output +200 us, submit +1 ms, present +(i+1) ms.
+    let dir = scratch("latency_report");
+    let log = Log::create(&dir).unwrap();
+    for i in 0..10u64 {
+        let key = i * 1_000_000;
+        log.event(&Event::Key { id: i, t_key_ns: key });
+        log.event(&Event::Write { id: i, t_write_ns: key + 10_000 });
+        log.event(&Event::Frame {
+            seq: i,
+            t_output_ns: key + 210_000,
+            t_submit_ns: key + 1_210_000,
+            t_present_ns: key + 1_210_000 + (i + 1) * 1_000_000,
+            present_kind: "present_return".into(),
+            keys: vec![i],
+            t_work_done_ns: None,
+        });
+    }
+    // A key that was never written and a frame with an unknown key are ignored.
+    log.event(&Event::Key { id: 99, t_key_ns: 0 });
+    log.event(&Event::Frame { seq: 10, t_output_ns: 1, t_submit_ns: 2, t_present_ns: 3, present_kind: "present_return".into(), keys: vec![99, 1234], t_work_done_ns: None });
+    log.flush();
+
+    let report = latency::report(&dir.join("latency.jsonl")).unwrap();
+    assert_eq!(report.key_to_write, Pcts { n: 10, p50: 10_000, p95: 10_000, p99: 10_000 });
+    assert_eq!(report.write_to_output, Pcts { n: 10, p50: 200_000, p95: 200_000, p99: 200_000 });
+    assert_eq!(report.output_to_submit, Pcts { n: 10, p50: 1_000_000, p95: 1_000_000, p99: 1_000_000 });
+    assert_eq!(report.submit_to_present, Pcts { n: 10, p50: 5_000_000, p95: 10_000_000, p99: 10_000_000 });
+    assert_eq!(report.key_to_present, Pcts { n: 10, p50: 6_210_000, p95: 11_210_000, p99: 11_210_000 });
+}
+
+/// The checked-in pair Track B's `analyze.py` is tested against (see `data/make-golden.py`).
+#[test]
+fn golden_log_matches_report() {
+    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let expected: latency::Report =
+        serde_json::from_str(&std::fs::read_to_string(data.join("golden-report.json")).unwrap()).unwrap();
+    assert_eq!(expected.key_to_present.n, 49);
+    assert_eq!(latency::report(&data.join("golden-latency.jsonl")).unwrap(), expected);
+}
+
+#[test]
+fn sampler_writes_process_samples() {
+    let dir = scratch("sampler");
+    let log = Log::create(&dir).unwrap();
+    let sampler = s2_core::bench::Sampler::start(log.clone());
+    std::thread::sleep(Duration::from_millis(650));
+    drop(sampler);
+    log.flush();
+    let text = std::fs::read_to_string(dir.join("latency.jsonl")).unwrap();
+    let samples: Vec<Event> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(!samples.is_empty());
+    for sample in samples {
+        let Event::Sample { t_ns, cpu_pct, rss_kb, fps, .. } = sample else { panic!("not a sample: {sample:?}") };
+        assert!(t_ns > 0 && rss_kb > 0 && cpu_pct >= 0.0 && fps == 0.0);
+    }
+}

@@ -60,7 +60,7 @@ impl Pty {
 }
 // emulator thread (libghostty-vt objects are not Send → they live on this thread only)
 pub struct Emu { pub input_tx: Sender<InputMsg>, pub frames: FrameSlot }
-pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Shutdown }
+pub enum InputMsg { Bytes(Vec<u8>, u128 /* t_output_ns */), Resize(u16, u16), Key(KeyEvent, u64 /* key id */), Paste(String), Focus(bool), Shutdown }
 impl Emu { pub fn start(pty: Pty, cols: u16, rows: u16, log: Option<latency::Log>) -> anyhow::Result<Emu>; }
 // FrameSlot = latest-wins single slot (Mutex<Option<Frame>> + wake callback). Frames may drop; PTY bytes never.
 pub struct FrameSlot; impl FrameSlot { pub fn take(&self) -> Option<Frame>; pub fn set_waker(&self, f: Box<dyn Fn() + Send + Sync>); }
@@ -78,6 +78,22 @@ pub fn now_ns() -> u128;                          // CLOCK_MONOTONIC; every time
 
 Front-end duties: send `InputMsg::Key` with `t_key_ns` already logged; on each rendered frame call
 `log.frame(seq, t_submit_ns, t_present_ns, t_present_kind)`.
+
+**Contract notes from A1 (2026-10-10, `s2-core` as built; all additive):**
+- `InputMsg::Focus(bool)` — the front-end sends it on window focus change. `false` drops queued key repeats, and no
+  repeat is sent until the next fresh press; both values report `CSI I` / `CSI O` to the PTY under mode 1004.
+- `Emu::exited() -> bool` — true once the child closed the PTY; the waker fires when it turns true.
+- `Pty::reader()`; `PtyWriter::write_all(&[u8])` (plus `start_recording()` / `recorded()` for tests).
+- `Frame::row_text(y)`. When the slot replaces an unread frame, the new frame inherits its `keys` and dirty rows.
+- `latency::Log`: `create(dir)`, `key(id, t_key_ns)`, `write(id, t_write_ns)` (called by the core), `frame(…)`,
+  `frame_with_work_done(…, Option<t_work_done_ns>)`, `event(&Event)` for `meta`, `flush()`. `latency::Event` is the serde
+  type of a log line. Times are written as unsigned 64-bit ns; `frame` may carry an optional `t_work_done_ns`.
+- **Key attribution is `frame.keys`, not the timestamps.** The core assigns a key to the first frame whose output was
+  read at or after the key's PTY write *began*: the tty echo can be read before `write()` returns, so `t_output_ns` may
+  be a few microseconds earlier than the logged `t_write_ns`. Treat a negative write→output span as 0.
+- Only keys with a `key` line, a `write` line and a presented frame count. Percentiles are nearest-rank:
+  `sorted[ceil(p/100 · n) − 1]`. Golden pair: `spikes/s2-core/tests/data/golden-latency.jsonl` + `golden-report.json`
+  (generator `make-golden.py` beside them computes the report independently of the Rust code).
 
 ### Latency log — `<dir>/latency.jsonl` (Track A writes; Track B's `analyze.py` reads)
 
