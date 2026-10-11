@@ -149,9 +149,9 @@ fn snapshots_arrive_every_period() {
     let d = dir("period");
     let counter = d.join("n");
     let period = Duration::from_millis(250);
-    // a host whose one session printed something new at every listing
+    // a host whose one session has one more client attached at every listing
     let script = format!(
-        "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{0}'; echo 1000; echo \"work:1:0:$n\"",
+        "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{0}'; echo 1000; echo \"work:1:$n:990\"",
         counter.display()
     );
     let (poller, rx) = start(&["a"], period, Duration::from_secs(5), move |_| sh(&script));
@@ -165,10 +165,7 @@ fn snapshots_arrive_every_period() {
     );
     for (i, (_, snap)) in arrivals.iter().enumerate() {
         assert!(snap.online && snap.host == "a");
-        assert_eq!(
-            snap.sessions[0].last_output_age_s,
-            Some(1000 - (i as u64 + 1))
-        );
+        assert_eq!(snap.sessions[0].attached, i as u32 + 1);
     }
     for pair in arrivals.windows(2) {
         let gap = pair[1].0 - pair[0].0;
@@ -213,6 +210,36 @@ fn a_snapshot_is_delivered_only_when_it_changes() {
 
     std::fs::write(&listing, "1000\nwork:1:0:990\n").unwrap();
     assert_eq!(next(&rx, Duration::from_secs(3)).1, first);
+    drop(poller);
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn growing_output_age_alone_is_not_news() {
+    let _alone = alone();
+    let d = dir("age");
+    let (counter, activity) = (d.join("n"), d.join("activity"));
+    std::fs::write(&activity, "10").unwrap();
+    let period = Duration::from_millis(100);
+    // a real host: its clock moves on between listings, so an idle session's age grows each time
+    let script = format!(
+        "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+7)); echo $n > '{0}'; echo $((1000+n)); echo \"work:1:0:$(cat '{1}')\"",
+        counter.display(),
+        activity.display()
+    );
+    let (poller, rx) = start(&["a"], period, Duration::from_secs(5), move |_| sh(&script));
+
+    let (_, first) = next(&rx, Duration::from_secs(3));
+    assert_eq!((first.sessions[0].status, first.sessions[0].last_output_age_s), (Status::Idle, Some(997)));
+    assert_eq!(rx.recv_timeout(period * 8).unwrap_err(), RecvTimeoutError::Timeout, "only the age changed");
+    let listed: u64 = std::fs::read_to_string(&counter).unwrap().trim().parse().unwrap();
+    assert!(listed >= 3 * 7, "the host was listed again meanwhile ({listed})");
+
+    // the session prints again: its status changes, and that is delivered with the current age
+    std::fs::write(&activity, "999999").unwrap();
+    let (_, busy) = next(&rx, Duration::from_secs(3));
+    assert_eq!((busy.sessions[0].status, busy.sessions[0].last_output_age_s), (Status::Running, Some(0)));
+    assert_eq!(rx.recv_timeout(period * 4).unwrap_err(), RecvTimeoutError::Timeout);
     drop(poller);
     std::fs::remove_dir_all(d).unwrap();
 }
@@ -341,7 +368,7 @@ fn refresh_now_lists_at_once() {
     let d = dir("refresh");
     let counter = d.join("n");
     let script = format!(
-        "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{0}'; echo 1000; echo \"work:1:0:$n\"",
+        "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{0}'; echo 1000; echo \"work:1:$n:990\"",
         counter.display()
     );
     let (poller, rx) = start(

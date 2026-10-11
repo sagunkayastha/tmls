@@ -1,7 +1,7 @@
 //! Keeps the listing of every host fresh: one thread per host, so a host that hangs delays
 //! nobody else. Each thread runs the host's listing command with a timeout, hands the snapshot
-//! to the callback when it differs from the host's previous one (an online host going offline
-//! always does), then sleeps for the period or until [`Poller::refresh_now`].
+//! to the callback when it differs from the host's previous one in anything but the sessions'
+//! output ages (an online host going offline always does), then sleeps for the period or until [`Poller::refresh_now`].
 //!
 //! A listing runs in a process group of its own and is read without blocking, so a timeout or
 //! a stopping poller kills the command and everything it started, and never waits on a pipe.
@@ -129,9 +129,11 @@ fn poll_host(
         if stopped() {
             return;
         }
-        if last.as_ref() != Some(&snapshot) {
-            (deliver.lock().unwrap_or_else(PoisonError::into_inner))(snapshot.clone());
-            last = Some(snapshot);
+        // compared without the output ages: they grow at every listing of a host with sessions
+        let comparable = without_ages(&snapshot);
+        if last.as_ref() != Some(&comparable) {
+            (deliver.lock().unwrap_or_else(PoisonError::into_inner))(snapshot);
+            last = Some(comparable);
         }
 
         let wake_at = Instant::now() + period;
@@ -147,6 +149,15 @@ fn poll_host(
             state = shared.wake.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
+}
+
+/// The snapshot with every `last_output_age_s` blanked: what "the same as before" compares.
+fn without_ages(snapshot: &HostSnapshot) -> HostSnapshot {
+    let mut snapshot = snapshot.clone();
+    for session in &mut snapshot.sessions {
+        session.last_output_age_s = None;
+    }
+    snapshot
 }
 
 /// Lists `host` once with `command` (see [`listing_command`]), on the calling thread. Any
