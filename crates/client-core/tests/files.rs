@@ -224,7 +224,7 @@ fn made_argv_is_a_script_here_and_one_ssh_argument_elsewhere() {
     let script = "f=$(ls -t \"$HOME\"/.claude/projects/*/0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e.jsonl 2>/dev/null \
                   | head -n 1)\n\
                   [ -n \"$f\" ] || { echo \"no-transcript\"; exit 0; }\n\
-                  grep -aoE '/[A-Za-z0-9_.~+@%=,/-]+\\.(png|jpe?g|gif|webp|bmp)' \"$f\" | sort -u |\n\
+                  grep -aoE '/[A-Za-z0-9_.~+@%=/-]+\\.(png|jpe?g|gif|webp|bmp)' \"$f\" | sed 's|^//*|/|' | sort -u |\n\
                   while IFS= read -r p; do\n  [ -f \"$p\" ] && stat -c '%Y\t%s\t%n' -- \"$p\"\n\
                   done | sort -rn | head -n 500\n";
     assert_eq!(made_argv(LOCAL, ID, None, LOCAL), v(&["sh", "-c", script]));
@@ -269,12 +269,12 @@ fn only_a_session_id_reaches_the_script() {
 
 /// A directory of this test's own for a home: under `/data/scratch/tmls-rs-v0/panel2/tmp` on the
 /// machine these are written on (its `/tmp` is small), else under cargo's target tmp dir. Never
-/// the user's home: the script reads `$HOME/.claude`. It is left where it is.
+/// the user's home: the script reads `$HOME/.claude`. The same directory every run, so they do
+/// not pile up: its files are written over, and nothing is removed.
 fn fake_home(name: &str) -> PathBuf {
     let scratch = Path::new("/data/scratch/tmls-rs-v0/panel2/tmp");
     let base = if scratch.is_dir() { scratch.to_path_buf() } else { PathBuf::from(env!("CARGO_TARGET_TMPDIR")) };
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = base.join(format!("made-{name}-{}-{nanos}", std::process::id()));
+    let dir = base.join(format!("made-{name}"));
     std::fs::create_dir_all(&dir).expect("the test's home");
     dir
 }
@@ -304,6 +304,13 @@ fn the_script_lists_the_transcripts_images_that_exist_newest_first() {
     std::fs::write(&old, b"12345").unwrap();
     std::fs::write(&new, b"123").unwrap();
     std::fs::write(&script_py, b"print()").unwrap();
+    // Two paths with only a comma between them are two, and a `file://` address is its path:
+    // no second row for the same file with more slashes.
+    let (comma_a, comma_b) = (work.join("comma-a.jpg"), work.join("comma-b.png"));
+    std::fs::write(&comma_a, b"1").unwrap();
+    std::fs::write(&comma_b, b"12").unwrap();
+    set_modified(&comma_a, 1_760_000_300);
+    set_modified(&comma_b, 1_760_000_200);
     // A folder named like a picture is none.
     std::fs::create_dir_all(work.join("dir.png")).unwrap();
     set_modified(&old, 1_760_000_000);
@@ -312,7 +319,10 @@ fn the_script_lists_the_transcripts_images_that_exist_newest_first() {
     let transcript = format!(
         "{{\"type\":\"assistant\",\"message\":\"wrote {old} and {gone}\"}}\n\
          {{\"type\":\"user\",\"content\":\"run {py}, then look at \\\"{new}\\\" and {old} again; {dir}\"}}\n\
-         {{\"note\":\"a relative plots/new-1.png and a path with a space /w/my plots/x.png are not found\"}}\n",
+         {{\"note\":\"a relative plots/new-1.png and a path with a space /w/my plots/x.png are not found\"}}\n\
+         {{\"list\":\"{comma_a},{comma_b}\",\"url\":\"file://{old} and file:////{comma_a}\"}}\n",
+        comma_a = comma_a.display(),
+        comma_b = comma_b.display(),
         gone = gone.display(),
         py = script_py.display(),
         dir = work.join("dir.png").display(),
@@ -324,7 +334,13 @@ fn the_script_lists_the_transcripts_images_that_exist_newest_first() {
     std::fs::write(projects.join("x/11111111-2222-3333-4444-555555555555.jsonl"), other).unwrap();
 
     let out = with_home(&made_argv(LOCAL, ID, None, LOCAL), &home).unwrap();
-    assert_eq!(parse_made(&out), Ok(vec![made(new, 1_760_000_500, 3), made(old, 1_760_000_000, 5)]), "{out:?}");
+    let listed = vec![
+        made(new, 1_760_000_500, 3),
+        made(comma_a.to_str().unwrap(), 1_760_000_300, 1),
+        made(comma_b.to_str().unwrap(), 1_760_000_200, 2),
+        made(old, 1_760_000_000, 5),
+    ];
+    assert_eq!(parse_made(&out), Ok(listed), "{out:?}");
 
     // No transcript of that id: said so, and no error.
     let none = with_home(&made_argv(LOCAL, "99999999-2222-3333-4444-555555555555", None, LOCAL), &home).unwrap();

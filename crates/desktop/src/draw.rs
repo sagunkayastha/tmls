@@ -1004,13 +1004,29 @@ pub fn side_header_spans_with(
     look: SideLook,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
+    side_header_spans_focused(title, cols, look, false, theme)
+}
+
+/// `side_header_spans_with`, and with `focused` (the panel has the keys) the title in the
+/// accent colour, bold: the header says where the keys are, as the divider does.
+pub fn side_header_spans_focused(
+    title: &str,
+    cols: usize,
+    look: SideLook,
+    focused: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     let header = side_header_with(cols, look);
     let mut out = Vec::with_capacity(4);
     if let Some(back) = header.back {
         out.push(Span::whole(0, back, BACK_MARK).colour(COPY_RGB).bold());
     }
     let title = keep_end(title, header.title_cols);
-    out.push(Span::new(0, header.title_col, header.title_cols, title).colour(theme.sidebar_fg));
+    let title = Span::new(0, header.title_col, header.title_cols, title);
+    out.push(match focused {
+        true => title.colour(CURSOR_RGB).bold(),
+        false => title.colour(theme.sidebar_fg),
+    });
     if let Some(open) = header.open {
         let label = side_label(look);
         out.push(Span::whole(0, open, label).colour(COPY_RGB).bold());
@@ -1438,7 +1454,8 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         return;
     }
     p.rect(l.side, theme.sidebar_bg);
-    // The divider shows that the panel has the keys, as the list's line does.
+    // The divider shows that the panel has the keys, as the list's line does; so does the
+    // header's title.
     let divider = match view.side_focused {
         true => theme.focus_ring,
         false => theme.sidebar_rule,
@@ -1447,7 +1464,8 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     p.rect(l.side_header, theme.bar_bg);
     if l.side_header.h >= p.m.height {
         let origin = (l.side_body.x, p.text_y(l.side_header));
-        for span in side_header_spans_with(&side.title, l.side_cols, side.look, theme) {
+        let focused = view.side_focused;
+        for span in side_header_spans_focused(&side.title, l.side_cols, side.look, focused, theme) {
             p.span(origin, &span);
         }
     }

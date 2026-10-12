@@ -9,8 +9,8 @@ use client_core::SessionKey;
 use client_core::files::Made;
 use desktop::draw::{
     BACK_MARK, Chrome, FILES, Layout, OPEN_IN_APP, REFRESH, Rect, Span, View, default_panel_cols,
-    keep_end, layout_with, side_header, side_header_spans, side_header_spans_with,
-    side_header_with, side_made_spans, side_text_spans,
+    keep_end, layout_with, side_header, side_header_spans, side_header_spans_focused,
+    side_header_spans_with, side_header_with, side_made_spans, side_text_spans,
 };
 use desktop::sidebar::Sidebar;
 use desktop::theme::{CLOSE_MARK, COPY_RGB, CURSOR_RGB, Theme};
@@ -696,5 +696,39 @@ fn the_divider_shows_that_the_panel_has_the_keys() {
             1,
             "{focused}"
         );
+        // And the header's title: in the accent colour with the keys, plain without.
+        let title = "Images·work·3".chars().count();
+        let (lit, plain) = if focused { (title, 0) } else { (0, title) };
+        let top = chrome.top();
+        assert_eq!(glyphs(top, l.side_header, CURSOR_RGB), lit, "{focused}");
+        assert_eq!(glyphs(top, l.side_header, theme.sidebar_fg), plain);
+    }
+}
+
+#[test]
+fn the_headers_title_is_in_the_accent_colour_while_the_panel_has_the_keys() {
+    let theme = Theme::default();
+    let title = "Images · work · 3";
+    for look in [LIST, FROM_LIST] {
+        let plain = side_header_spans_with(title, 49, look, &theme);
+        assert_eq!(
+            plain,
+            side_header_spans_focused(title, 49, look, false, &theme)
+        );
+        let focused = side_header_spans_focused(title, 49, look, true, &theme);
+        assert_eq!(plain.len(), focused.len());
+        let mut changed = 0;
+        for (a, b) in plain.iter().zip(&focused) {
+            // Nothing moves: the same text on the same columns.
+            assert_eq!((a.col, a.cols, &a.text), (b.col, b.cols, &b.text));
+            if a.text.starts_with("Images") {
+                assert_eq!((a.colour, a.bold), (theme.sidebar_fg, false));
+                assert_eq!((b.colour, b.bold), (CURSOR_RGB, true));
+                changed += 1;
+            } else {
+                assert_eq!((a.colour, a.bold), (b.colour, b.bold), "{a:?}");
+            }
+        }
+        assert_eq!(changed, 1);
     }
 }

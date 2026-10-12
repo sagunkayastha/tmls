@@ -5,7 +5,7 @@ use client_core::tmux::{NewSession, Start};
 use desktop::forms::Request;
 use desktop::keys::{
     Focus, Global, ListKey, PanelKey, RepeatGate, Route, focus_after_close, global, keys_at,
-    list_keeps_keys, list_key, panel_key, route,
+    leaves_panel, list_keeps_keys, list_key, panel_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -514,5 +514,57 @@ fn the_panels_keys_move_open_and_go_back() {
         named(Named::Tab, NONE),
     ] {
         assert_eq!(panel_key(&ev), None, "{ev:?}");
+    }
+}
+
+#[test]
+fn a_key_the_panel_does_not_bind_takes_the_keys_back_to_the_terminal() {
+    // Typed text, Tab, Ctrl+C, a capital, a chord: none of them is the panel's, none may vanish.
+    for ev in [
+        ch('x', NONE),
+        ch('l', NONE),
+        ch(' ', NONE),
+        ch('J', SHIFT),
+        ch('j', ALT),
+        ch('c', CTRL),
+        ch('d', CTRL),
+        named(Named::Tab, NONE),
+        named(Named::Enter, SHIFT),
+        named(Named::Escape, ALT),
+        named(Named::Left, NONE),
+        named(Named::Up, SHIFT),
+    ] {
+        assert_eq!(panel_key(&ev), None, "{ev:?}");
+        assert!(leaves_panel(&ev), "{ev:?}");
+        // Its release and its repeats come after the keys moved: they move nothing again.
+        assert!(!leaves_panel(&release(&ev)), "{ev:?} released");
+        assert!(!leaves_panel(&repeat(&ev)), "{ev:?} held");
+    }
+    // The panel's own keys stay, pressed, held or released: Enter held opens once and types
+    // no line into the session behind.
+    for ev in [
+        ch('j', NONE),
+        ch('k', NONE),
+        named(Named::Up, NONE),
+        named(Named::Down, NONE),
+        named(Named::Enter, NONE),
+        named(Named::Backspace, NONE),
+        named(Named::Escape, NONE),
+    ] {
+        for ev in [ev.clone(), repeat(&ev), release(&ev)] {
+            assert!(!leaves_panel(&ev), "{ev:?}");
+        }
+    }
+    // The window's own bindings are done where the keys are.
+    for ev in [
+        ch('f', ALT_SHIFT),
+        ch('x', ALT_SHIFT),
+        ch('w', ALT_SHIFT),
+        named(Named::Right, ALT_SHIFT),
+        ch('q', CTRL),
+        ch('=', CTRL),
+    ] {
+        assert!(!leaves_panel(&ev), "{ev:?}");
+        assert!(!leaves_panel(&repeat(&ev)), "{ev:?} held");
     }
 }

@@ -607,7 +607,22 @@ print(inside, box, outside)
     fail "Alt+Shift+F opens the panel without a file: the pane is narrower" "columns $COLS_BEFORE -> $(pane_cols)"
   fi
   check "screenshot 12j-made-no-claude (no Claude session in this tab)" shot 12j-made-no-claude
-  NO_CLAUDE_PICTURE=$(picture)
+  # panel_picture  — a hash of the panel's pixel columns only (from 960): not of tmux's clock in
+  # the pane, nor of the session's mark in the list and on its tab, which change by themselves.
+  panel_picture() {
+    timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+crop = hashlib.sha256()
+for y in range(h):
+    crop.update(px[3 * (w * y + 960):3 * w * (y + 1)])
+print(crop.hexdigest()[:16])
+' 2>/dev/null || echo none
+  }
+  NO_CLAUDE_PICTURE=$(panel_picture)
   # Now $ONE is a Claude session for the listing: a status file named after a live process (a
   # sleep of this script's; the listing skips the file once that is gone) that names $ONE's
   # pane and a session id, and that id's transcript, which names the orange picture and one
@@ -621,18 +636,32 @@ print(inside, box, outside)
     >"$HOME/.claude/projects/-work/$SID.jsonl"
   printf '{"pid":%s,"sessionId":"%s","status":"idle","statusUpdatedAt":1,"tmux":"%s:@0.%%0","cwd":"/work"}\n' \
     "$FAKE_CLAUDE" "$SID" "$ONE" >"$HOME/.claude/sessions/$FAKE_CLAUDE.json"
-  listed_now() { [ "$(picture)" != "$NO_CLAUDE_PICTURE" ]; }
+  listed_now() {
+    local now
+    now=$(panel_picture)
+    [ "$now" != none ] && [ "$NO_CLAUDE_PICTURE" != none ] && [ "$now" != "$NO_CLAUDE_PICTURE" ]
+  }
   if wait_for 15 listed_now; then
-    pass "once the listing has $ONE as a Claude session the panel lists its images by itself (the picture changed)"
+    pass "once the listing has $ONE as a Claude session the panel lists its images by itself (the panel's pixels changed)"
   else
-    fail "once the listing has $ONE as a Claude session the panel lists its images by itself" "same picture as without a Claude session"
+    fail "once the listing has $ONE as a Claude session the panel lists its images by itself" "the panel's pixels are as without a Claude session"
   fi
   check "screenshot 12h-made-list" shot 12h-made-list
   check "the list shows no picture yet: no pixel of the screen is the orange" orange_is "0 none 0"
   check "with the list open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
   # The list's rows start under the panel's header (23 px, as the tab bar): the first is y 46-62.
-  click 1100 54
-  if wait_for 8 orange_is "76800 320x240+960+* 0"; then
+  # Clicked until the picture shows or 20 s passed: a click that came before the row was there
+  # (on the one line a panel without a list has) does nothing, and the next one is the row's.
+  # Never a click once the picture shows: that one would be the picture's.
+  row_opens() {
+    local deadline=$((SECONDS + 20))
+    until orange_at_least 10000; do
+      [ "$SECONDS" -ge "$deadline" ] && return 1
+      click 1100 54
+      wait_for 4 orange_at_least 10000 && return 0
+    done
+  }
+  if row_opens && wait_for 5 orange_is "76800 320x240+960+* 0"; then
     pass "a click on the list's first row shows the picture the transcript names, fitted: $(orange | cut -d' ' -f2)"
   else
     fail "a click on the list's first row shows the picture the transcript names" "orange pixels, their box, outside the panel: $(orange)"
@@ -645,9 +674,10 @@ print(inside, box, outside)
   else
     fail "a click on the ‹ of the picture's header leads back to the list" "orange pixels: $(orange)"
   fi
-  # The click gave the panel the keys: Enter opens the row under the cursor, Backspace leads
-  # back, and what is typed there reaches no session.
+  # The click gave the panel the keys: Enter opens the row under the cursor (and is no line in
+  # the session behind), Backspace leads back.
   sleep 0.5
+  PROMPTS=$(pane_text "$ONE" | grep -c .)
   key_enter
   if wait_for 8 orange_at_least 10000; then
     pass "Enter in the list opens the picture under the cursor"
@@ -660,12 +690,18 @@ print(inside, box, outside)
   else
     fail "Backspace at the picture leads back to the list" "orange pixels: $(orange)"
   fi
-  keys "inlist$NONCE"
-  sleep 0.5
-  check "keys typed with the list focused reach no session" nowhere "inlist$NONCE"
-  # Esc in the list gives the keys back to the terminal.
+  if [ "$(pane_text "$ONE" | grep -c .)" -eq "$PROMPTS" ]; then
+    pass "Enter and Backspace in the panel reach no session (the pane has its $PROMPTS lines)"
+  else
+    fail "Enter and Backspace in the panel reach no session" "lines in the pane: $PROMPTS -> $(pane_text "$ONE" | grep -c .)"
+  fi
+  # Any other key is the terminal's: typed with the list focused, a line arrives whole (its
+  # first letter takes the keys back and is sent too).
+  check_typed "what is typed with the list focused goes to the terminal, first letter and all" "$ONE" inlist
+  # A click on the list gives it the keys again, and Esc there hands them back without a trace.
+  click 1100 300
   keys -k Escape
-  check_typed "after Esc in the list the keys are the terminal's again" "$ONE" afterlist
+  check_typed "after a click on the list and Esc the keys are the terminal's" "$ONE" afterlist
   keys -M alt -M shift -k f -m shift -m alt
   if wait_for 8 as_wide_as "$COLS_BEFORE"; then
     pass "Alt+Shift+F again closes the panel: the pane has its $COLS_BEFORE columns again"

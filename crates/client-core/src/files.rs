@@ -120,8 +120,9 @@ pub fn valid_session_id(id: &str) -> bool {
 /// Prints the images the Claude session `session_id` made on `host`, for [`parse_made`]: of
 /// every absolute path in its transcript that ends like an image (`png`, `jpg`, `jpeg`, `gif`,
 /// `webp`, `bmp`) and is a file now, a line `MODIFIED<TAB>BYTES<TAB>PATH`, the newest first, at
-/// most [`MADE_MAX`]. A path with a space or any character outside `A-Za-z0-9_.~+@%=,/-` is not
-/// found. Prints `no-transcript` when the host has no transcript of that id. Reads only.
+/// most [`MADE_MAX`]. A path with a space or any character outside `A-Za-z0-9_.~+@%=/-` is not
+/// found (a comma ends one, so `a.jpg,/b.png` is two), and a `file:///x.png` is `/x.png`: slashes
+/// at a path's start count as one, so a file has one line. Prints `no-transcript` when the host has no transcript of that id. Reads only.
 ///
 /// `session_id` comes from a file on the host and is the one thing put into the script: an id
 /// that is not one ([`valid_session_id`]) is refused, and the command built then only says
@@ -135,7 +136,7 @@ pub fn made_argv(host: &str, session_id: &str, _cwd: Option<&str>, local_name: &
     let script = format!(
         "f=$(ls -t \"$HOME\"/.claude/projects/*/{session_id}.jsonl 2>/dev/null | head -n 1)\n\
          [ -n \"$f\" ] || {{ echo \"{NO_TRANSCRIPT}\"; exit 0; }}\n\
-         grep -aoE '/[A-Za-z0-9_.~+@%=,/-]+\\.(png|jpe?g|gif|webp|bmp)' \"$f\" | sort -u |\n\
+         grep -aoE '/[A-Za-z0-9_.~+@%=/-]+\\.(png|jpe?g|gif|webp|bmp)' \"$f\" | sed 's|^//*|/|' | sort -u |\n\
          while IFS= read -r p; do\n  [ -f \"$p\" ] && stat -c '%Y\t%s\t%n' -- \"$p\"\n\
          done | sort -rn | head -n {MADE_MAX}\n"
     );

@@ -13,9 +13,12 @@
 //!   panel never has the keys, so Esc stays the terminal's)
 //! - Alt+Shift+F — open the panel on the list of the images the front tab's Claude session
 //!   made, or close the panel
-//! - in that list, once a click gave it the keys (`panel_key`): j / k or the arrows move, Enter
-//!   opens the picture, Backspace or Esc lead from the picture back to the list, and from the
-//!   list back to the terminal
+//! - in that list (`panel_key`): j / k or the arrows move, Enter opens the picture, Backspace or
+//!   Esc lead from the picture back to the list, and from the list back to the terminal. The
+//!   keyboard reaches the list only after a click on the panel: opening it with Alt+Shift+F or
+//!   `Files` leaves the keys where they were. And only for those keys: any other key pressed
+//!   there (a letter, Tab, Ctrl+C, a chord) is the terminal's — it takes the keys back and is
+//!   sent to the session like any key (`leaves_panel`), so nothing typed is lost
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
 //! - Enter on a tab whose session ended — reattach (`route`, which knows the tab's state)
 //!
@@ -286,6 +289,24 @@ pub fn panel_key(ev: &KeyEvent) -> Option<PanelKey> {
         Key::Named(Named::Backspace | Named::Escape) if !ev.repeat => Some(PanelKey::Back),
         _ => None,
     }
+}
+
+/// Whether the panel has a use for this key, pressed, held or released.
+fn panel_binds(ev: &KeyEvent) -> bool {
+    let key = matches!(
+        ev.key,
+        Key::Named(Named::Up | Named::Down | Named::Enter | Named::Backspace | Named::Escape)
+            | Key::Char('j' | 'k')
+    );
+    key && ev.mods == NONE
+}
+
+/// Whether a key that arrives while the panel has the keys (`Focus::Panel`) takes them back to
+/// the terminal, where it is then sent: the fresh press of a key that is neither the panel's
+/// (`panel_binds`) nor one of the window's own bindings. Its repeats and its release follow
+/// it there by themselves; those of a key the panel did take move nothing.
+pub fn leaves_panel(ev: &KeyEvent) -> bool {
+    ev.pressed && !ev.repeat && !panel_binds(ev) && binding(ev, Focus::Panel).is_none()
 }
 
 /// What has the keys after a tab was closed. With no tab left it is the list. When another

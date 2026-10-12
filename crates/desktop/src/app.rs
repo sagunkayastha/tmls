@@ -36,8 +36,11 @@
 //!
 //! The images a session made: Alt+Shift+F or `Files` in the tab bar opens the panel on the list
 //! of the front tab's session (`show_made`) — at once, saying that the host is asked — and
-//! `viewer::made` runs on a thread like a file's click, under the same counter, so a list that
-//! takes long or never comes holds nothing up, and its time limit ends in the status line.
+//! `viewer::made_while` runs on a thread like a file's click, so a list that takes long or never
+//! comes holds nothing up, and its time limit ends in the status line. Lists have a counter of
+//! their own (`Running::lists`) and come back as `UserEvent::Listed`: only the newest request's
+//! answer counts, a click on a file never takes a list's answer away, nor a list a click's, and
+//! the answer goes to the list wherever it is by then (`SidePanel::list_of`).
 //! The list is asked for again by `Refresh`, when another tab comes to the front, and when a
 //! listing says the session's turn ended (`snapshot`; that only starts the thread). A row
 //! opens its picture the way a click in the terminal does, and that panel keeps the list to go
@@ -135,16 +138,9 @@ pub enum UserEvent {
     Said(Result<String, String>),
     /// A clicked file was found and read, or not; the number is the click's (`Running::views`).
     Viewed(u64, Result<Opened, String>),
-}
-
-/// What the answer that is still on its way (`Running::view`) is to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Awaiting {
-    Nothing,
-    /// A click on a file, a row of the list or `Open in app`.
-    File,
-    /// The list of a session's images.
-    Made,
+    /// The images of a session were listed, or not; the number is the request's
+    /// (`Running::lists`).
+    Listed(u64, SessionKey, Result<Opened, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -222,6 +218,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Viewed(click, result) => running.viewed(click, result),
+            UserEvent::Listed(load, key, result) => running.listed(load, key, result),
         }
     }
 
@@ -424,8 +421,9 @@ struct Running {
     side: Option<SidePanel>,
     /// Counts the clicks on files: the answer to the latest is the only one taken.
     views: Arc<AtomicU64>,
-    /// What the latest of them asked for, until its answer is here.
-    awaiting: Awaiting,
+    /// Counts the requests for the list of a session's images, apart from the clicks: the
+    /// answer to the latest is the only one taken, and neither kind overtakes the other.
+    lists: Arc<AtomicU64>,
     /// The click that opens a picture from the list of a session's images: its panel keeps
     /// the list to go back to.
     back_for: Option<u64>,
@@ -605,7 +603,7 @@ impl Running {
             sketchpad: Config::sketchpad(config_dir),
             side: None,
             views: Arc::new(AtomicU64::new(0)),
-            awaiting: Awaiting::Nothing,
+            lists: Arc::new(AtomicU64::new(0)),
             back_for: None,
             view_cache: viewer::cache_dir(
                 std::env::var_os("XDG_CACHE_HOME").as_deref(),
@@ -773,12 +771,11 @@ impl Running {
     /// After a listing: the panel's list of the images of the session `key` is asked for
     /// again if the session's turn just ended (it `was` something else and is done or idle
     /// now: what it made is there), or if the tab had no Claude session and has one now (or
-    /// the other way round).
-    /// Not while a click on a file waits for its answer, which a new request would drop.
-    /// Only starts the thread: nothing here waits for a host.
+    /// the other way round). A click on a file that waits for its answer is not in the way:
+    /// lists are counted apart. Only starts the thread: nothing here waits for a host.
     fn relist_made(&mut self, key: &SessionKey, state: MadeState, was: Option<Status>) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
-        if front != Some(key) || self.awaiting == Awaiting::File {
+        if front != Some(key) {
             return;
         }
         let now = self.sidebar.status(key);
@@ -862,6 +859,10 @@ impl Running {
         if pressed && self.note.take().is_some() {
             self.invalidate();
         }
+        // The panel has no use for a copy or a paste: they are the terminal's, with the keys.
+        if self.focus == Focus::Panel && matches!(action, Action::Copy | Action::Paste) {
+            self.leave_panel();
+        }
         let ev = match action {
             Action::Send(ev) => ev,
             Action::Paste if self.focus == Focus::Form => {
@@ -879,6 +880,11 @@ impl Running {
             }
             Action::Ignore => return After::Stay,
         };
+        // A key the panel does not bind is the terminal's: the keys go back there, and this
+        // one with them, so nothing typed is lost.
+        if self.focus == Focus::Panel && keys::leaves_panel(&ev) {
+            self.leave_panel();
+        }
         if let Some(text) = keys::copy_instead(&ev, self.focus, &mut self.gate, &mut self.tabs) {
             self.set_clipboard(text);
             self.invalidate();
@@ -1160,7 +1166,7 @@ impl Running {
             return;
         };
         self.say(Ok(format!("opening {} on {} …", link.path, key.host)));
-        self.view(Awaiting::File, move |local, cache, wanted| {
+        self.view(move |local, cache, wanted| {
             viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
         });
     }
@@ -1175,8 +1181,8 @@ impl Running {
     }
 
     /// Puts the list of the images the front tab's session made in the panel and asks the
-    /// session's host for it on a thread; the answer comes back as `UserEvent::Viewed`, and
-    /// only if nothing newer was asked for since. The panel shows at once: a list of that
+    /// session's host for it on a thread; the answer comes back as `UserEvent::Listed`, and
+    /// counts only if no list was asked for since. The panel shows at once: a list of that
     /// session that is there stays until the new one comes, else it says that the host is
     /// asked. A session that is not Claude's has no transcript to read: the panel says so
     /// and no command runs.
@@ -1196,18 +1202,52 @@ impl Running {
             // Whatever the panel showed, it shows no picture now: its texture is freed.
             self.picture.set(&self.gpu.device, &self.gpu.queue, None);
             if !self.show_side(SidePanel::made(body)) {
-                self.cancel_view();
+                self.lists.fetch_add(1, Ordering::SeqCst);
                 return self.say(Ok(viewer::TOO_NARROW.to_string()));
             }
         }
-        match id {
-            Some(id) => {
-                self.view(Awaiting::Made, move |local, _, _| {
-                    viewer::made(&key, &id, local, &viewer::run)
-                });
+        // The request's number: an answer to an older one is to a list this one took the
+        // place of, also when nothing is asked now.
+        let load = self.lists.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(id) = id {
+            let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+            let lists = self.lists.clone();
+            std::thread::spawn(move || {
+                let wanted = || lists.load(Ordering::SeqCst) == load;
+                let result = viewer::made_while(&key, &id, &local, &viewer::run, &wanted);
+                let _ = proxy.send_event(UserEvent::Listed(load, key, result));
+            });
+        }
+        self.invalidate();
+    }
+
+    /// The answer to the request for a session's images: it goes to that session's list,
+    /// which the panel shows or keeps behind a picture opened from it. A host that did not
+    /// answer (its time limit, a dead link) is said in the list and, with the reason, in the
+    /// status line. An answer to a request that is not the latest is dropped; one whose list
+    /// is gone (a file took the panel) has nowhere to go.
+    fn listed(&mut self, load: u64, key: SessionKey, result: Result<Opened, String>) {
+        if load != self.lists.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(list) = self.side.as_mut().and_then(|side| side.list_of(&key)) else {
+            return;
+        };
+        let problem = match result {
+            Ok(Opened::Made { files, .. }) => {
+                list.set_files(files);
+                None
             }
-            // An answer still on its way is to a list this one took the place of.
-            None => self.cancel_view(),
+            // `viewer::made_while` gives nothing else.
+            Ok(_) => None,
+            Err(problem) => {
+                list.failed();
+                Some(problem)
+            }
+        };
+        if let Some(problem) = problem {
+            crate::errln(format_args!("tmls-rs: {problem}"));
+            self.say(Ok(problem));
         }
         self.invalidate();
     }
@@ -1221,15 +1261,19 @@ impl Running {
         };
         self.say(Ok(format!("opening {path} on {} …", key.host)));
         let link = FileLink { path, line: None };
-        let click = self.view(Awaiting::File, move |local, cache, wanted| {
+        let click = self.view(move |local, cache, wanted| {
             viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
         });
         self.back_for = Some(click);
     }
 
     /// `‹`, Backspace or Esc at a picture opened from the list: the list is back as it was,
-    /// and is asked for again (for the tab in front now, if that changed).
+    /// and is asked for again (for the tab in front now, if that changed). With no tab left
+    /// there is no session to list: the panel closes.
     fn side_back(&mut self) {
+        if self.tabs.active().is_none() {
+            return self.close_side();
+        }
         let Some(body) = self.side.as_mut().and_then(|side| side.back.take()) else {
             return;
         };
@@ -1309,7 +1353,7 @@ impl Running {
             return;
         };
         self.say(Ok(format!("opening {path} in its app …")));
-        self.view(Awaiting::File, move |local, cache, _| {
+        self.view(move |local, cache, _| {
             viewer::open_in_app(&host, &path, local, cache, &viewer::run)
         });
     }
@@ -1317,17 +1361,15 @@ impl Running {
     /// Runs `work` (this machine's name, the cache directory, whether its answer is still
     /// waited for) on a thread of its own and delivers what it gives as the answer to a new
     /// click. Work that a newer click overtook can stop early: its answer is dropped anyway.
-    /// Work that panics answers as a broken picture. `kind`: what is asked for. Returns the
-    /// click's number.
+    /// Work that panics answers as a broken picture. Returns the click's number.
     fn view(
         &mut self,
-        kind: Awaiting,
         work: impl FnOnce(&str, Option<&std::path::Path>, &dyn Fn() -> bool) -> Result<Opened, String>
         + Send
         + 'static,
     ) -> u64 {
         let click = self.views.fetch_add(1, Ordering::SeqCst) + 1;
-        (self.awaiting, self.back_for) = (kind, None);
+        self.back_for = None;
         let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
         let (cache, views) = (self.view_cache.clone(), self.views.clone());
         std::thread::spawn(move || {
@@ -1338,10 +1380,12 @@ impl Running {
         click
     }
 
-    /// No answer is waited for any more: one still on its way is dropped when it comes.
+    /// No answer is waited for any more, to a click or for a list: one still on its way is
+    /// dropped when it comes.
     fn cancel_view(&mut self) {
         self.views.fetch_add(1, Ordering::SeqCst);
-        (self.awaiting, self.back_for) = (Awaiting::Nothing, None);
+        self.lists.fetch_add(1, Ordering::SeqCst);
+        self.back_for = None;
     }
 
     /// Puts `panel` in the file panel, in place of what it showed, and lays the window out
@@ -1368,7 +1412,6 @@ impl Running {
         if click != self.views.load(Ordering::SeqCst) {
             return;
         }
-        let asked = std::mem::replace(&mut self.awaiting, Awaiting::Nothing);
         let from_list = self.back_for.take() == Some(click);
         match result {
             Ok(Opened::Text(document)) => {
@@ -1426,30 +1469,10 @@ impl Running {
                 let said = links::open_path(&target).map(|()| said);
                 self.say(Ok(said.unwrap_or_else(|problem| problem)));
             }
-            Ok(Opened::Made {
-                host,
-                session,
-                files,
-            }) => {
-                // For the list that asked. (Nothing else can be there: whatever replaced it
-                // asked for something newer, or closed the panel.)
-                let key = SessionKey {
-                    host,
-                    name: session,
-                };
-                let list = self.side.as_mut().and_then(SidePanel::made_body_mut);
-                if let Some(list) = list.filter(|list| list.key == key) {
-                    list.set_files(files);
-                    self.invalidate();
-                }
-            }
+            // A list is not a click's answer: it comes as `UserEvent::Listed`.
+            Ok(Opened::Made { .. }) => {}
             Err(problem) => {
                 crate::errln(format_args!("tmls-rs: {problem}"));
-                // A list that was waited for says that it did not come.
-                let list = self.side.as_mut().and_then(SidePanel::made_body_mut);
-                if let (Awaiting::Made, Some(list)) = (asked, list) {
-                    list.failed();
-                }
                 self.say(Ok(problem));
             }
         }

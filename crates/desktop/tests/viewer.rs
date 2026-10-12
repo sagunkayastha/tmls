@@ -1680,3 +1680,50 @@ fn the_lists_panel_says_whose_images_and_how_many_and_a_picture_from_it_leads_ba
     assert!(!text.takes_keys() && text.made_body().is_none());
     assert_eq!(text.view(20, 60, AREA).look, SideLook::default());
 }
+
+#[test]
+fn a_lists_answer_finds_its_list_also_behind_a_picture_opened_from_it() {
+    let other = SessionKey {
+        host: LOCAL.to_string(),
+        name: "other".to_string(),
+    };
+    // The list itself, still waiting.
+    let mut panel = SidePanel::made(MadeBody::loading(key(LOCAL)));
+    assert!(panel.list_of(&other).is_none(), "another session's answer");
+    assert!(panel.list_of(&key("nas")).is_none(), "another host's");
+    panel.list_of(&key(LOCAL)).unwrap().set_files(files(2));
+    assert_eq!(panel.made_body().unwrap().len(), 2);
+    // Behind a picture opened from it: the list that `‹` leads back to is the new one.
+    let mut picture = SidePanel::image(LOCAL, "/w/plots/1.png", (40, 30), (40, 30), LOCAL);
+    assert!(
+        picture.list_of(&key(LOCAL)).is_none(),
+        "a picture from the terminal"
+    );
+    picture.back = panel.made_body().cloned();
+    picture.list_of(&key(LOCAL)).unwrap().set_files(files(5));
+    assert_eq!(picture.back.as_ref().unwrap().len(), 5);
+    assert!(picture.list_of(&other).is_none());
+    // A list that waited and whose host never answered says so, wherever it is.
+    let mut waiting = SidePanel::image(LOCAL, "/w/a.png", (4, 3), (4, 3), LOCAL);
+    waiting.back = Some(MadeBody::loading(key(LOCAL)));
+    waiting.list_of(&key(LOCAL)).unwrap().failed();
+    assert_eq!(waiting.back.as_ref().unwrap().message(), Some(MADE_FAILED));
+}
+
+#[test]
+fn a_list_that_is_no_longer_waited_for_asks_no_host() {
+    let calls = RefCell::new(0);
+    let run = |_: &[String], _: Duration| {
+        *calls.borrow_mut() += 1;
+        Ok(b"1760000300\t12\t/w/plots/c.png\n".to_vec())
+    };
+    let overtaken = viewer::made_while(&key("nas"), ID, LOCAL, &run, &|| false);
+    assert_eq!(
+        overtaken,
+        Err("images of work on nas: a newer request took its place".to_string())
+    );
+    assert_eq!(*calls.borrow(), 0, "no ssh is started for it");
+    let wanted = viewer::made_while(&key("nas"), ID, LOCAL, &run, &|| true);
+    assert!(matches!(wanted, Ok(Opened::Made { files, .. }) if files.len() == 1));
+    assert_eq!(*calls.borrow(), 1);
+}

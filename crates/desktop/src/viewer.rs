@@ -43,7 +43,8 @@
 //! name and its folder. One of them is under the cursor; opening it shows the picture as any
 //! other, and that panel keeps the list (`SidePanel::back`) to return to. A tab whose session
 //! is not Claude's has no list and says so. Only such a panel takes the keys, and only once
-//! it was clicked (`SidePanel::takes_keys`): a file's panel never has them.
+//! it was clicked (`SidePanel::takes_keys`): a file's panel never has them. The list's answer
+//! comes when the host gives it, whatever the panel shows by then (`SidePanel::list_of`).
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -467,8 +468,23 @@ pub fn made(
     local_name: &str,
     run: Runner,
 ) -> Result<Opened, String> {
+    made_while(key, session_id, local_name, run, &|| true)
+}
+
+/// `made` for a request that may be overtaken: `wanted` says whether its answer is still
+/// waited for. Asked before the host is: a request nobody waits for starts no ssh.
+pub fn made_while(
+    key: &SessionKey,
+    session_id: &str,
+    local_name: &str,
+    run: Runner,
+    wanted: &dyn Fn() -> bool,
+) -> Result<Opened, String> {
     let argv = files::made_argv(&key.host, session_id, None, local_name);
     let name = named(&key.host, &key.name, local_name);
+    if !wanted() {
+        return Err(format!("images of {name}: a newer request took its place"));
+    }
     let out = run(&argv, MADE_TIMEOUT).map_err(|e| format!("images of {name}: {}", why(&e)))?;
     let files = files::parse_made(&String::from_utf8_lossy(&out)).unwrap_or_default();
     Ok(Opened::Made {
@@ -1180,6 +1196,17 @@ impl SidePanel {
             Body::Made(made) => Some(made),
             Body::Text(_) | Body::Image(_) => None,
         }
+    }
+
+    /// The list of the images of the session `key`, where an answer of its host goes: the
+    /// one the panel shows, or the one behind a picture that was opened from it. `None` when
+    /// the panel has neither (a file from the terminal, another session's list).
+    pub fn list_of(&mut self, key: &SessionKey) -> Option<&mut MadeBody> {
+        let list = match &mut self.body {
+            Body::Made(made) => Some(made),
+            Body::Text(_) | Body::Image(_) => self.back.as_mut(),
+        };
+        list.filter(|list| list.key == *key)
     }
 
     /// Whether a click on the panel gives it the keys: the list (the cursor, Enter) and a

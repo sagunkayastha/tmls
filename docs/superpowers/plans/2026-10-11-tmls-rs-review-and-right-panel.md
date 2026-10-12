@@ -123,7 +123,7 @@ Each line has its test in the task that owns the code (T1: 3, 5; T2: 1, 2, 5; T3
 ```sh
 f=$(ls -t "$HOME"/.claude/projects/*/SESSION_ID.jsonl 2>/dev/null | head -n 1)
 [ -n "$f" ] || { echo "no-transcript"; exit 0; }
-grep -aoE '/[A-Za-z0-9_.~+@%=,/-]+\.(png|jpe?g|gif|webp|bmp)' "$f" | sort -u |
+grep -aoE '/[A-Za-z0-9_.~+@%=/-]+\.(png|jpe?g|gif|webp|bmp)' "$f" | sed 's|^//*|/|' | sort -u |
 while IFS= read -r p; do
   [ -f "$p" ] && stat -c '%Y	%s	%n' -- "$p"
 done | sort -rn | head -n 500
