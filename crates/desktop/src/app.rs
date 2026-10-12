@@ -449,7 +449,15 @@ impl Running {
     ) -> anyhow::Result<Running> {
         let attributes = Window::default_attributes()
             .with_title(TITLE)
+            .with_window_icon(crate::icon::window_icon())
             .with_inner_size(LogicalSize::new(1200.0, 720.0));
+        // The Wayland app_id (and, the same field, the X11 WM_CLASS): the desktop entry's icon.
+        #[cfg(target_os = "linux")]
+        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
+            attributes,
+            crate::icon::APP_ID,
+            crate::icon::APP_ID,
+        );
         let window = Arc::new(
             event_loop
                 .create_window(attributes)

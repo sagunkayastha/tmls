@@ -15,7 +15,8 @@
 //! - `picture` — a picture in that panel on the GPU: its texture and the pass that draws it.
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
-//! - `uistate` — the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
+//! - `icon`  — the window's app id and embedded icon.
+//! - `uistate` —the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
 //! - `draw`  — the layout of the window and everything but the terminal's cells as quads.
 //! - `app`   — the winit event loop and the wgpu surface: wiring only.
 //!
@@ -27,6 +28,7 @@ pub mod app;
 pub mod clip;
 pub mod draw;
 pub mod forms;
+pub mod icon;
 pub mod keys;
 pub mod kitty;
 pub mod launch;
