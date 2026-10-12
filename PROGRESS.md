@@ -2,7 +2,110 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-12 (afternoon) — hover text, image copy to a remote host, real drag and drop on `feat/drop-hover` @ `8500f37`; PC built 13:16; not merged ⚠️
+
+Two of the three unplanned gaps of the entry below, by the user's word ("we dont need right click paste. but the
+other two yes"). Branch `feat/drop-hover` = `fix/osc52-copy` (`618c25a`) + 3 commits. After this: `ag` / `ct`.
+
+- **Hover (`4b064ee`):** pointer over a session's row → the status line has the row in full (`sidebar::hover_text`:
+  "NAME waits for you: REASON", else "NAME: last reply / title"). The dim line already showed the reason; the list
+  cuts it off. `App::hover`, set in `pointer_moved`, cleared on `CursorLeft`; a problem or a note comes first.
+- **Image copy (`7f6660a`):** `client_core::imagedrop` (tmls `image_paste.py`). Text to paste that is one existing
+  image file here (path or `file://`; png jpg jpeg gif webp, ≤ 32 MiB) + front tab on another host → copied through
+  ssh's stdin to the host's `~/.cache/tmls/images/<secs>-<micros>.<ext>` on a thread, `UserEvent::Dropped` pastes
+  `~/.cache/tmls/images/…` into the session it was for (no Enter). Local session: the path as it came. Hooked into
+  `App::paste_text` (Ctrl+Shift+V and drops).
+- **Drag and drop (`8500f37`):** winit 0.30.13 sends no `DroppedFile` on Wayland. `desktop/src/dnd.rs`: our own
+  `wl_data_device` on winit's `wl_display` (`Backend::from_foreign_display`), own queue, own thread
+  (`prepare_read` + `poll` on the socket and a stop pipe; stopped and joined in `Running::shutdown`). Accepts
+  `text/uri-list` as a copy, refuses the rest. `imagedrop::dropped_text`: one path as it is, several shell-quoted.
+  Off switch `TMLS_RS_NO_DND`. New direct deps `wayland-client 0.31`, `wayland-backend 0.3` (`client_system`),
+  dev-dep `wayland-protocols` — all already in the lock through winit.
+- **Bug the check caught (do not go back):** dispatching the queue from `about_to_wait` does not work — during a
+  drag nothing arrives for winit, its loop sleeps, `enter` was answered after `leave` and every drop was refused.
+- **Verified:** `tooling/smoke/dnd.sh` (new; drag source `desktop/examples/dragsrc.rs`, vptr.py's held-button drag)
+  14/14: one file, two files, refused `text/plain`, a file again, the app alive after each
+  (`/data/scratch/tmls-rs-v0/dnd/`; `DND_WAYLAND_DEBUG=1` logs the app's Wayland messages). Full headless e2e
+  **205/205** at `8500f37` (`/data/scratch/tmls-rs-v0/e2e-drop/`). client-core + desktop tests pass, clippy
+  `-D warnings` over all targets, `cargo fmt -p desktop --check` clean. The store command ran once by hand against
+  the PC (left `~/.cache/tmls/images/probe-1791831568.png` there, 10 bytes).
+- **Not verified:** anything of this entry in the real KDE window — KWin's drag and drop (Dolphin as the source),
+  the copy to archbox from the PC, the hover line. The headless local session never takes the remote-copy road.
+
+### NEXT
+1. User: restart `tmls-rs` (window of 12:43 predates the 13:16 build). Try: hover a row; drop an image from Dolphin
+   on an archbox tab (status line: `copying …`, then `… is on archbox: pasted ~/.cache/tmls/images/…`); drop a
+   file on a PC tab (its path is typed). Plus the two checks of the entry below.
+2. "merge" → `feat/drop-hover` → `main` (`--no-ff`; it contains `fix/osc52-copy`).
+3. `ag` / `ct` (the user's next topic), then round 2.
+
+## 2026-10-12 (midday) — first real-window test: copy and tab keys fixed on `fix/osc52-copy` @ `618c25a`, PC built; not merged ⚠️
+
+The user's first run in the real KDE window found two things broken: highlight did not copy, the tab keys only ever
+went to the starred session. Both fixed on `fix/osc52-copy` (4 commits from `main` `26d2b4d`), built on the PC 12:43.
+Waiting on the user's word that both work, then merge.
+
+- **Copy — root cause:** tmux with `mouse on` takes a plain drag for its own selection and hands the text over with
+  OSC 52 on release (`set-clipboard external`, TERM `xterm-256color`; a real tmux was seen sending `ESC]52;;…BEL`).
+  libghostty-vt's `Terminal` has no callback for it and tmls-rs had no code: the text was dropped. Only Shift/Ctrl+drag
+  (our own selection) copied. Fix `ea17999`: `s2-core/src/osc52.rs` (`Scanner`, scans the PTY bytes beside the parser,
+  any split, 8 MiB cap, a `?` query is never answered) → `FrameSlot::take_copied` → `Session`/`Tabs::take_copied` →
+  `App::redraw` puts it on the clipboard and says `copied N chars`, from tabs in front and behind. Off switch:
+  `TMLS_RS_NO_OSC52`.
+- **Ruled out first (do not redo):** arboard on KWin. A probe with arboard `=3.6.1` + `wayland-data-control`
+  (`/data/scratch/tmls-rs-v0/clip-probe/`) set the clipboard every time, binding `ext_data_control_manager_v1` (KWin
+  6.7.5 offers only that one, no `zwlr_`). The app's X11 socket is the NVIDIA Vulkan driver's, not arboard's.
+- **Tab keys — root cause:** Alt+Shift+Right / Left walked the pinned (★) sessions whenever one was pinned, as Python
+  tmls (`feat/native-attach`, `action_switch_tab`: `ring = pinned or …`) does. With one pin (`home ★`) every press
+  lands on that session. The user presses Ctrl+Alt+Left / Right and expects tabs; that chord was bound nowhere (not in
+  tmls `main` or `feat/native-attach`, kitty, tmux or KDE). Now (`08ae220`, `b0ab91d`, `618c25a`): Alt+Shift+arrows AND
+  Ctrl+Alt+arrows are both `Global::NextTab` / `PrevTab` = the open tab right / left, wrapping; with fewer than two
+  tabs they walk the list's sessions (`list_step`). **Departure from tmls, by the user's word:** no key walks the pins
+  any more; `Sidebar::pin_step` stays, unused. `p` / middle-click still pin (mark + order only).
+- **Verified:** archbox `cargo test -p s2-core -p s2-wgpu -p client-core -p desktop` 562 passed / 1 ignored at
+  `b0ab91d`; desktop 270 at `618c25a`; clippy `-D warnings`, `cargo fmt -p desktop --check` clean. New tests: 6 unit +
+  3 PTY (`s2-core/tests/osc52.rs`), 1 in `desktop/tests/tabs.rs`, 1 in `desktop/tests/keys.rs`. Headless e2e NOT rerun
+  on this branch (its tab-key block uses no pins, so it should hold). `main` `26d2b4d` re-tested first: 391 passed,
+  clippy + fmt clean (the merge of the morning had no recorded rerun).
+- **Real window (PC, build `b0ab91d`, input by `ydotool` + KWin script):** Ctrl+Alt+Right went rem-voice → Projects →
+  home and stayed; `tmux set-buffer -w -t <tab's client>` → KDE clipboard held the exact text, status line
+  `copied 32 chars` (`/data/scratch/tmls-rs-v0/pc-shots/c1-status.png`). **Not verified:** a physical drag (the injected
+  pointer could not be placed while the user used the mouse), and nothing in the real window at `618c25a`.
+- **Gotchas:** (1) `client-core/tests/poll.rs` `snapshots_arrive_every_period` and
+  `growing_output_age_alone_is_not_news` fail when archbox is loaded (other Claude sessions, a build just before);
+  they pass alone — rerun before believing them. (2) `pgrep -f target-docker/release/tmls-rs` matches the ssh command
+  that runs it: use `pgrep -x tmls-rs`. (3) Compare the app's `ps -o lstart` with the binary's time before saying
+  "restart": twice the user's window was older than the build. (4) Do not ask before a tmls-rs PC build (memory
+  `feedback-tmls-rs-build-on-pc`). (5) `qdbus6 … queryWindowInfo` and `plasmashell --version` over ssh are not
+  read-only: one opens a window picker, the other dumped core. (6) Keys sent with `ydotool` go to whatever has the
+  focus: activate the window first (`~/offload/tmls-rs-v0/act.sh` on the PC) and check `focus true` in the log.
+- **Left on the PC, nothing deleted:** `~/offload/tmls-rs-v0/` (probe binary, `kde-env.sh`, `act.sh`, KWin scripts,
+  screenshots, `pc-build-*.log`), `/run/user/1000/.ydotool_socket` (daemon stopped). Archbox:
+  `/data/scratch/tmls-rs-v0/{clip-probe,pc-shots,retest-main}/`.
+
+### Missing against Python tmls (`feat/native-attach` README, checked 2026-10-12)
+- **In the round 2 plan, not started (G1–G8):** window / split / kill-pane menu; game-mode awareness; quick select
+  Alt+Shift+S; image paste Alt+Shift+V; background tmux servers (`b`); sign-in row (the listing knows
+  `sign-in required`, the row does not act on it); alert sound + Desktop / Sound / Silence switches; the last ten
+  prompts in the Ask form.
+- **Not in any plan (found today):** right-click in a tab pastes the clipboard (text or image) in tmls — here the
+  click goes to the program; dropping an image file on a tab (copied to the host, path pasted) — no drop handling;
+  hover on a `?` row saying which prompt — not found in the list code (only the alerts list tracks hover).
+- **Known, already noted for round 2:** approvals recognise only "Do you want to proceed?"; host-side pane check
+  before a paste.
+- **Not ports, kept as they are:** `ag`, `ct`, `tmls hooks`, `tmls-web`, Android, sketchpad units. No spinner (D7).
+
+### NEXT
+1. User: restart `tmls-rs` (window of 12:41 predates the 12:43 build), check `?` shows `Alt+Shift+→ / ←  next /
+   previous tab`, try Ctrl+Alt+arrows and a plain highlight. Then "merge" → `fix/osc52-copy` → `main` (`--no-ff`).
+2. Rest of `docs/NIGHT-TEST.md` (28 boxes, none ticked; its header still says the PC build is missing — stale).
+3. Round 2 (`2026-10-12-tmls-rs-parity-round2.md`) — say go; add the three unplanned gaps above.
+4. Cleanup list of the night entry still needs the user's yes.
+
 ## 2026-10-12 (morning) — PC built `f2f442a`; local re-test in progress before merge
+
+**Correction (midday):** the merge happened at 10:11 — `main` = `26d2b4d` — with no recorded rerun after the zig
+failure below. `main` was re-tested at midday and is green (see the entry above).
 
 - PC back online. `game-mode status` = off (own command, 10:08). Built `f2f442a` (= `745ba5b` code + docs) on the
   PC: `tooling/docker/build.sh build --release -p desktop`, warm cache, `target-docker/release/tmls-rs` 20 MB at

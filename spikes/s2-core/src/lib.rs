@@ -7,6 +7,7 @@ pub mod emu;
 pub mod frame;
 pub mod keys;
 pub mod latency;
+pub mod osc52;
 pub mod pty;
 
 pub use emu::{Emu, InputMsg};

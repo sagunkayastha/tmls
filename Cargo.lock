@@ -581,6 +581,9 @@ dependencies = [
  "s2-core",
  "s2-wgpu",
  "serde_json",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "wgpu",
  "winit",
 ]

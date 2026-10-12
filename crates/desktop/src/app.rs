@@ -72,6 +72,7 @@ use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
     default_color,
 };
+use client_core::{imagedrop, tmux};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -158,6 +159,11 @@ pub enum UserEvent {
     /// A message of the queue was sent, or not: the send's id and the session it was for
     /// when it started (`Queue::sent` knows its name now).
     Sent(SendId, SessionKey, Result<String, String>),
+    /// An image dropped on (or pasted into) a tab of another host was copied there, or not:
+    /// the tab's session, the file's name, and the path to paste on that host.
+    Dropped(SessionKey, String, Result<String, String>),
+    /// Files were dropped on the window: the `text/uri-list` of them (`dnd`).
+    FilesDropped(String),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -243,6 +249,8 @@ impl ApplicationHandler<UserEvent> for App {
                 running.approval(request, key, pane, result)
             }
             UserEvent::Sent(id, key, result) => running.sent(id, key, result),
+            UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
+            UserEvent::FilesDropped(list) => running.files_dropped(&list),
         }
     }
 
@@ -289,6 +297,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => running.ime(t_event_ns, &ime),
             WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
+            // Out of the window: over no row.
+            WindowEvent::CursorLeft { .. } => running.hover_row(Hit::Sidebar),
             WindowEvent::MouseInput { state, button, .. } => {
                 running.button(state, button);
                 if running.quit {
@@ -324,6 +334,38 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(running) = self.running.take() {
             running.shutdown();
+        }
+    }
+}
+
+/// The listener for files dropped on the window, on Wayland (`dnd`). `None` elsewhere, with
+/// `TMLS_RS_NO_DND`, and when it cannot start — which the log says, and nothing else: the
+/// app is the same without it.
+fn start_drops(
+    event_loop: &ActiveEventLoop,
+    proxy: &EventLoopProxy<UserEvent>,
+) -> Option<crate::dnd::Drops> {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    if std::env::var_os(crate::dnd::NO_DND).is_some() {
+        return None;
+    }
+    let RawDisplayHandle::Wayland(handle) = event_loop.display_handle().ok()?.as_raw() else {
+        return None;
+    };
+    let proxy = proxy.clone();
+    let sink: crate::dnd::Sink = Arc::new(move |dropped| {
+        let _ = proxy.send_event(match dropped {
+            Ok(list) => UserEvent::FilesDropped(list),
+            Err(why) => UserEvent::Said(Err(why)),
+        });
+    });
+    // SAFETY: the display is the event loop's, which outlives `Running` and with it the
+    // listener (`exiting` drops `Running` before the loop ends).
+    match unsafe { crate::dnd::Drops::start(handle.display.as_ptr(), sink) } {
+        Ok(drops) => Some(drops),
+        Err(why) => {
+            crate::errln(format_args!("tmls-rs: no drag and drop: {why}"));
+            None
         }
     }
 }
@@ -393,6 +435,12 @@ struct Running {
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
     note: Option<String>,
+    /// Listens for files dropped on the window (`dnd`); `None` off Wayland, with
+    /// `TMLS_RS_NO_DND`, or when it could not start.
+    drops: Option<crate::dnd::Drops>,
+    /// What the session's row under the pointer says in full (`sidebar::hover_text`), for the
+    /// status line while nothing else is said there.
+    hover: Option<String>,
     /// The open form or menu, and the window pixel a menu was opened at.
     modal: Option<(Modal, Option<(u32, u32)>)>,
     /// What had the keys before `modal` opened.
@@ -511,6 +559,7 @@ impl Running {
         );
         // Nothing is open yet and the keys are the list's, which takes no composed text.
         window.set_ime_allowed(false);
+        let drops = start_drops(event_loop, &proxy);
 
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
@@ -661,6 +710,8 @@ impl Running {
             prompts_file: config_dir.join("prompts"),
             problem: None,
             note: None,
+            hover: None,
+            drops,
             modal: None,
             focus_before: Focus::Sidebar,
             select_when_listed: None,
@@ -1098,7 +1149,8 @@ impl Running {
             .collect();
         let active = self.tabs.active();
         let ended = matches!(self.tabs.active_state(), Some(TabState::Ended { .. }));
-        let status = match (self.problem.as_ref().or(self.note.as_ref()), active) {
+        let said = self.problem.as_ref().or(self.note.as_ref());
+        let status = match (said.or(self.hover.as_ref()), active) {
             (Some(said), _) => said.clone(),
             (None, Some(index)) => {
                 let key = self.tabs.key(index);
@@ -2094,18 +2146,16 @@ impl Running {
     }
 
     /// Opens the next session after the front tab's that needs the user.
-    /// Alt+Shift+Right / Left, as in tmls: among the pinned (★) sessions when any is listed —
-    /// one without a tab gets one — else among the open tabs, and with fewer than two of
-    /// those among all the sessions.
+    /// Alt+Shift+Right / Left and Ctrl+Alt+Right / Left, as in tmls: the open tab to the right
+    /// or left of the one in front, wrapping round. A pin (★) plays no part: with one pinned
+    /// session a walk among the pinned only ever reached that one. With fewer than two tabs
+    /// there is no tab to go to, and the keys walk the sessions of the list instead.
     fn switch_tab(&mut self, step: i32) {
-        let front = self.tabs.active().map(|index| self.tabs.key(index));
-        let pinned = self.sidebar.pin_step(front, step);
-        let few_tabs = || match self.tabs.len() {
-            0 | 1 => self.sidebar.list_step(front, step),
-            _ => None,
-        };
-        if let Some(key) = pinned.or_else(few_tabs) {
-            self.open(&key);
+        if self.tabs.len() < 2 {
+            let front = self.tabs.active().map(|index| self.tabs.key(index));
+            if let Some(key) = self.sidebar.list_step(front, step) {
+                self.open(&key);
+            }
             return;
         }
         if step > 0 {
@@ -2455,11 +2505,92 @@ impl Running {
             return self.say(Ok("no live session to paste into".to_string()));
         }
         let got = self.clip.get();
+        self.paste_text(got);
+    }
+
+    /// Text for the tab in front, from the clipboard or a drop, and what the status line says
+    /// of it. One image file for a session on another host is copied there first
+    /// (`copy_image`), and the path there is pasted when the copy is done.
+    fn paste_text(&mut self, got: Result<String, String>) {
+        if let Ok(text) = &got
+            && self.copy_image(text)
+        {
+            return;
+        }
         let said = clip::paste_with(got, |text| {
             if let Some(session) = self.tabs.live_mut() {
                 session.paste(text);
             }
         });
+        self.say(said);
+    }
+
+    /// Files dropped on the window (tmls: kitty pastes them): their paths are pasted into the
+    /// tab in front — one image for a session on another host is copied there first, as with
+    /// a paste.
+    fn files_dropped(&mut self, list: &str) {
+        let Some(text) = imagedrop::dropped_text(list) else {
+            return;
+        };
+        if self.tabs.live_mut().is_none() {
+            return self.say(Ok("no live session to drop into".to_string()));
+        }
+        self.paste_text(Ok(text));
+    }
+
+    /// `text` names one image file of this machine and the tab in front is a session on
+    /// another host (tmls `_paste_input`): the file is copied to that host on a thread, and
+    /// `dropped` pastes the path it has there. `false`: `text` is to be pasted as it is — a
+    /// session here reads the file where it lies.
+    fn copy_image(&mut self, text: &str) -> bool {
+        let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
+            return false;
+        };
+        if key.host == self.cfg.local_name || key.host == KITTY {
+            return false;
+        }
+        let Some(path) = imagedrop::dropped_image(text) else {
+            return false;
+        };
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        self.say(Ok(format!("copying {name} to {} …", key.host)));
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let run = |argv: &[String], input: &[u8]| {
+                tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)
+            };
+            let result = imagedrop::store(&key.host, &path, std::time::SystemTime::now(), &run);
+            let _ = proxy.send_event(UserEvent::Dropped(key, name, result));
+        });
+        true
+    }
+
+    /// The copy `copy_image` started ended: the path on the host is pasted into the session
+    /// it was for, if its tab is still open and live — in front or not, never somewhere else.
+    fn dropped(&mut self, key: SessionKey, name: String, result: Result<String, String>) {
+        let host = &key.host;
+        let said = match result {
+            Err(why) => Err(format!("{name} was not copied to {host}: {why}")),
+            Ok(path) => {
+                let live = self
+                    .tabs
+                    .index_of(&key)
+                    .filter(|&index| self.tabs.state(index) == TabState::Live);
+                match live {
+                    Some(index) => {
+                        self.tabs.session_mut(index).paste(&path);
+                        Ok(format!("{name} is on {host}: pasted {path}"))
+                    }
+                    None => Err(format!(
+                        "{name} is on {host} as {path}, but the tab of {} is gone",
+                        key.name
+                    )),
+                }
+            }
+        };
         self.say(said);
     }
 
@@ -2483,6 +2614,7 @@ impl Running {
         }
         let (x, y) = self.pointer;
         let hit = self.layout.hit(x, y, self.tabs.len());
+        self.hover_row(hit);
         if self.dragging_separator {
             self.drag_separator(x);
         }
@@ -2510,6 +2642,24 @@ impl Running {
             let reporting = self.tabs.mouse_reporting();
             let acts = self.mouse.motion(at, self.mouse_mods(), reporting);
             self.mouse_acts(acts);
+        }
+    }
+
+    /// The pointer is over `hit`: over a session's row (and no form or menu in the way) the
+    /// status line says what the row says, in full.
+    fn hover_row(&mut self, hit: Hit) {
+        let hover = match hit {
+            Hit::List { line, .. } if self.modal.is_none() => self
+                .sidebar
+                .row_at(line, self.layout.list_lines)
+                .and_then(|row| self.sidebar.key_at(row))
+                .and_then(|key| self.sidebar.info(key))
+                .and_then(sidebar::hover_text),
+            _ => None,
+        };
+        if hover != self.hover {
+            self.hover = hover;
+            self.invalidate();
         }
     }
 
@@ -2674,6 +2824,13 @@ impl Running {
             self.dirty = true;
             // A session ended (killed, exited, ssh dropped): the list hears of it now.
             self.poller.refresh_now();
+        }
+        // What a program in a tab wrote to the clipboard (tmux, when a mouse selection in it
+        // ends) goes there, and the status line says so.
+        for text in self.tabs.take_copied() {
+            if std::env::var_os(clip::NO_OSC52).is_none() {
+                self.set_clipboard(text);
+            }
         }
         let origin = (self.layout.terminal.x, self.layout.terminal.y);
         let new_frame = self
@@ -2910,6 +3067,9 @@ impl Running {
     /// polling and emulator threads and closes the PTYs, which detaches every tab.
     fn shutdown(mut self) {
         self.tails.clear(); // the readers are killed before the window goes
+        // The drop listener reads the window's connection: its thread ends here, while the
+        // connection is still there.
+        drop(self.drops.take());
         // Stops the sampler thread first, so its last line is in before the final flush.
         drop(self.sampler.take());
         self.write_meta(true);

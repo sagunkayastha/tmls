@@ -27,5 +27,15 @@ libc = "0.2"
 serde_json = "1"
 # Same features as s2-wgpu: no image support, data-control for wlroots/KDE Wayland.
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+# Files dropped on the window (`dnd`): winit 0.30 has no drag and drop on Wayland. Both are in the
+# tree already, at these versions, through winit; `client_system` is what gives a `Backend` on
+# winit's own `wl_display`.
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
 # Decodes the pictures the file panel shows (`viewer::decode`): these five formats and no others.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+[dev-dependencies]
+# The drag source of the drop check (`examples/dragsrc.rs`) needs a window of its own: xdg-shell.
+# In the tree already through winit.
+wayland-protocols = { version = "0.32", features = ["client"] }

@@ -98,7 +98,7 @@ The full table is in the app (`?` in the list, or the `?` button) and on the com
 Everywhere
   Ctrl+Q              quit; the sessions keep running
   Ctrl+= / Ctrl+−     font size
-  Alt+Shift+→ / ←     next / previous pinned or tab
+  Alt+Shift+→ / ←     next / previous tab (Ctrl+Alt+→ / ← too)
   Alt+Shift+↑         the keys to the session list
   Alt+Shift+N         next that waits, else unread
   Alt+Shift+A         send a message to this tab

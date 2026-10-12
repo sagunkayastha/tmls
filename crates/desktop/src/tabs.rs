@@ -329,6 +329,16 @@ impl Tabs {
         changed
     }
 
+    /// Call when woken: what the programs in the tabs wrote to the clipboard (OSC 52) since
+    /// the last call, oldest first within a tab. A tab behind counts too: its frames wait, a
+    /// copy does not.
+    pub fn take_copied(&mut self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.session.take_copied())
+            .collect()
+    }
+
     /// Takes the waiting frames of the tab in front into its scene, whose origin is set to
     /// `origin` first (the terminal area's corner). Returns whether there was a new frame.
     pub fn take_frames(&mut self, origin: (f32, f32), atlas: &mut Atlas, theme: &Theme) -> bool {

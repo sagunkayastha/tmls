@@ -113,6 +113,12 @@ impl Session {
         self.emu.frames.set_waker(f);
     }
 
+    /// The texts the program wrote to the clipboard (OSC 52: tmux when a mouse selection ends,
+    /// a program that copies for the user) since the last call, oldest first. Ask when woken.
+    pub fn take_copied(&self) -> Vec<String> {
+        self.emu.frames.take_copied()
+    }
+
     /// The child closed the PTY. Its last output may not be in a frame yet: see `begin_exit`.
     pub fn exited(&self) -> bool {
         self.emu.exited()

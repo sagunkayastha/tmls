@@ -34,6 +34,12 @@ const CTRL_SHIFT: Mods = Mods {
     ..NONE
 };
 
+const CTRL_ALT: Mods = Mods {
+    ctrl: true,
+    alt: true,
+    ..NONE
+};
+
 const FOCUSES: [Focus; 3] = [Focus::Terminal, Focus::Sidebar, Focus::Form];
 const ENDED: TabState = TabState::Ended { exit: None };
 
@@ -698,4 +704,50 @@ fn s_in_the_list_and_alt_shift_a_send_a_message() {
         assert_eq!(global(&ch('a', ALT_SHIFT), focus), Some(Global::Ask));
     }
     assert_eq!(global(&ch('a', ALT_SHIFT), Focus::Form), None);
+}
+
+/// Ctrl+Alt+Right / Left are the tab keys too, and nothing else with Ctrl+Alt is taken from the
+/// terminal.
+#[test]
+fn ctrl_alt_arrows_are_the_tab_keys_too() {
+    let bound = [
+        (named(Named::Right, CTRL_ALT), Global::NextTab),
+        (named(Named::Left, CTRL_ALT), Global::PrevTab),
+    ];
+    for (ev, expected) in bound {
+        for focus in [Focus::Terminal, Focus::Sidebar] {
+            assert_eq!(global(&ev, focus), Some(expected), "{ev:?} with {focus:?}");
+            assert_eq!(
+                route(&ev, focus, Some(TabState::Live)),
+                Route::Global(expected)
+            );
+            assert_eq!(
+                global(&repeat(&ev), focus),
+                Some(expected),
+                "held, it repeats"
+            );
+            assert_eq!(
+                route(&release(&ev), focus, Some(TabState::Live)),
+                Route::Drop,
+                "the release reaches no session"
+            );
+        }
+        assert_eq!(global(&ev, Focus::Form), None, "{ev:?} in a form");
+    }
+    for ev in [
+        named(Named::Up, CTRL_ALT),
+        named(Named::Down, CTRL_ALT),
+        ch('n', CTRL_ALT),
+        ch('w', CTRL_ALT),
+    ] {
+        assert_eq!(
+            global(&ev, Focus::Terminal),
+            None,
+            "{ev:?} stays the terminal's"
+        );
+        assert_eq!(
+            route(&ev, Focus::Terminal, Some(TabState::Live)),
+            Route::Terminal
+        );
+    }
 }
