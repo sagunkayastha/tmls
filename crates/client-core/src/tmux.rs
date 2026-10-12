@@ -15,9 +15,10 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 
@@ -295,6 +296,31 @@ pub fn send_keys_argv(key: &SessionKey, pane: Option<&str>, keys: &str, local_na
     } else {
         ssh(&key.host, format!("tmux send-keys -t {} {}", quote(&target), quote(keys)))
     }
+}
+
+/// Types the text on the script's stdin into `target` and presses Enter (tmls `prompts.send`):
+/// through a paste buffer of its own (`buffer`), as a bracketed paste when the program asks for
+/// one, so a message of several lines arrives whole; the buffer is deleted after the paste, or
+/// when the paste fails. The text never appears in the script.
+pub fn send_text_script(target: &str, buffer: &str) -> String {
+    let (t, b) = (quote(target), quote(buffer));
+    format!(
+        "tmux load-buffer -b {b} - && {{ tmux paste-buffer -p -d -b {b} -t {t} || {{ tmux delete-buffer -b {b}; false; }}; }} && sleep 0.2 && tmux send-keys -t {t} Enter"
+    )
+}
+
+/// [`send_text_script`] for Claude's pane of the session (`pane_target`), here or on its host.
+pub fn send_text_argv(key: &SessionKey, pane: Option<&str>, buffer: &str, local_name: &str) -> Vec<String> {
+    script_argv(&key.host, send_text_script(&pane_target(key, pane), buffer), local_name)
+}
+
+/// A paste buffer's name of its own (`tmls-` and 8 hex digits): two sends in the same moment
+/// cannot swap their texts.
+pub fn buffer_name() -> String {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let n = COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    format!("tmls-{:08x}", nanos ^ std::process::id().rotate_left(16) ^ n.wrapping_mul(0x9e37_79b9))
 }
 
 /// tmls's name for a session in `folder` when git knows nothing: the folder's own name.

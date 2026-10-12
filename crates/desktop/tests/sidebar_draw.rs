@@ -664,6 +664,11 @@ fn legend_and_buttons_sit_level_with_the_terminals_last_row() {
         1,
         "• unread"
     );
+    assert_eq!(
+        glyphs(&quads, l.legend, theme::QUEUED_RGB).len(),
+        1,
+        "✉ queued"
+    );
     let above = Rect {
         y: l.legend.y - 4.0,
         h: 4.0,
@@ -915,4 +920,26 @@ fn a_host_without_events_says_poll_dimly() {
         SIDEBAR_COLS,
         &theme,
     ));
+}
+
+#[test]
+fn queued_messages_show_before_the_dot_and_the_star() {
+    let info = session(LOCAL, "work", Status::Running);
+    let look = RowLook {
+        queued: 2,
+        unread: true,
+        pinned: true,
+        ..RowLook::default()
+    };
+    let said = spans(&info, look);
+    let (name, queued, dot, star) = (
+        find(&said, "work"),
+        find(&said, "2✉"),
+        find(&said, "•"),
+        find(&said, "★"),
+    );
+    assert_eq!(queued.col, name.col + 4 + 1);
+    assert_eq!((dot.col, star.col), (queued.col + 3, queued.col + 5));
+    assert_eq!(queued.colour, theme::QUEUED_RGB);
+    assert_within(&said);
 }

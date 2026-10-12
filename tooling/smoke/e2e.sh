@@ -22,6 +22,8 @@ APPROVE='tmlsrs-test-0approve'
 APPROVE_SID='1b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 PUSH='tmlsrs-test-2push'
 PUSH_SID='3b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+ASK='tmlsrs-test-1ask'
+ASK_SID='2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 # The stand-ins for Claude processes, by session id: their status files are named after them.
 declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
@@ -143,6 +145,7 @@ cleanup() {
   [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
   tmux kill-session -t "=$APPROVE" 2>/dev/null
   tmux kill-session -t "=$PUSH" 2>/dev/null
+  tmux kill-session -t "=$ASK" 2>/dev/null
   for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
@@ -1237,6 +1240,40 @@ if pane_text "$APPROVE" | grep -q '^GOT\['; then
     "pane: $(pane_text "$APPROVE" | grep '^GOT' | tr '\n' '|')"
 else
   pass "a dialog read that comes back after the user typed on answers nothing"
+fi
+
+# --- send or queue a message (F7) ----------------------------------------------------------------
+# $ASK is a shell that a status file calls Claude's; it sorts second.
+tmux new-session -d -s "$ASK" -x 100 -y 30
+fake_claude "$ASK" "$ASK_SID" idle
+sleep 6
+# The F5 block left the keys with the terminal.
+key_focus_list
+top_of_list
+keys -k j
+keys s
+check "screenshot 37-ask (Send to $ASK, the default saved prompt)" shot 37-ask
+keys "echo tmls-ask-ok-$NONCE"
+key_enter
+if wait_for 8 pane_has_line "$ASK" "tmls-ask-ok-$NONCE"; then
+  pass "s on an idle Claude row sends the message at once"
+else
+  fail "s on an idle Claude row sends the message at once" "pane: $(pane_text "$ASK" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+fake_claude "$ASK" "$ASK_SID" busy
+sleep 6
+keys s
+keys "echo tmls-queued-$NONCE"
+key_enter
+sleep 2
+check "a message for a busy session waits in the queue" \
+  bash -c '! tmux capture-pane -p -t "=$0:" | grep -qxF -- "$1"' "$ASK" "tmls-queued-$NONCE"
+check "screenshot 38-queued (1✉ on the row)" shot 38-queued
+fake_claude "$ASK" "$ASK_SID" idle
+if wait_for 12 pane_has_line "$ASK" "tmls-queued-$NONCE"; then
+  pass "when its turn ends the queued message is sent"
+else
+  fail "when its turn ends the queued message is sent" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
 fi
 
 # --- quit ---------------------------------------------------------------------------------------

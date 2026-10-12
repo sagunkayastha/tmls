@@ -3,13 +3,15 @@
 //! command string is given to `sh`, `tmux`, `cd`, `git`, `ssh` and `claude` are shell functions
 //! that print their arguments.
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use client_core::listing::SessionKey;
 use client_core::tmux::{
-    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, capture_argv, derived_name_argv, kill_argv,
-    new_session_argv, rename_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, valid_session_name,
+    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
+    kill_argv, new_session_argv, rename_argv, run, run_with_stdin, running_commands_argv, send_keys_argv,
+    send_text_argv, send_text_script, valid_session_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -375,4 +377,33 @@ fn capture_and_send_keys_target_claudes_pane_else_the_session() {
     assert_eq!(words(&capture), v(&["capture-pane", "-p", "-t", "=a b:"]));
     let send = remote(&send_keys_argv(&key("ph", "it's"), Some("%3"), "1", LOCAL), &SSH);
     assert_eq!(words(&send), v(&["send-keys", "-t", "%3", "1"]));
+}
+
+#[test]
+fn send_text_script_pastes_through_a_named_buffer_then_presses_enter() {
+    assert_eq!(
+        send_text_script("%7", "tmls-0123abcd"),
+        "tmux load-buffer -b 'tmls-0123abcd' - && { tmux paste-buffer -p -d -b 'tmls-0123abcd' -t '%7' || { tmux delete-buffer -b 'tmls-0123abcd'; false; }; } && sleep 0.2 && tmux send-keys -t '%7' Enter"
+    );
+    let name = buffer_name();
+    assert!(name.len() == 13 && name.starts_with("tmls-") && name[5..].bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+    assert_ne!(buffer_name(), buffer_name(), "two sends in one tick get two buffers");
+    let there = send_text_argv(&key("ph", "a b"), None, "tmls-0123abcd", LOCAL);
+    assert_eq!(&there[..SSH.len()], &v(&SSH)[..]);
+    assert!(there.last().unwrap().ends_with("tmux send-keys -t '=a b:' Enter"), "{there:?}");
+    assert_eq!(send_text_argv(&key(LOCAL, "w"), Some("%7"), "tmls-0123abcd", LOCAL)[..2], v(&["sh", "-c"]));
+}
+
+#[test]
+fn send_text_gives_tmux_the_message_on_stdin_byte_for_byte() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("send-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let got = dir.join("buffer");
+    let message = "it's \"quoted\" $(touch nope) `touch nope2` \\n; 日本 é\n\tsecond line\n".repeat(64);
+    // A tmux that keeps what load-buffer reads; paste-buffer and send-keys succeed.
+    let stub = format!("tmux() {{ if [ \"$1\" = load-buffer ]; then cat >'{}'; fi; }}; ", got.display());
+    let argv = v(&["sh", "-c", &format!("{stub}{}", send_text_script("%7", "tmls-0123abcd"))]);
+    run_with_stdin(&argv, message.as_bytes(), Duration::from_secs(5)).expect("the script");
+    assert_eq!(std::fs::read(&got).unwrap(), message.as_bytes());
+    assert!(!std::path::Path::new("nope").exists() && !std::path::Path::new("nope2").exists(), "nothing in it ran");
 }

@@ -95,6 +95,7 @@ use crate::kitty;
 use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
 use crate::picture::PictureRenderer;
+use crate::queue::Queue;
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
@@ -150,6 +151,8 @@ pub enum UserEvent {
     Approval(u64, SessionKey, Option<String>, Result<Vec<String>, String>),
     /// A line of a host's events.jsonl reader.
     Push(String, PushLine),
+    /// A queued message was sent (its session, its text), or not.
+    Sent(SessionKey, String, Result<String, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -234,6 +237,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Approval(request, key, pane, result) => {
                 running.approval(request, key, pane, result)
             }
+            UserEvent::Sent(key, text, result) => running.sent(key, text, result),
         }
     }
 
@@ -376,6 +380,10 @@ struct Running {
     seen: Seen,
     /// Which sessions started to need the user; the bell's count.
     alerts: Alerts,
+    /// Messages waiting for busy Claude sessions.
+    queue: Queue,
+    /// tmls's saved prompts, `~/.config/tmls/prompts`.
+    prompts_file: PathBuf,
     /// The last thing that went wrong (a tab that could not be opened), for the status line.
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
@@ -636,6 +644,8 @@ impl Running {
             sidebar,
             seen: Seen::new(),
             alerts: Alerts::new(Settings::load(config_dir)),
+            queue: Queue::default(),
+            prompts_file: config_dir.join("prompts"),
             problem: None,
             note: None,
             modal: None,
@@ -821,6 +831,11 @@ impl Running {
         self.listings
             .insert(snapshot.host.clone(), snapshot.clone());
         self.follow_push(&snapshot.host, snapshot.online);
+        let queued: Vec<(SessionKey, Option<Status>)> = self
+            .queue
+            .keys()
+            .map(|key| (key.clone(), self.sidebar.status(key)))
+            .collect();
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         let (host, online) = (snapshot.host.clone(), snapshot.online);
         // The session whose images the panel lists, and what it was doing until now.
@@ -858,7 +873,54 @@ impl Running {
         if let Some((key, state)) = images {
             self.relist_made(&key, state, was);
         }
+        // A turn that ended sends the head of its session's queue.
+        for (key, before) in queued {
+            let after = self.sidebar.status(&key);
+            if let Some(text) = self.queue.due(&key, before, after) {
+                self.deliver_queued(key, text);
+            }
+        }
         self.invalidate();
+    }
+
+    /// `s` in the list, the menu's Send message…, or Alt+Shift+A: the message form for a
+    /// Claude session.
+    fn ask_form(&mut self, key: SessionKey) {
+        let Some(info) = self.sidebar.info(&key) else {
+            return self.say(Err(format!("{} is not listed any more", key.name)));
+        };
+        if !forms::is_claude(info) {
+            return self.say(Err(format!("{} is not a Claude session", key.name)));
+        }
+        let pane = info.pane.clone();
+        let saved =
+            forms::saved_prompts(std::fs::read_to_string(&self.prompts_file).ok().as_deref());
+        let queued = self.queue.count(&key);
+        self.open_modal(Modal::Form(Form::ask(key, pane, saved, queued)), None);
+    }
+
+    /// The head of a session's queue, sent on a thread; the answer is `UserEvent::Sent`.
+    fn deliver_queued(&mut self, key: SessionKey, text: String) {
+        let pane = self.sidebar.info(&key).and_then(|info| info.pane.clone());
+        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+        std::thread::spawn(move || {
+            let result =
+                forms::send_text(&key, pane.as_deref(), &text, &local, &forms::run_tmux_with);
+            let _ = proxy.send_event(UserEvent::Sent(key, text, result));
+        });
+    }
+
+    fn sent(&mut self, key: SessionKey, text: String, result: Result<String, String>) {
+        self.queue.sent(&key, &text, result.is_ok());
+        let left = self.queue.count(&key);
+        self.say(match result {
+            Ok(_) if left > 0 => Ok(format!(
+                "sent a queued message to {} ({left} waiting)",
+                key.name
+            )),
+            Ok(_) => Ok(format!("sent the queued message to {}", key.name)),
+            Err(e) => Err(format!("{e}; {left} queued message(s) kept")),
+        });
     }
 
     /// Starts the reader of `host`'s events.jsonl when the host answers; stops it when not.
@@ -1011,6 +1073,11 @@ impl Running {
                 polled.sort(); // the same view for the same state
                 polled
             },
+            queued: self
+                .queue
+                .keys()
+                .map(|key| (key.clone(), self.queue.count(key)))
+                .collect(),
         }
     }
 
@@ -1226,6 +1293,10 @@ impl Running {
                 self.close_modal();
                 self.copy_attach(&key);
             }
+            MenuResult::Pick(MenuItem::Send) => {
+                self.close_modal();
+                self.ask_form(key);
+            }
         }
         self.invalidate();
     }
@@ -1317,6 +1388,30 @@ impl Running {
                     let _ = proxy.send_event(UserEvent::Done(request, result));
                 });
             }
+            FormResult::Ask { key, pane, text } => {
+                self.close_modal();
+                if Queue::busy(self.sidebar.status(&key)) {
+                    let waiting = self.queue.add(&key, text);
+                    self.say(Ok(format!("queued for {} ({waiting} waiting)", key.name)));
+                } else {
+                    let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+                    std::thread::spawn(move || {
+                        let said = forms::send_text(
+                            &key,
+                            pane.as_deref(),
+                            &text,
+                            &local,
+                            &forms::run_tmux_with,
+                        );
+                        let _ = proxy.send_event(UserEvent::Said(said));
+                    });
+                }
+            }
+            FormResult::ClearQueue(key) => {
+                self.close_modal();
+                self.queue.clear(&key);
+                self.say(Ok(format!("cleared the queue of {}", key.name)));
+            }
         }
         self.invalidate();
     }
@@ -1377,6 +1472,7 @@ impl Running {
                 // The ★ follows the name. A `pins` file that cannot be written is not worth
                 // hiding that the rename worked: it goes to stderr only.
                 self.sidebar.renamed(&old, &key);
+                self.queue.renamed(&old, &key);
                 if let Err(e) = self.sidebar.take_pin_error() {
                     crate::errln(format_args!("tmls-rs: {e:#}"));
                 }
@@ -1395,6 +1491,7 @@ impl Running {
                 }
             }
             Request::Kill(key) => {
+                self.queue.forget(&key);
                 if let Some(index) = self.tabs.index_of(&key) {
                     self.close_tab(index);
                 }
@@ -1867,6 +1964,12 @@ impl Running {
             Global::ClosePanel => self.close_side(),
             Global::ToggleFiles => self.toggle_files(),
             Global::NextWaiting => self.next_waiting(),
+            Global::Ask => {
+                if let Some(index) = self.tabs.active() {
+                    let key = self.tabs.key(index).clone();
+                    self.ask_form(key);
+                }
+            }
             Global::ZoomIn => self.zoom(ZoomDir::In),
             Global::ZoomOut => self.zoom(ZoomDir::Out),
             Global::Reattach => {
@@ -1943,6 +2046,11 @@ impl Running {
             ListKey::Approve => {
                 if let Some(key) = self.sidebar.selected().cloned() {
                     self.approve(&key);
+                }
+            }
+            ListKey::Send => {
+                if let Some(key) = self.sidebar.selected().cloned() {
+                    self.ask_form(key);
                 }
             }
         }

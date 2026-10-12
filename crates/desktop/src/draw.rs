@@ -81,8 +81,8 @@ use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
-    OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, TAB_MAX_COLS, Theme, UNREAD_MARK, UNREAD_RGB,
-    context_rgb, host_rgb, mark_glyph, mark_rgb, tool_letter,
+    OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, QUEUED_MARK, QUEUED_RGB, TAB_MAX_COLS, Theme,
+    UNREAD_MARK, UNREAD_RGB, context_rgb, host_rgb, mark_glyph, mark_rgb, tool_letter,
 };
 use crate::viewer::{MADE_NAME_COL, MadeRow, SideBody, SideLook, SideView, TextRow};
 
@@ -100,9 +100,10 @@ const TAB_CLOSE_COLS: usize = 3;
 /// cell either side.
 const ADD_COLS: usize = 3;
 /// The legend's entries after the status marks: what follows a name.
-const LEGEND_MORE: [(&str, [u8; 3], &str); 2] = [
+const LEGEND_MORE: [(&str, [u8; 3], &str); 3] = [
     (PIN, PIN_RGB, "pinned"),
     (UNREAD_MARK, UNREAD_RGB, "unread"),
+    (QUEUED_MARK, QUEUED_RGB, "queued"),
 ];
 /// The status marks and `LEGEND_MORE`, two a line.
 const LEGEND_MARKS: usize = LEGEND.len() + LEGEND_MORE.len();
@@ -829,6 +830,8 @@ pub struct View {
     pub unread_rows: Vec<SessionKey>,
     /// Hosts whose events.jsonl is not there (`· poll`).
     pub polled: Vec<String>,
+    /// Messages waiting, per session.
+    pub queued: Vec<(SessionKey, usize)>,
 }
 
 impl View {
@@ -901,9 +904,11 @@ pub struct RowLook {
     pub active: bool,
     /// The session has output the user has not looked at: `•` after the name.
     pub unread: bool,
+    /// Messages waiting for the session: `N✉` after the name.
+    pub queued: usize,
 }
 
-/// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name • ★`,
+/// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name N✉ • ★`,
 /// then at the right end `◉N` when other clients are attached; under it, when there is a
 /// summary, that in dim. How full Claude's context is ends the summary's line, or the name's
 /// when there is no summary. The ★, the count and the percentage always fit; the name and the
@@ -945,10 +950,13 @@ pub fn session_spans<'a>(
         right = col.saturating_sub(1);
         Span::whole(0, col, text).colour(theme.muted_fg)
     });
-    // After the name, in this order: `•` (unread), `★` (pinned); each with a space before it.
-    let after: Vec<(&'static str, [u8; 3])> = [
-        look.unread.then_some((UNREAD_MARK, UNREAD_RGB)),
-        look.pinned.then_some((PIN, PIN_RGB)),
+    // After the name, in this order: `N✉` (queued), `•` (unread), `★` (pinned); each with a
+    // space before it.
+    let queued = (look.queued > 0).then(|| (format!("{}{QUEUED_MARK}", look.queued), QUEUED_RGB));
+    let after: Vec<(String, [u8; 3])> = [
+        queued,
+        look.unread.then(|| (UNREAD_MARK.to_string(), UNREAD_RGB)),
+        look.pinned.then(|| (PIN.to_string(), PIN_RGB)),
     ]
     .into_iter()
     .flatten()
@@ -962,7 +970,7 @@ pub fn session_spans<'a>(
         false => name.colour(theme.sidebar_fg),
     });
     for (text, colour) in after {
-        let cols = columns(text);
+        let cols = columns(&text);
         if col + cols <= right {
             out.push(Span::whole(0, col, text).colour(colour).bold());
         }
@@ -1381,6 +1389,11 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                     others: info.attached.saturating_sub(u32::from(own)),
                     active,
                     unread: view.unread_rows.contains(key),
+                    queued: view
+                        .queued
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map_or(0, |(_, n)| *n),
                 };
                 for span in session_spans(info, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);

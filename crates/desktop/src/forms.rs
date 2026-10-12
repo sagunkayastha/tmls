@@ -20,11 +20,15 @@
 //! - *Approve*: Claude's permission dialog as read off the session's pane, then Yes, No and
 //!   Cancel; the focus starts on Yes. Enter answers the focused button, `n` answers No. The
 //!   answer (`1` or Escape) is sent only if a fresh capture still shows the same dialog.
+//! - *Ask* (send a message): a field, tmls's saved prompts under it (↑ / ↓ puts one in the
+//!   field), Send and Cancel, and Clear queue while messages wait. Send goes now, or into the
+//!   queue while the session is busy — the app decides (`queue`).
 //!
 //! Esc cancels every form. Tab into a field selects its text (as Textual's inputs do).
 //!
 //! **The menu** of a session row (`RowMenu`): Approve… while Claude asks for permission, then
-//! Rename, Kill…, Open in new terminal, Copy attach command (`menu_items`). Arrows or j / k
+//! Rename, Kill…, Open in new terminal, Copy attach command, and Send message… for a Claude
+//! session (`menu_items`). Arrows or j / k
 //! move, Enter picks, any other key or a click beside it closes it.
 //!
 //! **Panels.** `Form::panel` and `RowMenu::panel` give the text on a grid of cells, each piece
@@ -85,6 +89,14 @@ pub enum FormResult {
     Pending,
     Cancelled,
     Submit(Request),
+    /// Send `text` to the session now, or queue it while it is busy (the app decides).
+    Ask {
+        key: SessionKey,
+        pane: Option<String>,
+        text: String,
+    },
+    /// Drop the session's queued messages.
+    ClearQueue(SessionKey),
 }
 
 /// A place the keyboard focus can be inside a form. `Name` is the rename form's field too;
@@ -99,6 +111,8 @@ pub enum Stop {
     Cancel,
     /// The approval's No button.
     No,
+    /// The Ask form's Clear queue button.
+    Clear,
 }
 
 const NEW_STOPS: [Stop; 6] = [
@@ -114,6 +128,13 @@ const KILL_STOPS: [Stop; 2] = [Stop::Cancel, Stop::Ok];
 const APPROVE_STOPS: [Stop; 3] = [Stop::Ok, Stop::No, Stop::Cancel];
 /// Width of the approval form, in cells: room for a command line.
 const APPROVE_COLS: usize = 76;
+const ASK_STOPS: [Stop; 3] = [Stop::Name, Stop::Ok, Stop::Cancel];
+const ASK_STOPS_CLEAR: [Stop; 4] = [Stop::Name, Stop::Ok, Stop::Clear, Stop::Cancel];
+const ASK_COLS: usize = 60;
+/// The saved prompts the Ask form lists.
+const MAX_SAVED_SHOWN: usize = 8;
+/// The saved prompt when `~/.config/tmls/prompts` has none (tmls `prompts.DEFAULT`).
+pub const DEFAULT_PROMPT: &str = "What's the progress?";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewForm {
@@ -157,6 +178,18 @@ pub enum Form {
         pane: Option<String>,
         dialog: Vec<String>,
         focus: Stop,
+    },
+    /// A message for a Claude session: a field, the saved prompts, how many already wait.
+    Ask {
+        key: SessionKey,
+        pane: Option<String>,
+        field: TextField,
+        saved: Vec<String>,
+        /// The saved prompt ↑ / ↓ last put into the field.
+        pick: Option<usize>,
+        queued: usize,
+        focus: Stop,
+        error: Option<String>,
     },
 }
 
@@ -536,7 +569,7 @@ impl NewForm {
                     self.focus = other_button(self.focus);
                 }
             }
-            Stop::No => {}
+            Stop::No | Stop::Clear => {}
         }
     }
 
@@ -634,13 +667,28 @@ impl Form {
         }
     }
 
+    /// The message form for a session; `queued` messages wait for it already.
+    pub fn ask(key: SessionKey, pane: Option<String>, saved: Vec<String>, queued: usize) -> Form {
+        Form::Ask {
+            key,
+            pane,
+            field: TextField::new(),
+            saved,
+            pick: None,
+            queued,
+            focus: Stop::Name,
+            error: None,
+        }
+    }
+
     /// Where the keyboard focus is.
     pub fn focus(&self) -> Stop {
         match self {
             Form::New(new) => new.focus,
             Form::Rename { focus, .. }
             | Form::ConfirmKill { focus, .. }
-            | Form::Approve { focus, .. } => *focus,
+            | Form::Approve { focus, .. }
+            | Form::Ask { focus, .. } => *focus,
         }
     }
 
@@ -649,6 +697,7 @@ impl Form {
         match self {
             Form::New(new) => new.error.as_deref(),
             Form::Rename { error, .. } => error.as_deref(),
+            Form::Ask { error, .. } => error.as_deref(),
             Form::ConfirmKill { .. } | Form::Approve { .. } => None,
         }
     }
@@ -668,6 +717,8 @@ impl Form {
             Form::Rename { .. } => &RENAME_STOPS,
             Form::ConfirmKill { .. } => &KILL_STOPS,
             Form::Approve { .. } => &APPROVE_STOPS,
+            Form::Ask { queued, .. } if *queued > 0 => &ASK_STOPS_CLEAR,
+            Form::Ask { .. } => &ASK_STOPS,
         }
     }
 
@@ -675,6 +726,12 @@ impl Form {
         match self {
             Form::New(new) => new.focus_on(stop),
             Form::Rename { focus, field, .. } => {
+                *focus = stop;
+                if stop == Stop::Name {
+                    field.select_all();
+                }
+            }
+            Form::Ask { focus, field, .. } => {
                 *focus = stop;
                 if stop == Stop::Name {
                     field.select_all();
@@ -713,13 +770,32 @@ impl Form {
                 shown: dialog.clone(),
                 yes: *focus != Stop::No,
             }),
+            Form::Ask {
+                key,
+                pane,
+                field,
+                error,
+                ..
+            } => {
+                let text = field.text().trim().to_string();
+                if text.is_empty() {
+                    *error = Some("type a message first".to_string());
+                    return FormResult::Pending;
+                }
+                FormResult::Ask {
+                    key: key.clone(),
+                    pane: pane.clone(),
+                    text,
+                }
+            }
         }
     }
 
     /// Enter, or Space on a button: what the focused stop does.
     fn activate(&mut self) -> FormResult {
-        match self.focus() {
-            Stop::Cancel => FormResult::Cancelled,
+        match (self.focus(), &*self) {
+            (Stop::Cancel, _) => FormResult::Cancelled,
+            (Stop::Clear, Form::Ask { key, .. }) => FormResult::ClearQueue(key.clone()),
             _ => self.submit(),
         }
     }
@@ -730,7 +806,10 @@ impl Form {
             return FormResult::Pending;
         }
         let chord = ev.mods.ctrl || ev.mods.alt || ev.mods.logo;
-        let on_button = matches!(self.focus(), Stop::Ok | Stop::Cancel | Stop::No);
+        let on_button = matches!(
+            self.focus(),
+            Stop::Ok | Stop::Cancel | Stop::No | Stop::Clear
+        );
         match ev.key {
             Key::Named(Named::Escape) => return FormResult::Cancelled,
             Key::Named(Named::Tab) if !chord => {
@@ -770,6 +849,43 @@ impl Form {
                     *focus = step(&APPROVE_STOPS, *focus, forward);
                 }
             }
+            Form::Ask {
+                field,
+                focus: Stop::Name,
+                saved,
+                pick,
+                error,
+                ..
+            } => match ev.key {
+                Key::Named(Named::Up | Named::Down) if !saved.is_empty() && !chord => {
+                    let n = saved.len().min(MAX_SAVED_SHOWN);
+                    let forward = ev.key == Key::Named(Named::Down);
+                    let next = match *pick {
+                        None if forward => 0,
+                        None => n - 1,
+                        Some(at) => cycle(at, n, forward),
+                    };
+                    *pick = Some(next);
+                    set_text(field, &saved[next]);
+                    *error = None;
+                }
+                _ => {
+                    let before = field.text().to_string();
+                    if edit(field, ev) && field.text() != before {
+                        *error = None;
+                    }
+                }
+            },
+            Form::Ask { focus, queued, .. } => {
+                if let Some(forward) = arrow(ev) {
+                    let stops: &[Stop] = if *queued > 0 {
+                        &ASK_STOPS_CLEAR
+                    } else {
+                        &ASK_STOPS
+                    };
+                    *focus = step(stops, *focus, forward);
+                }
+            }
             Form::Rename { focus, .. } | Form::ConfirmKill { focus, .. } => {
                 if arrow(ev).is_some() {
                     *focus = other_button(*focus);
@@ -794,6 +910,15 @@ impl Form {
                 new.name_changed();
             }
             Form::Rename {
+                field,
+                focus: Stop::Name,
+                error,
+                ..
+            } => {
+                field.paste(text);
+                *error = None;
+            }
+            Form::Ask {
                 field,
                 focus: Stop::Name,
                 error,
@@ -834,6 +959,13 @@ impl Form {
                 new.name.click(col);
             }
             (Target::Stop(Stop::Name), Form::Rename { field, focus, .. }) => {
+                *focus = Stop::Name;
+                field.click(col);
+            }
+            (Target::Stop(Stop::Clear), Form::Ask { key, .. }) => {
+                return FormResult::ClearQueue(key.clone());
+            }
+            (Target::Stop(Stop::Name), Form::Ask { field, focus, .. }) => {
                 *focus = Stop::Name;
                 field.click(col);
             }
@@ -931,6 +1063,53 @@ impl Form {
                 p.lines = buttons + 2;
                 p
             }
+            Form::Ask {
+                key,
+                field,
+                saved,
+                pick,
+                queued,
+                focus,
+                error,
+                ..
+            } => {
+                let inner = ASK_COLS - 2 * PAD;
+                let mut p = Panel::new(ASK_COLS);
+                let title = match *queued {
+                    0 => format!("Send to {}", key.name),
+                    n => format!("Send to {} · {n} queued", key.name),
+                };
+                p.put(0, PAD, inner, &title, Look::Title);
+                p.field(2, PAD, inner, field, Stop::Name, *focus);
+                if let Some(error) = error {
+                    p.put(3, PAD, inner, error, Look::Error);
+                }
+                p.put(4, PAD, inner, "Saved (↑ / ↓)", Look::Label);
+                let shown = saved.len().min(MAX_SAVED_SHOWN);
+                for (n, prompt) in saved.iter().take(shown).enumerate() {
+                    let look = match *pick == Some(n) {
+                        true => Look::Choice {
+                            focused: *focus == Stop::Name,
+                            on: true,
+                        },
+                        false => Look::Dim,
+                    };
+                    p.put(5 + n, PAD, inner, prompt, look);
+                }
+                let buttons = 5 + shown + 1;
+                if *queued > 0 {
+                    let label = " Clear queue ";
+                    let look = Look::Button {
+                        focused: *focus == Stop::Clear,
+                        danger: true,
+                    };
+                    p.put(buttons, PAD, label.len(), label, look).target =
+                        Some(Target::Stop(Stop::Clear));
+                }
+                p.buttons(buttons, "Send", false, *focus);
+                p.lines = buttons + 2;
+                p
+            }
         }
     }
 }
@@ -944,6 +1123,8 @@ pub enum MenuItem {
     Kill,
     OpenTerminal,
     CopyAttach,
+    /// Send or queue a message; listed for Claude sessions in tmux.
+    Send,
 }
 
 /// The menu from top to bottom.
@@ -963,6 +1144,7 @@ impl MenuItem {
             MenuItem::Kill => "Kill…",
             MenuItem::OpenTerminal => "Open in new terminal",
             MenuItem::CopyAttach => "Copy attach command",
+            MenuItem::Send => "Send message…",
         }
     }
 }
@@ -1176,7 +1358,51 @@ pub fn menu_items(info: Option<&SessionInfo>) -> Vec<MenuItem> {
         items.push(MenuItem::Approve);
     }
     items.extend(MENU);
+    if info.is_some_and(is_claude) {
+        items.push(MenuItem::Send);
+    }
     items
+}
+
+/// A Claude session in tmux: its status file named it (session id or pane). Messages go only
+/// to those.
+pub fn is_claude(info: &SessionInfo) -> bool {
+    info.key.host != KITTY && (info.session_id.is_some() || info.pane.is_some())
+}
+
+/// tmls's saved prompts (`~/.config/tmls/prompts`: one per line, `#` comments), or the default.
+pub fn saved_prompts(text: Option<&str>) -> Vec<String> {
+    let saved: Vec<String> = text
+        .unwrap_or("")
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    if saved.is_empty() {
+        vec![DEFAULT_PROMPT.to_string()]
+    } else {
+        saved
+    }
+}
+
+/// The input runner the app uses: `tmux::run_with_stdin` with `REQUEST_TIMEOUT`.
+pub fn run_tmux_with(argv: &[String], input: &[u8]) -> anyhow::Result<String> {
+    tmux::run_with_stdin(argv, input, REQUEST_TIMEOUT)
+}
+
+/// Types `text` into Claude's pane of the session and presses Enter; says so.
+pub fn send_text(
+    key: &SessionKey,
+    pane: Option<&str>,
+    text: &str,
+    local_name: &str,
+    feed: InputRunner,
+) -> Result<String, String> {
+    let argv = tmux::send_text_argv(key, pane, &tmux::buffer_name(), local_name);
+    feed(&argv, text.as_bytes())
+        .map(|_| format!("sent to {}", key.name))
+        .map_err(|e| format!("couldn't send to {}: {}", key.name, first_line(&e)))
 }
 
 /// The first line of what a command said, for the status line.

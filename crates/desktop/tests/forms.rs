@@ -816,11 +816,11 @@ fn menu_items_offer_approve_only_while_claude_asks() {
     assert_eq!(forms::menu_items(None), MENU.to_vec());
     assert_eq!(
         forms::menu_items(Some(&info("w", Status::Idle, None))),
-        MENU.to_vec()
+        [MENU.as_slice(), &[MenuItem::Send]].concat()
     );
     assert_eq!(
         forms::menu_items(Some(&info("w", Status::Waiting, Some("input needed")))),
-        MENU.to_vec()
+        [MENU.as_slice(), &[MenuItem::Send]].concat()
     );
     let asks = info("w", Status::Waiting, Some("permission prompt"));
     assert_eq!(
@@ -830,7 +830,8 @@ fn menu_items_offer_approve_only_while_claude_asks() {
             MenuItem::Rename,
             MenuItem::Kill,
             MenuItem::OpenTerminal,
-            MenuItem::CopyAttach
+            MenuItem::CopyAttach,
+            MenuItem::Send
         ]
     );
     let mut menu = RowMenu::with(asks.key.clone(), forms::menu_items(Some(&asks)));
@@ -860,4 +861,138 @@ fn a_dialog_that_comes_back_after_the_user_moved_on_opens_no_form() {
     assert_eq!(forms::approval_fate(3, 3, 5, 6, true), MovedOn);
     // The focus left the list or the alerts (a click on the terminal, a menu opened).
     assert_eq!(forms::approval_fate(3, 3, 5, 5, false), MovedOn);
+}
+
+#[test]
+fn ask_sends_the_typed_text_or_a_saved_prompt() {
+    let k = key(LOCAL, "w");
+    let mut form = Form::ask(
+        k.clone(),
+        Some("%3".into()),
+        vec!["What's the progress?".into()],
+        0,
+    );
+    assert_eq!(form.focus(), Stop::Name);
+    assert_eq!(form.key(&named(Named::Enter)), FormResult::Pending);
+    assert_eq!(form.error(), Some("type a message first"));
+    for c in "hi there".chars() {
+        form.key(&event(Key::Char(c), Mods::default()));
+    }
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Ask {
+            key: k.clone(),
+            pane: Some("%3".into()),
+            text: "hi there".into()
+        }
+    );
+    let saved = vec!["a".to_string(), "b".to_string()];
+    let mut down = Form::ask(k.clone(), None, saved.clone(), 0);
+    down.key(&named(Named::Down));
+    assert_eq!(
+        down.key(&named(Named::Enter)),
+        FormResult::Ask {
+            key: k.clone(),
+            pane: None,
+            text: "a".into()
+        }
+    );
+    let mut up = Form::ask(k.clone(), None, saved, 0);
+    up.key(&named(Named::Up));
+    assert_eq!(
+        up.key(&named(Named::Enter)),
+        FormResult::Ask {
+            key: k.clone(),
+            pane: None,
+            text: "b".into()
+        }
+    );
+    assert_eq!(
+        Form::ask(k, None, vec![], 0).key(&named(Named::Escape)),
+        FormResult::Cancelled
+    );
+}
+
+#[test]
+fn ask_shows_the_queue_and_can_clear_it() {
+    let k = key(LOCAL, "w");
+    let mut form = Form::ask(k.clone(), None, vec![], 2);
+    let texts: Vec<String> = form
+        .panel()
+        .cells
+        .iter()
+        .map(|cell| cell.text.clone())
+        .collect();
+    assert!(
+        texts.contains(&"Send to w · 2 queued".to_string()),
+        "{texts:?}"
+    );
+    assert!(texts.contains(&" Clear queue ".to_string()));
+    form.key(&named(Named::Tab));
+    assert_eq!(form.focus(), Stop::Ok);
+    form.key(&named(Named::Tab));
+    assert_eq!(form.focus(), Stop::Clear);
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::ClearQueue(k.clone())
+    );
+    let empty: Vec<String> = Form::ask(k, None, vec![], 0)
+        .panel()
+        .cells
+        .iter()
+        .map(|cell| cell.text.clone())
+        .collect();
+    assert!(!empty.contains(&" Clear queue ".to_string()));
+    assert!(empty.contains(&"Send to w".to_string()));
+}
+
+#[test]
+fn saved_prompts_are_tmls_s_file_or_the_default() {
+    assert_eq!(forms::saved_prompts(None), [forms::DEFAULT_PROMPT]);
+    assert_eq!(
+        forms::saved_prompts(Some("\n# only a comment\n")),
+        [forms::DEFAULT_PROMPT]
+    );
+    assert_eq!(
+        forms::saved_prompts(Some("# mine\nRun the tests\n\n  Commit  # now\n")),
+        ["Run the tests", "Commit"]
+    );
+}
+
+#[test]
+fn send_text_feeds_the_message_and_says_so() {
+    let fed = RefCell::new(Vec::new());
+    let feed = |argv: &[String], input: &[u8]| -> anyhow::Result<String> {
+        fed.borrow_mut().push((argv.to_vec(), input.to_vec()));
+        Ok(String::new())
+    };
+    let k = key("ph", "w");
+    assert_eq!(
+        forms::send_text(&k, Some("%3"), "hi\nthere", LOCAL, &feed),
+        Ok("sent to w".to_string())
+    );
+    let (argv, input) = fed.borrow()[0].clone();
+    assert_eq!(input, b"hi\nthere");
+    assert!(argv.last().unwrap().ends_with("-t '%3' Enter"), "{argv:?}");
+    let failing = |_: &[String], _: &[u8]| -> anyhow::Result<String> {
+        anyhow::bail!("no server running on /tmp/x")
+    };
+    assert_eq!(
+        forms::send_text(&k, None, "x", LOCAL, &failing),
+        Err("couldn't send to w: no server running on /tmp/x".to_string())
+    );
+}
+
+#[test]
+fn claude_sessions_get_send_in_their_menu() {
+    let mut plain = info("w", Status::Idle, None);
+    plain.pane = None;
+    assert!(!forms::is_claude(&plain));
+    assert_eq!(forms::menu_items(Some(&plain)), MENU.to_vec());
+    let claude = info("w", Status::Idle, None);
+    assert!(forms::is_claude(&claude));
+    assert_eq!(
+        forms::menu_items(Some(&claude)).last(),
+        Some(&MenuItem::Send)
+    );
 }

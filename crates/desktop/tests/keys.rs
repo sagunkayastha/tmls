@@ -632,14 +632,14 @@ fn chords(group: &str) -> Vec<&'static str> {
 #[test]
 fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     let list = chords("List");
-    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'y', '?'] {
+    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'y', 's', '?'] {
         let mods = if c == '?' { SHIFT } else { NONE };
         assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
         assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
     }
     let everywhere: Vec<&str> = HELP[0].1.iter().map(|(chord, _)| *chord).collect();
     assert_eq!(HELP[0].0, "Everywhere");
-    for c in ['n', 'w', 'x', 'f'] {
+    for c in ['n', 'w', 'x', 'f', 'a'] {
         assert!(
             global(&ch(c, ALT_SHIFT), Focus::Terminal).is_some(),
             "Alt+Shift+{c} is bound"
@@ -687,4 +687,15 @@ fn y_in_the_list_approves() {
     assert_eq!(list_key(&ch('y', NONE)), Some(ListKey::Approve));
     assert_eq!(list_key(&repeat(&ch('y', NONE))), None);
     assert_eq!(list_key(&ch('Y', SHIFT)), None);
+}
+
+#[test]
+fn s_in_the_list_and_alt_shift_a_send_a_message() {
+    assert_eq!(list_key(&ch('s', NONE)), Some(ListKey::Send));
+    assert_eq!(list_key(&repeat(&ch('s', NONE))), None);
+    for focus in [Focus::Terminal, Focus::Sidebar] {
+        assert_eq!(global(&ch('A', ALT_SHIFT), focus), Some(Global::Ask));
+        assert_eq!(global(&ch('a', ALT_SHIFT), focus), Some(Global::Ask));
+    }
+    assert_eq!(global(&ch('a', ALT_SHIFT), Focus::Form), None);
 }

@@ -13,6 +13,7 @@
 //! - `viewer` — a clicked file: found and read on the session's host, shown in the panel
 //!   beside the terminal or given to the desktop's app.
 //! - `picture` — a picture in that panel on the GPU: its texture and the pass that draws it.
+//! - `queue` — messages waiting for a busy Claude session.
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
 //! - `icon`  — the window's app id and embedded icon.
@@ -35,6 +36,7 @@ pub mod launch;
 pub mod links;
 pub mod mouse;
 pub mod picture;
+pub mod queue;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme;
