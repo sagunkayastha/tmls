@@ -6,9 +6,10 @@ use std::process::ExitCode;
 
 use desktop::app::{self, Args};
 
-const USAGE: &str = "usage: tmls-rs [--bench <dir>] [HOST…]\n\
+const USAGE: &str = "usage: tmls-rs [--bench <dir>] [HOST…]\n       tmls-rs keys\n\
   HOST…          ssh hosts to list instead of those in ~/.config/tmls/hosts\n\
-  --bench <dir>  write a latency log for the first tab opened to <dir>/latency.jsonl";
+  --bench <dir>  write a latency log for the first tab opened to <dir>/latency.jsonl\n\
+  keys           print the keys and mouse actions, and exit";
 
 /// Parses the arguments after the program name.
 fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
@@ -40,7 +41,14 @@ fn main() -> ExitCode {
     // environment at the same time.
     unsafe { std::env::remove_var("TMUX") };
 
-    let args = match parse(std::env::args().skip(1)) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["keys"] {
+        use std::io::Write;
+        // Not `print!`: a closed pipe (`tmls-rs keys | head`) must not panic.
+        let _ = std::io::stdout().write_all(desktop::keys::help_text().as_bytes());
+        return ExitCode::SUCCESS;
+    }
+    let args = match parse(args) {
         Ok(args) => args,
         Err(e) => {
             desktop::errln(format_args!("tmls-rs: {e}\n{USAGE}"));

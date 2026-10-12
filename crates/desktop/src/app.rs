@@ -150,6 +150,8 @@ enum Modal {
     Menu(RowMenu),
     Form(Form),
     Alerts(AlertsPanel),
+    /// The keys and mouse actions (`keys::HELP`).
+    Help(forms::Panel),
 }
 
 /// Runs the app until the window is closed or the user quits. `config_dir` is `~/.config/tmls`.
@@ -845,6 +847,7 @@ impl Running {
             Modal::Menu(menu) => (menu.panel(), *at),
             Modal::Form(form) => (form.panel(), *at),
             Modal::Alerts(alerts) => (alerts.panel(), *at),
+            Modal::Help(panel) => (panel.clone(), *at),
         });
         let status_of = |key: &SessionKey| {
             let status = self.sidebar.status(key)?;
@@ -1000,6 +1003,18 @@ impl Running {
 
     /// A key for the open form or menu.
     fn form_key(&mut self, ev: &s2_core::KeyEvent) {
+        if let Some((Modal::Help(_), _)) = &self.modal {
+            let closes = matches!(
+                ev.key,
+                s2_core::Key::Named(s2_core::Named::Escape) | s2_core::Key::Char('?')
+            );
+            // Not on a repeat: holding `?` down must not close what it just opened.
+            if ev.pressed && !ev.repeat && closes {
+                self.close_modal();
+            }
+            self.invalidate();
+            return;
+        }
         match &mut self.modal {
             Some((Modal::Menu(menu), _)) => {
                 let result = menu.key(ev);
@@ -1013,9 +1028,14 @@ impl Running {
                 let result = alerts.key(ev);
                 self.alerts_result(result);
             }
-            None => {}
+            Some((Modal::Help(_), _)) | None => {}
         }
         self.invalidate();
+    }
+
+    /// `?` in the list or the `?` button: the keys and mouse actions over the window.
+    fn open_help(&mut self) {
+        self.open_modal(Modal::Help(keys::help_panel()), None);
     }
 
     /// Opens the list of alerts; they count as read from now on.
@@ -1622,6 +1642,13 @@ impl Running {
                 };
                 self.alerts_result(result);
             }
+            Modal::Help(panel) => {
+                let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let (cx, cy) = self.layout.panel_cell(rect, x, y);
+                if !panel.contains(cx, cy) {
+                    self.close_modal();
+                }
+            }
         }
         self.invalidate();
     }
@@ -1710,6 +1737,7 @@ impl Running {
             ListKey::NextWaiting => self.next_waiting(),
             ListKey::New => self.foot_button(Button::New),
             ListKey::Alerts => self.open_alerts(),
+            ListKey::Help => self.open_help(),
             ListKey::Menu => {
                 // A session outside tmux has no menu: nothing in it applies.
                 let selected = self.sidebar.selected().filter(|key| key.host != KITTY);
@@ -1785,8 +1813,8 @@ impl Running {
                     self.act(sidebar::Action::NewSessionOn(host));
                 }
             }
-            // The keys' panel is not built.
-            (Button::Help, _) | (Button::Open | Button::Copy, None) => {}
+            (Button::Help, _) => self.open_help(),
+            (Button::Open | Button::Copy, None) => {}
         }
     }
 

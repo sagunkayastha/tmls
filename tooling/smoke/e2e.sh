@@ -1065,6 +1065,34 @@ fi
 key_close_tab
 check_typed "the alert's tab is closed: the keys go to \"$ODD\"" "$ODD" afteralert
 
+# --- the keys' help (F1) -------------------------------------------------------------------------
+# "$ODD" is the only tab, in front, with the keys.
+if "$BIN" keys | grep -qF 'Alt+Shift+N'; then
+  pass "tmls-rs keys prints the key table"
+else
+  fail "tmls-rs keys prints the key table" "$("$BIN" keys 2>&1 | head -3 | tr '\n' ' ')"
+fi
+key_focus_list
+NO_HELP=$(picture)
+keys "?"
+HELP_PICTURE=$(picture)
+check "screenshot 34-help" shot 34-help
+if [ "$HELP_PICTURE" != "$NO_HELP" ]; then
+  pass "? in the list opens the help (the picture changed)"
+else
+  fail "? in the list opens the help (the picture changed)" "same picture"
+fi
+keys -k Escape
+sleep 0.5
+if [ "$(picture)" != "$HELP_PICTURE" ]; then
+  pass "Esc closes the help"
+else
+  fail "Esc closes the help" "the picture is the help's"
+fi
+# Esc again: the keys go back to the terminal of "$ODD".
+keys -k Escape
+check_typed "after the help the keys go to \"$ODD\" again" "$ODD" afterhelp
+
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7
 key_quit
