@@ -267,14 +267,13 @@ fn only_a_session_id_reaches_the_script() {
     }
 }
 
-/// A directory of this test's own for a home: under `/data/scratch/tmls-rs-v0/panel2/tmp` on the
-/// machine these are written on (its `/tmp` is small), else under cargo's target tmp dir. Never
-/// the user's home: the script reads `$HOME/.claude`. The same directory every run, so they do
-/// not pile up: its files are written over, and nothing is removed.
+/// A directory of this test's own for a home, under cargo's target tmp dir (no path of one
+/// machine). Never the user's home: the script reads `$HOME/.claude`. The same directory every
+/// run, so they do not pile up: every file a test writes it writes over, and nothing is removed.
+/// So a test here must pass over what its own last run left: it asks for nothing to be absent
+/// that it writes itself.
 fn fake_home(name: &str) -> PathBuf {
-    let scratch = Path::new("/data/scratch/tmls-rs-v0/panel2/tmp");
-    let base = if scratch.is_dir() { scratch.to_path_buf() } else { PathBuf::from(env!("CARGO_TARGET_TMPDIR")) };
-    let dir = base.join(format!("made-{name}"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("made-{name}"));
     std::fs::create_dir_all(&dir).expect("the test's home");
     dir
 }
@@ -342,8 +341,9 @@ fn the_script_lists_the_transcripts_images_that_exist_newest_first() {
     ];
     assert_eq!(parse_made(&out), Ok(listed), "{out:?}");
 
-    // No transcript of that id: said so, and no error.
-    let none = with_home(&made_argv(LOCAL, "99999999-2222-3333-4444-555555555555", None, LOCAL), &home).unwrap();
+    // No transcript of that id: said so, and no error. An id no test here writes a transcript
+    // of: the one below is still there at the next run.
+    let none = with_home(&made_argv(LOCAL, "88888888-2222-3333-4444-555555555555", None, LOCAL), &home).unwrap();
     assert_eq!(parse_made(&none), Err(NoTranscript));
     // One that names no picture: an empty list.
     std::fs::write(projects.join("x/99999999-2222-3333-4444-555555555555.jsonl"), "{\"a\":\"/w/x.py\"}\n").unwrap();
