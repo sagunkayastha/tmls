@@ -65,6 +65,9 @@ Hosts are reached with your own ssh setup (keys, `~/.ssh/config`). Listing never
 password: a host that needs one shows as offline. Attaching runs ssh inside the tab, so a
 prompt from ssh shows there.
 
+`tooling/desktop/install.sh [/abs/path/to/tmls-rs]` puts the icon and `tmls-rs.desktop` under `~/.local/share` (`uninstall.sh` removes them).
+Once installed, the icon (Rem's face) and the name show in the task bar and the launcher: Wayland takes the icon from the desktop entry via the window's `app_id` `tmls-rs`; the embedded icon is for X11.
+
 ## Config files
 
 All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
