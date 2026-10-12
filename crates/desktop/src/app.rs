@@ -1593,16 +1593,18 @@ impl Running {
 
     /// Ctrl+Shift+V in a form: the clipboard's text goes into the focused field.
     fn paste_into_form(&mut self) {
-        let text = match self.clip.get() {
-            Ok(text) if !text.is_empty() => text,
-            Ok(_) => return self.say(Ok("clipboard empty".to_string())),
-            Err(e) => return self.say(Err(format!("paste failed: {e}"))),
-        };
-        if let Some((Modal::Form(form), _)) = &mut self.modal {
-            form.paste(&text);
+        let got = self.clip.get();
+        let mut pasted = false;
+        let said = clip::paste_with(got, |text| {
+            if let Some((Modal::Form(form), _)) = &mut self.modal {
+                form.paste(text);
+                pasted = true;
+            }
+        });
+        if pasted {
             self.lookup_name();
-            self.invalidate();
         }
+        self.say(said);
     }
 
     /// A mouse button pressed while a form or menu is open: it is theirs, wherever it lands.

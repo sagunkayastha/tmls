@@ -25,6 +25,14 @@ if [ "${SMOKE_NO_BUILD:-0}" != 1 ]; then
   tooling/docker/build.sh build --release -p desktop
 fi
 [ -x target-docker/release/tmls-rs ] || { echo "run.sh: target-docker/release/tmls-rs is missing" >&2; exit 2; }
+# The wl-clipboard fallback's own test (crates/desktop/tests/clip_wayland.rs): e2e.sh runs it
+# against the compositor. Its binary has a hash in its name: cargo says which.
+if [ "${SMOKE_NO_BUILD:-0}" != 1 ]; then
+  CLIP_TEST=$(tooling/docker/build.sh test -p desktop --test clip_wayland --no-run 2>&1 |
+    sed -n 's/.*Executable .*(\(target-docker\/[^)]*\)).*/\1/p' | tail -1)
+else
+  CLIP_TEST=$(ls -t target-docker/debug/deps/clip_wayland-* 2>/dev/null | grep -v '\.d$' | head -1 || true)
+fi
 
 mkdir -p "$OUT"
 # A short host name: the list shows HOST:SESSION in 28 cells.
@@ -34,5 +42,6 @@ exec docker run --rm --network none --hostname smoke \
   --tmpfs /scratch:mode=1777 \
   -e SMOKE_OUT=/out -e SMOKE_SCRATCH=/scratch -e SMOKE_OUTSIDE="${SMOKE_OUTSIDE:-}" \
   -e SMOKE_SCALE="${SMOKE_SCALE:-1}" -e SMOKE_ONLY="${SMOKE_ONLY:-}" \
+  -e SMOKE_CLIP_TEST="${CLIP_TEST:+/work/$CLIP_TEST}" \
   -w /work \
   "$IMAGE" timeout --kill-after=10 "${SMOKE_TIMEOUT:-480}" bash /work/tooling/smoke/e2e.sh

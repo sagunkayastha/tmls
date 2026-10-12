@@ -352,3 +352,13 @@ fn run_with_stdin_gives_the_command_its_input() {
     let big = vec![b'x'; 1 << 20];
     assert_eq!(run_with_stdin(&v(&["wc", "-c"]), &big, Duration::from_secs(5)).unwrap().trim(), "1048576");
 }
+
+#[test]
+fn run_does_not_wait_for_a_stderr_held_open_after_success() {
+    // wl-copy's daemon (wl-clipboard 2.1) keeps the clipboard after wl-copy exits: its stdin and
+    // stdout go to /dev/null, its stderr stays the pipe. A success needs no stderr.
+    let started = Instant::now();
+    let argv = v(&["sh", "-c", "cat >/dev/null; sleep 3 </dev/null >/dev/null & echo ok"]);
+    assert_eq!(run_with_stdin(&argv, b"x", Duration::from_secs(5)).unwrap(), "ok\n");
+    assert!(started.elapsed() < Duration::from_millis(300), "returned after {:?}", started.elapsed());
+}

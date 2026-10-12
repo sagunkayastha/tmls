@@ -419,10 +419,13 @@ fn run_input(argv: &[String], input: Option<&[u8]>, timeout: Duration) -> anyhow
         std::thread::sleep(TICK);
     };
     let grace = Instant::now() + OUTPUT_GRACE;
-    let (stdout, stderr) = (stdout.bytes(grace), stderr.text(grace));
+    let stdout = stdout.bytes(grace);
+    // A success is its stdout alone: no waiting for a stderr that something it left running
+    // still holds (wl-copy's daemon, which keeps the clipboard).
     if status.success() {
         return Ok(stdout);
     }
+    let stderr = stderr.text(grace);
     let stdout = String::from_utf8_lossy(&stdout);
     let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
     if said.is_empty() {

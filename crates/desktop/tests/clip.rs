@@ -2,8 +2,9 @@
 //! clipboard and no compositor here: the clipboard is a stand-in.
 
 use std::cell::RefCell;
+use std::time::Duration;
 
-use desktop::clip::{copy_with, paste_with, wl_copy, wl_paste};
+use desktop::clip::{WL_TIMEOUT, copy_with, paste_with, wl_copy, wl_paste};
 
 #[test]
 fn copy_says_what_happened() {
@@ -75,4 +76,10 @@ fn wl_paste_reads_without_a_newline_and_empty_is_no_error() {
         wl_paste(&broken),
         Err("Failed to connect to a Wayland server".to_string())
     );
+}
+
+#[test]
+fn the_fallback_fails_fast() {
+    // It runs on the UI thread: a hung wl-copy or wl-paste may freeze the window this long.
+    assert!(WL_TIMEOUT <= Duration::from_secs(1), "{WL_TIMEOUT:?}");
 }

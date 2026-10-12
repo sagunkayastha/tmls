@@ -1131,6 +1131,19 @@ else
   fail "Ctrl+Shift+V pastes it into the tab" "pane: $(pane_text "$ODD" | grep -v '^$' | tail -3 | tr '\n' '|')"
 fi
 check "no copy or paste failure on stderr" bash -c '! grep -qE "(copy|paste) failed" "$0"' "$OUT/app.stderr"
+# The fallback for real (crates/desktop/tests/clip_wayland.rs, built by run.sh): arboard off,
+# wl-copy and wl-paste do the copy and the paste, each in under 300 ms (the UI thread waits).
+CLIP_WL="arboard off: wl-copy and wl-paste copy and paste, each under 300 ms (tests/clip_wayland.rs)"
+if [ -n "${SMOKE_CLIP_TEST:-}" ] && [ -x "$SMOKE_CLIP_TEST" ]; then
+  if CLIP_SAID=$(TMLS_RS_NO_ARBOARD=1 timeout 30 "$SMOKE_CLIP_TEST" --nocapture 2>&1) &&
+    grep -q "the wl-clipboard fallback: copy and paste" <<<"$CLIP_SAID"; then
+    pass "$CLIP_WL"
+  else
+    fail "$CLIP_WL" "$(grep -E 'panicked|took|left|right|error' <<<"$CLIP_SAID" | head -4 | tr '\n' ' ')"
+  fi
+else
+  fail "$CLIP_WL" "no test binary (SMOKE_CLIP_TEST=${SMOKE_CLIP_TEST:-})"
+fi
 
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7

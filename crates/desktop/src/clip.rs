@@ -9,8 +9,13 @@ use client_core::tmux;
 
 use crate::forms::{self, InputRunner, Runner};
 
-/// How long `wl-copy` / `wl-paste` may take.
-const WL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Set (to anything), arboard is not tried and `wl-copy` / `wl-paste` do every copy and paste:
+/// for the test of the fallback (`tests/clip_wayland.rs`, run by the e2e).
+pub const NO_ARBOARD: &str = "TMLS_RS_NO_ARBOARD";
+
+/// How long `wl-copy` / `wl-paste` may take: they run on the UI thread, so a copy or a paste
+/// fails fast rather than freezing the window.
+pub const WL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The status line after a copy of `text` (`None` or empty: nothing was selected) through `set`.
 pub fn copy_with(
@@ -75,7 +80,7 @@ impl Clipboard {
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
         Clipboard {
             arboard: None,
-            broken: None,
+            broken: std::env::var_os(NO_ARBOARD).map(|_| format!("arboard is off ({NO_ARBOARD})")),
             wl: wayland && forms::on_path("wl-copy") && forms::on_path("wl-paste"),
         }
     }
