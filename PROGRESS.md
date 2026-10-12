@@ -2,6 +2,23 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-12 (late afternoon) — Open button opens a terminal window; merged, `main` = `b6d54f6` ✅
+
+The user tested the Open button in the real KDE window ("it worked"); `fix/open-button` merged `--no-ff`.
+- **Open button (`7c67c37`):** it attached in a tab (same as Enter). Now, as in tmls, it launches a separate terminal
+  window attached to the session (`$TERMINAL`, else kitty, else `x-terminal-emulator`; `App::open_in_terminal`, shared
+  with the menu's "Open in new terminal"); a session outside tmux still focuses its kitty window. Desktop tests 271.
+- **PC:** built 14:43 at `7c67c37`, same code as `main`: no rebuild. `~/.bashrc` there (backup
+  `~/.bashrc.bak-2026-10-12-tmls-alias`): aliases `tmls` and `tmls-rs` = the Rust binary, `tmls-py` =
+  `~/.local/bin/tmls`. Aliases only: hooks, kitty and scripts still get Python `tmls`.
+- **`ag` / `ct`:** explained, left alone by the user's word ("It's fine."); Python tmls stays installed (hooks, web).
+- Not yet confirmed by the user's own hands: hover, file drop from Dolphin, Ctrl+Alt+arrows, plain-highlight copy.
+
+### NEXT
+1. Round 2 parity G1–G8 (`docs/superpowers/plans/2026-10-12-tmls-rs-parity-round2.md`; its "Starting point" is
+   stale, base is `main` now). Which of the eight to build: the user's choice.
+2. Rest of `docs/NIGHT-TEST.md`. 3. Laptop: no phase yet; is it still Windows, reachable by ssh? (unanswered)
+
 ## 2026-10-12 (afternoon) — hover text, image copy to a remote host, real drag and drop on `feat/drop-hover` @ `8500f37`; PC built 13:16; not merged ⚠️
 
 **Merged (later the same afternoon):** the user said "Merge" — `main` = `66f6d24` (`--no-ff`, contains
