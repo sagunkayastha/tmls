@@ -841,3 +841,49 @@ fn claude_outside_tmux_has_a_section_under_this_machine() {
     assert_eq!(kinds(&s), ["[laptop]", "-", "[nas]", "x"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn claude_outside_tmux_on_another_host_marks_nothing_here() {
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    let mut seen = Seen::new();
+    let listing = |host: &str, notes: Status| {
+        let mut snap = idle(host, &["a"]);
+        snap.sessions.push(outside("notes", 21, notes));
+        snap
+    };
+    // Both machines have one called `notes`. The other's works, this one's does nothing: it
+    // did not finish anything.
+    s.deliver(&mut seen, listing(LOCAL, Status::Idle), None);
+    s.deliver(&mut seen, listing("nas", Status::Running), None);
+    s.deliver(&mut seen, listing(LOCAL, Status::Idle), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Idle));
+    // Nor does the other's finishing end this one's work.
+    s.deliver(&mut seen, listing(LOCAL, Status::Running), None);
+    s.deliver(&mut seen, listing("nas", Status::Idle), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Running));
+    s.deliver(&mut seen, listing(LOCAL, Status::Running), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Running));
+    // This one's own end is marked as ever.
+    s.deliver(&mut seen, listing(LOCAL, Status::Idle), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Unseen));
+    assert_eq!(kinds(&s), ["[laptop]", "a", "[kitty]", "notes", "-", "[nas]", "a"]);
+}
+
+#[test]
+fn claude_outside_tmux_that_is_gone_is_forgotten() {
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    let mut seen = Seen::new();
+    let listing = |notes: Option<Status>| {
+        let mut snap = idle(LOCAL, &["a"]);
+        snap.sessions.extend(notes.map(|notes| outside("notes", 21, notes)));
+        snap
+    };
+    s.deliver(&mut seen, listing(Some(Status::Running)), None);
+    // It ends while it works; another host's listing in between changes nothing of that.
+    s.deliver(&mut seen, listing(None), None);
+    s.deliver(&mut seen, idle("nas", &["x"]), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), None);
+    // One of its name that comes later did not finish anything.
+    s.deliver(&mut seen, listing(Some(Status::Idle)), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Idle));
+}

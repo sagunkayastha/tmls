@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::listing::{HostSnapshot, SessionKey, Status};
+use crate::listing::{HostSnapshot, KITTY, SessionKey, Status};
 
 #[derive(Debug, Default)]
 pub struct Seen {
@@ -50,12 +50,26 @@ impl Seen {
     }
 
     /// Forgets the sessions of `snap`'s host that it no longer lists. An offline host lists
-    /// nothing and forgets nothing: its sessions are likely still there.
+    /// nothing and forgets nothing: its sessions are likely still there. For the listing of
+    /// another host than this machine: see [`Seen::forget_missing_local`].
     pub fn forget_missing(&mut self, snap: &HostSnapshot) {
+        self.forget(snap, false);
+    }
+
+    /// [`Seen::forget_missing`] for this machine's own listing, which is also the one that has
+    /// its Claude sessions outside tmux (under the host [`KITTY`], not its own name): those it
+    /// no longer lists are forgotten too. Only this machine's may come to [`Seen::apply`]:
+    /// their key does not say which machine they are on.
+    pub fn forget_missing_local(&mut self, snap: &HostSnapshot) {
+        self.forget(snap, true);
+    }
+
+    fn forget(&mut self, snap: &HostSnapshot, outside_too: bool) {
         if !snap.online {
             return;
         }
-        let listed = |key: &SessionKey| key.host != snap.host || snap.sessions.iter().any(|s| s.key == *key);
+        let of_snap = |key: &SessionKey| key.host == snap.host || (outside_too && key.host == KITTY);
+        let listed = |key: &SessionKey| !of_snap(key) || snap.sessions.iter().any(|s| s.key == *key);
         self.last.retain(|key, _| listed(key));
         self.unseen.retain(listed);
     }
