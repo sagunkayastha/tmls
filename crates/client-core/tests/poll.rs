@@ -509,3 +509,30 @@ fn the_period_comes_from_tmls_rs_poll_s() {
         assert_eq!(period_from(Some(bad)), Duration::from_secs(5), "{bad:?}");
     }
 }
+
+#[test]
+fn slow_down_gives_those_hosts_their_own_period_and_back_at_once() {
+    let _one = alone();
+    let d = dir("slow");
+    let count = {
+        let d = d.clone();
+        move |host: &str| std::fs::read_to_string(d.join(host)).map_or(0, |text| text.lines().count())
+    };
+    let logs = d.clone();
+    let (poller, _rx) = start(&["here", "far"], Duration::from_millis(100), Duration::from_secs(5), move |host| {
+        sh(format!("echo x >>'{}'; cat >/dev/null; echo 100", logs.join(host).display()))
+    });
+    std::thread::sleep(Duration::from_millis(350));
+    poller.slow_down(&hosts(&["far"]), Some(Duration::from_secs(60)));
+    let (here, far) = (count("here"), count("far"));
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(count("here") >= here + 3, "the other host keeps its period: {here} -> {}", count("here"));
+    // A listing that had started already may end; no other one starts within the minute.
+    assert!(count("far") <= far + 1, "far waits its minute: {far} -> {}", count("far"));
+    let far = count("far");
+    poller.slow_down(&hosts(&["far"]), None);
+    std::thread::sleep(Duration::from_millis(450));
+    assert!(count("far") >= far + 2, "back to the poller's period at once: {far} -> {}", count("far"));
+    drop(poller);
+    assert_no_poll_threads();
+}

@@ -1566,6 +1566,63 @@ else
   pass "no panic on the second run's stderr"
 fi
 
+# --- a third run: a remote host, game mode (G2), sign-in (G6), other tmux servers (G5) ----------
+# Its own tmux socket directory (no default server: this machine lists no session) and, first on
+# PATH, stand-ins for ssh (every call logged, every sign-in refused), game-mode (says on) and the
+# terminal (logs its arguments). TMLS_RS_FOREGROUND: without --bench the app would detach.
+THIRD_TMUX="$SCRATCH/tmux3"
+mkdir -p "$THIRD_TMUX" "$OUT/bin3" && chmod 700 "$THIRD_TMUX"
+SSH_LOG="$OUT/ssh3.log"
+TERM_LOG="$OUT/term3.log"
+: >"$SSH_LOG"
+: >"$TERM_LOG"
+cat >"$OUT/bin3/ssh" <<EOF
+#!/bin/sh
+echo "\$*" >>"$SSH_LOG"
+echo 'tmlsrs@signhost: Permission denied (publickey,keyboard-interactive).' >&2
+exit 255
+EOF
+cat >"$OUT/bin3/game-mode" <<'EOF'
+#!/bin/sh
+[ "$1" = status ] && echo on
+EOF
+cat >"$OUT/bin3/fake-term" <<EOF
+#!/bin/sh
+{ printf '%s|' "\$@"; echo; } >>"$TERM_LOG"
+EOF
+chmod +x "$OUT/bin3/ssh" "$OUT/bin3/game-mode" "$OUT/bin3/fake-term"
+ssh_calls() { wc -l <"$SSH_LOG"; }
+PATH="$OUT/bin3:$PATH" TMUX_TMPDIR="$THIRD_TMUX" TERMINAL="$OUT/bin3/fake-term" TMLS_RS_FOREGROUND=1 \
+  "$BIN" signhost 2>"$OUT/app3.stderr" &
+APP_PID=$!
+if wait_for 30 window_up; then
+  pass "the third run's window opened (signhost, game mode on)"
+else
+  fail "the third run's window opened (signhost, game mode on)" "stderr: $(tail -3 "$OUT/app3.stderr" | tr '\n' ' ')"
+fi
+if wait_for 10 grep -qF 'tmls-rs: game mode on' "$OUT/app3.stderr"; then
+  pass "game-mode status says on: the app is in game mode"
+else
+  fail "game-mode status says on: the app is in game mode" "stderr: $(tail -3 "$OUT/app3.stderr" | tr '\n' ' ')"
+fi
+sleep 2
+CALLS=$(ssh_calls)
+sleep 12
+if [ "$(ssh_calls)" -eq "$CALLS" ]; then
+  pass "in game mode the remote host is not listed again within 12 s (without it: every 5 s)"
+else
+  fail "in game mode the remote host is not listed again within 12 s" "ssh calls $CALLS -> $(ssh_calls): $(tail -3 "$SSH_LOG" | tr '\n' '|')"
+fi
+check "screenshot 44-third-run (this machine, signhost)" shot 44-third-run
+# --- third run: more checks above this line ---
+key_quit
+wait_for 10 app_gone || kill "$APP_PID" 2>/dev/null
+if grep -nE "panicked|stack backtrace" "$OUT/app3.stderr" >/dev/null; then
+  fail "no panic on the third run's stderr" "$(grep -n 'panicked' -A3 "$OUT/app3.stderr" | head -6 | tr '\n' ' ')"
+else
+  pass "no panic on the third run's stderr"
+fi
+
 echo "--- files under the scratch HOME"
 find "$HOME" -type f | sed 's/^/    /' | head -20
 echo "--- app stderr ($OUT/app.stderr)"

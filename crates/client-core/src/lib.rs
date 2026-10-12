@@ -1,11 +1,12 @@
 //! tmls-rs desktop v0, the part with no UI: which hosts to show, what tmux sessions each has
 //! and what they are doing, the tmux commands that act on them, and the user's tmls configuration.
 //! `approve` reads Claude's permission dialog off a pane's capture; `push` follows the status
-//! Claude's hooks write to tmls's events.jsonl.
+//! Claude's hooks write to tmls's events.jsonl; `gamemode` is game mode's status.
 
 pub mod approve;
 pub mod config;
 pub mod files;
+pub mod gamemode;
 pub mod imagedrop;
 pub mod listing;
 pub mod poll;

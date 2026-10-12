@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use client_core::config::tmls_slug;
 use client_core::{Config, HostColor, HostSnapshot, SessionInfo, SessionKey, Status, Tool};
 use desktop::draw::{
-    Chrome, Layout, POLL_ONLY, Rect, RowLook, Span, TabView, View, header_spans, header_spans_with,
-    layer_order, layout, session_spans,
+    Chrome, GAME_MODE, HeaderLook, Layout, POLL_ONLY, Rect, RowLook, Span, TabView, View,
+    header_spans, header_spans_look, header_spans_with, layer_order, layout, session_spans,
 };
 use desktop::sidebar::{Row, Sidebar};
 use desktop::theme::{self, SIDEBAR_COLS, Theme, host_rgb, mark_rgb};
@@ -942,4 +942,38 @@ fn queued_messages_show_before_the_dot_and_the_star() {
     assert_eq!((dot.col, star.col), (queued.col + 3, queued.col + 5));
     assert_eq!(queued.colour, theme::QUEUED_RGB);
     assert_within(&said);
+}
+
+#[test]
+fn a_host_header_says_poll_and_game_dimly_after_its_name() {
+    let theme = Theme::default();
+    let both = HeaderLook {
+        polled: true,
+        game: true,
+    };
+    let said = header_spans_look("nas", true, both, SIDEBAR_COLS, &theme);
+    let (poll, game) = (find(&said, POLL_ONLY), find(&said, GAME_MODE));
+    assert_eq!((poll.col, game.col), (5, 12));
+    assert!(poll.colour == theme.dim_fg && game.colour == theme.dim_fg);
+    assert!(said.iter().any(|span| span.text == "+"), "the + stays");
+    assert_within(&said);
+    // Game mode alone sits where `· poll` would.
+    let game_only = HeaderLook {
+        game: true,
+        ..HeaderLook::default()
+    };
+    let said = header_spans_look("nas", true, game_only, SIDEBAR_COLS, &theme);
+    assert_eq!(find(&said, GAME_MODE).col, 5);
+    // An offline host says offline, not game.
+    let said = header_spans_look("nas", false, game_only, SIDEBAR_COLS, &theme);
+    assert!(said.iter().all(|span| span.text != GAME_MODE));
+    assert_eq!(said, header_spans("nas", false, SIDEBAR_COLS, &theme));
+    // A name that fills the row leaves no room: the tags go, the + stays.
+    let long = header_spans_look(&"h".repeat(40), true, both, SIDEBAR_COLS, &theme);
+    assert!(
+        long.iter()
+            .all(|span| span.text != GAME_MODE && span.text != POLL_ONLY)
+    );
+    assert!(long.iter().any(|span| span.text == "+"));
+    assert_within(&long);
 }

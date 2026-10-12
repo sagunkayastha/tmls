@@ -49,6 +49,10 @@
 //! opens its picture the way a click in the terminal does, and that panel keeps the list to go
 //! back to. A tab whose session is not Claude's runs no command.
 //!
+//! Ticker: a thread sends `UserEvent::Tick` at start and every 30 s; `tick` asks
+//! `game-mode status` on a thread → `UserEvent::GameMode` → `Poller::slow_down` for the remote
+//! hosts.
+//!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
 //! builds quads, submits and presents. Tabs in the back wake the loop too (that is how a tab
@@ -74,7 +78,7 @@ use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
     default_color,
 };
-use client_core::{imagedrop, tmux};
+use client_core::{gamemode, imagedrop, tmux};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -119,6 +123,10 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the new-session form waits after a change of the folder before it asks the host
 /// for the name (tmls `create_form.py`: 0.25 s).
 const LOOKUP_DELAY: Duration = Duration::from_millis(250);
+
+/// How often game mode is asked about, and (Task 6) the hosts' other tmux servers looked for:
+/// six listings of 5 s.
+const TICK: Duration = Duration::from_secs(30);
 
 /// What the command line asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -168,6 +176,10 @@ pub enum UserEvent {
     Dropped(SessionKey, String, Result<String, String>),
     /// Files were dropped on the window: the `text/uri-list` of them (`dnd`).
     FilesDropped(String),
+    /// The 30 s ticker: game mode and the other tmux servers are asked about again.
+    Tick,
+    /// What `game-mode status` said.
+    GameMode(bool),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -260,6 +272,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Sent(id, key, result) => running.sent(id, key, result),
             UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
+            UserEvent::Tick => running.tick(),
+            UserEvent::GameMode(on) => running.game_mode(on),
             UserEvent::FilesDropped(list) => running.files_dropped(&list),
         }
     }
@@ -464,6 +478,10 @@ struct Running {
     proxy: EventLoopProxy<UserEvent>,
     /// The polling threads.
     poller: Poller,
+    /// `game-mode status` said on: remote hosts are listed every 300 s, no notification runs.
+    game: bool,
+    /// `game-mode` is on PATH; without it there is no game mode.
+    game_probe: bool,
     /// Each host's latest listing as the poller gave it (the listing's statuses, no ◆): what
     /// a pushed event changes.
     listings: HashMap<String, HostSnapshot>,
@@ -684,6 +702,22 @@ impl Running {
                 let _ = poll_proxy.send_event(UserEvent::Snapshot(snapshot));
             }),
         );
+        let game_probe = forms::on_path(gamemode::PROGRAM);
+        if !game_probe {
+            crate::errln(format_args!(
+                "tmls-rs: no game-mode on PATH: game mode stays off"
+            ));
+        }
+        // The ticker: one event now, then one every 30 s, until the event loop is gone.
+        let tick_proxy = proxy.clone();
+        std::thread::Builder::new()
+            .name("tmls-tick".to_string())
+            .spawn(move || {
+                while tick_proxy.send_event(UserEvent::Tick).is_ok() {
+                    std::thread::sleep(TICK);
+                }
+            })
+            .context("the ticker thread")?;
 
         let (cols, rows) = layout.grid;
         crate::errln(format_args!(
@@ -728,6 +762,8 @@ impl Running {
             lookups: Arc::new(AtomicU64::new(0)),
             proxy,
             poller,
+            game: false,
+            game_probe,
             listings: HashMap::new(),
             replies: HashMap::new(),
             tails: HashMap::new(),
@@ -901,6 +937,47 @@ impl Running {
         self.invalidate();
     }
 
+    /// The hosts reached over ssh: every one but this machine.
+    fn remote_hosts(&self) -> Vec<String> {
+        self.cfg
+            .hosts
+            .iter()
+            .filter(|host| **host != self.cfg.local_name)
+            .cloned()
+            .collect()
+    }
+
+    /// Every 30 s: game mode is asked about on a thread (2 s at most; no answer is off).
+    fn tick(&mut self) {
+        if self.game_probe {
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                let on = tmux::run(&gamemode::status_argv(), gamemode::TIMEOUT)
+                    .is_ok_and(|out| gamemode::parse(&out));
+                let _ = proxy.send_event(UserEvent::GameMode(on));
+            });
+        }
+    }
+
+    /// Game mode went on or off: the remote hosts' period follows (R1), this machine keeps 5 s.
+    fn game_mode(&mut self, on: bool) {
+        if on == self.game {
+            return;
+        }
+        self.game = on;
+        self.poller
+            .slow_down(&self.remote_hosts(), on.then_some(gamemode::REMOTE_PERIOD));
+        crate::errln(format_args!(
+            "tmls-rs: game mode {}",
+            if on {
+                "on: remote hosts listed every 300 s"
+            } else {
+                "off"
+            }
+        ));
+        self.invalidate();
+    }
+
     /// A host's new listing, in the order the poller delivers them. The session of the tab in
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, mut snapshot: HostSnapshot) {
@@ -953,7 +1030,10 @@ impl Running {
         let notes = self
             .alerts
             .observe(&host, online, listed, watching, Instant::now());
-        alerts::send(&notes, &mut forms::spawn_detached);
+        // In game mode no notification runs; the bell's list has the alerts all the same.
+        if !self.game {
+            alerts::send(&notes, &mut forms::spawn_detached);
+        }
         if let Some(key) = &self.select_when_listed
             && self.sidebar.status(key).is_some()
         {
@@ -1203,6 +1283,10 @@ impl Running {
                     .collect();
                 polled.sort(); // the same view for the same state
                 polled
+            },
+            game_hosts: match self.game {
+                true => self.remote_hosts(),
+                false => Vec::new(),
             },
             queued: self
                 .queue

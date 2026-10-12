@@ -6,6 +6,7 @@
 //! A listing runs in a process group of its own and is read without blocking, so a timeout or
 //! a stopping poller kills the command and everything it started, and never waits on a pipe.
 
+use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -62,6 +63,8 @@ struct State {
     refresh: u64,
     /// Counts force_next calls: a thread that sees it move delivers its next listing.
     resend: u64,
+    /// Hosts listed at a period of their own (`slow_down`), instead of the poller's.
+    slow: HashMap<String, Duration>,
 }
 
 impl Shared {
@@ -93,7 +96,8 @@ impl Poller {
         timeout: Duration,
         on_snapshot: Box<dyn Fn(HostSnapshot) + Send>,
     ) -> Poller {
-        let shared = Arc::new(Shared { state: Mutex::new(State { stop: false, refresh: 0, resend: 0 }), wake: Condvar::new() });
+        let state = State { stop: false, refresh: 0, resend: 0, slow: HashMap::new() };
+        let shared = Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() });
         let command = Arc::new(command);
         let deliver = Arc::new(Mutex::new(on_snapshot));
         let threads = hosts
@@ -119,6 +123,25 @@ impl Poller {
     /// pushed event changed the app's copy, and the listing is the truth again (D3).
     pub fn force_next(&self) {
         self.shared.state().resend += 1;
+    }
+
+    /// Lists `hosts` every `period` from now on instead of the poller's own period; `None`
+    /// gives them their own back. Takes effect at once both ways: a thread waiting out the old
+    /// period wakes and waits for the new one, counted from its last listing.
+    pub fn slow_down(&self, hosts: &[String], period: Option<Duration>) {
+        let mut state = self.shared.state();
+        for host in hosts {
+            match period {
+                Some(period) => {
+                    state.slow.insert(host.clone(), period);
+                }
+                None => {
+                    state.slow.remove(host);
+                }
+            }
+        }
+        drop(state);
+        self.shared.wake.notify_all();
     }
 }
 
@@ -161,13 +184,15 @@ fn poll_host(
             resent = resend;
         }
 
-        let wake_at = Instant::now() + period;
+        // The period is read again at every wake: `slow_down` takes effect at once.
+        let listed_at = Instant::now();
         let mut state = shared.state();
         loop {
             if state.stop {
                 return;
             }
-            let left = wake_at.saturating_duration_since(Instant::now());
+            let period = state.slow.get(host).copied().unwrap_or(period);
+            let left = (listed_at + period).saturating_duration_since(Instant::now());
             if state.refresh != refresh || left.is_zero() {
                 break;
             }

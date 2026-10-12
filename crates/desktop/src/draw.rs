@@ -854,6 +854,8 @@ pub struct View {
     pub unread_rows: Vec<SessionKey>,
     /// Hosts whose events.jsonl is not there (`· poll`).
     pub polled: Vec<String>,
+    /// Remote hosts game mode slows (`· game`).
+    pub game_hosts: Vec<String>,
     /// Messages waiting, per session.
     pub queued: Vec<(SessionKey, usize)>,
 }
@@ -1051,13 +1053,45 @@ pub fn header_spans_with(
     cols: usize,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
+    let look = HeaderLook {
+        polled,
+        ..HeaderLook::default()
+    };
+    header_spans_look(host, online, look, cols, theme)
+}
+
+/// After the name of a remote host while game mode lists it every 300 s.
+pub const GAME_MODE: &str = "· game";
+
+/// What a host's header says after its name, besides `+` or `· offline`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeaderLook {
+    /// Its events.jsonl is not there: `· poll`.
+    pub polled: bool,
+    /// Game mode slows its listing: `· game`.
+    pub game: bool,
+}
+
+/// `header_spans`, with the tags of `look` dimly after the name while the host answers, each
+/// only if it fits before the `+`.
+pub fn header_spans_look(
+    host: &str,
+    online: bool,
+    look: HeaderLook,
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     let mut spans = header_spans(host, online, cols, theme);
-    if online && polled {
-        let end = cols.saturating_sub(1);
-        let room = end.saturating_sub(1 + 2); // the name's columns in `header_spans`
-        let col = 1 + columns(&host.to_uppercase()).min(room) + 1;
-        if col + columns(POLL_ONLY) < end.saturating_sub(1) {
-            spans.push(Span::whole(0, col, POLL_ONLY).colour(theme.dim_fg));
+    if !online {
+        return spans;
+    }
+    let end = cols.saturating_sub(1);
+    let room = end.saturating_sub(1 + 2); // the name's columns in `header_spans`
+    let mut col = 1 + columns(&host.to_uppercase()).min(room) + 1;
+    for (on, tag) in [(look.polled, POLL_ONLY), (look.game, GAME_MODE)] {
+        if on && col + columns(tag) < end.saturating_sub(1) {
+            spans.push(Span::whole(0, col, tag).colour(theme.dim_fg));
+            col += columns(tag) + 1;
         }
     }
     spans
@@ -1379,13 +1413,11 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                     },
                     host_rgb(*color),
                 );
-                for span in header_spans_with(
-                    host,
-                    *online,
-                    view.polled.contains(host),
-                    l.list_cols,
-                    theme,
-                ) {
+                let look = HeaderLook {
+                    polled: view.polled.contains(host),
+                    game: view.game_hosts.contains(host),
+                };
+                for span in header_spans_look(host, *online, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);
                 }
             }
