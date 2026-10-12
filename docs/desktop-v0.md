@@ -48,6 +48,20 @@ target-docker/release/tmls-rs [HOST…] [--bench DIR]
   always listed when it has tmux.
 - `--bench DIR` — writes a latency log to `DIR/latency.jsonl`. Only the first tab opened is
   logged.
+- `--foreground` (or `--fg`) — stay attached to the terminal (see below).
+
+`tmls-rs` returns the shell at once, like a desktop app: it starts itself again as its own
+process in a new session (no controlling terminal, stdin from `/dev/null`, same working
+directory) and exits; closing the terminal leaves the window up. Nothing is printed. Its
+stdout and stderr (errors, adapter and focus lines) go to `$XDG_CACHE_HOME/tmls-rs/tmls-rs.log`,
+else `~/.cache/tmls-rs/tmls-rs.log`, emptied at each launch, so it holds the last run only.
+
+It stays in the foreground instead, with its output on the terminal, when given
+`--foreground`/`--fg`, with `--bench`, with `TMLS_RS_FOREGROUND=1` in the environment, when the
+first argument is not a flag (a subcommand such as `tmls-rs keys`; this includes `HOST…`, so
+hosts given on the command line keep it in the foreground: put them in the hosts file to
+detach), when the arguments are wrong (the usage is printed), or when
+the log file cannot be opened (the reason is printed).
 
 Hosts are reached with your own ssh setup (keys, `~/.ssh/config`). Listing never asks for a
 password: a host that needs one shows as offline. Attaching runs ssh inside the tab, so a
