@@ -151,11 +151,14 @@ fn poll_host(
     }
 }
 
-/// The snapshot with every `last_output_age_s` blanked: what "the same as before" compares.
+/// The snapshot with every `last_output_age_s` and `activity` blanked: what "the same as
+/// before" compares. Ages grow at every listing; activity moves with output, which reaches the
+/// app with the session's next status change (a shell that prints turns running).
 fn without_ages(snapshot: &HostSnapshot) -> HostSnapshot {
     let mut snapshot = snapshot.clone();
     for session in &mut snapshot.sessions {
         session.last_output_age_s = None;
+        session.activity = None;
     }
     snapshot
 }

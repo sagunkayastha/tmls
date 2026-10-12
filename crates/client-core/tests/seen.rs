@@ -22,6 +22,8 @@ fn snap(host: &str, sessions: &[(&str, Status)]) -> HostSnapshot {
             last_output_age_s: Some(0),
             pid: None,
             session_id: None,
+            pane: None,
+            activity: None,
         })
         .collect();
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }
@@ -236,4 +238,47 @@ fn another_hosts_listing_forgets_no_session_outside_tmux() {
     seen.apply(&mut down);
     seen.forget_missing_local(&down);
     assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Unseen]);
+}
+
+/// `host`'s sessions, idle, each with the time of its newest output.
+fn active(host: &str, sessions: &[(&str, u64)]) -> HostSnapshot {
+    let idle: Vec<(&str, Status)> = sessions.iter().map(|(name, _)| (*name, Status::Idle)).collect();
+    let mut snapshot = snap(host, &idle);
+    for (info, (_, at)) in snapshot.sessions.iter_mut().zip(sessions) {
+        info.activity = Some(*at);
+    }
+    snapshot
+}
+
+#[test]
+fn output_since_the_last_look_is_unread() {
+    let mut seen = Seen::new();
+    let w = key("nas", "w");
+    seen.apply(&mut active("nas", &[("w", 100)]));
+    assert!(!seen.unread(&w), "a session's first listing is never unread");
+    seen.apply(&mut active("nas", &[("w", 100)]));
+    assert!(!seen.unread(&w));
+    seen.apply(&mut active("nas", &[("w", 130)]));
+    assert!(seen.unread(&w), "new output, not looked at");
+    seen.looked(&w);
+    assert!(!seen.unread(&w));
+    seen.apply(&mut active("nas", &[("w", 160)]));
+    assert!(seen.unread(&w));
+    seen.forget_missing(&active("nas", &[]));
+    assert!(!seen.unread(&w), "gone");
+    seen.apply(&mut active("nas", &[("w", 200)]));
+    assert!(!seen.unread(&w), "listed again: a first listing");
+}
+
+#[test]
+fn outside_tmux_or_without_activity_is_never_unread() {
+    let mut seen = Seen::new();
+    seen.apply(&mut active(KITTY, &[("notes", 1)]));
+    seen.apply(&mut active(KITTY, &[("notes", 50)]));
+    assert!(!seen.unread(&key(KITTY, "notes")));
+    seen.apply(&mut snap("nas", &[("w", Status::Idle)]));
+    seen.apply(&mut snap("nas", &[("w", Status::Running)]));
+    assert!(!seen.unread(&key("nas", "w")));
+    assert!(!seen.unread(&key("nas", "never-listed")));
+    seen.looked(&key("nas", "never-listed")); // nothing to remember, no panic
 }

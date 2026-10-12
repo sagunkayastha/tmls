@@ -248,6 +248,9 @@ impl ApplicationHandler<UserEvent> for App {
                 // For a test driver: it sends keys only to the window that has the focus.
                 crate::errln(format_args!("tmls-rs: focus {focused}"));
                 running.window_focused = focused;
+                if focused {
+                    running.looked_front();
+                }
                 running.sync_focus();
             }
             WindowEvent::ModifiersChanged(mods) => running.mods = mods.state(),
@@ -634,6 +637,15 @@ impl Running {
         })
     }
 
+    /// The window got the focus: what the front tab's session shows is read now.
+    fn looked_front(&mut self) {
+        if let Some(index) = self.tabs.active() {
+            let key = self.tabs.key(index).clone();
+            self.seen.looked(&key);
+            self.invalidate();
+        }
+    }
+
     /// The picture changed without a new frame: draw at the next opportunity.
     fn invalidate(&mut self) {
         self.dirty = true;
@@ -768,6 +780,12 @@ impl Running {
             .as_ref()
             .and_then(|(key, _)| self.sidebar.status(key));
         self.sidebar.deliver(&mut self.seen, snapshot, front);
+        // The front tab, in a window that has the focus, is being read: nothing in it is news.
+        if self.window_focused
+            && let Some(front) = front
+        {
+            self.seen.looked(front);
+        }
         // The host's sessions as the list has them now, marks included.
         let listed = self.sidebar.rows().iter().filter_map(|row| match row {
             sidebar::Row::Session(info) if info.key.host == host => Some(info),
@@ -869,6 +887,17 @@ impl Running {
                 side.view(l.side_lines, l.side_cols, l.side_body)
             }),
             side_focused: self.focus == Focus::Panel,
+            unread_rows: self
+                .sidebar
+                .rows()
+                .iter()
+                .filter_map(|row| match row {
+                    sidebar::Row::Session(info) if self.seen.unread(&info.key) => {
+                        Some(info.key.clone())
+                    }
+                    _ => None,
+                })
+                .collect(),
         }
     }
 
@@ -1653,9 +1682,16 @@ impl Running {
         self.tab_changed();
     }
 
+    /// Alt+Shift+N or `n`: the next session that waits or finished unwatched; when none does,
+    /// the next with news not looked at (`•`).
     fn next_waiting(&mut self) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
-        if let Some(key) = self.sidebar.next_waiting(front) {
+        let seen = &self.seen;
+        let next = self
+            .sidebar
+            .next_waiting(front)
+            .or_else(|| self.sidebar.next_unread(front, &|key| seen.unread(key)));
+        if let Some(key) = next {
             self.open(&key);
         }
     }
@@ -1844,6 +1880,9 @@ impl Running {
             Some(key) => {
                 self.sidebar.select_key(key);
                 self.sidebar.opened(&mut self.seen, key);
+                if self.window_focused {
+                    self.seen.looked(key);
+                }
                 // tmls: `session · machine` (its `set_title`).
                 self.window
                     .set_title(&format!("{} · {}", key.name, key.host));

@@ -3,7 +3,7 @@
 //! ```text
 //! +-- sidebar (28 cols) --+s+-- tab bar (1 row) ---------------------+
 //! | LAPTOP              + |e| ▌● name  × | ▌? name  × |        Files |
-//! | ● C name ★            |p+----------------------------------------+
+//! | ● C name • ★          |p+----------------------------------------+
 //! |     title         58% |a|  terminal: the grid of the tab in front|
 //! | ○   name          ◉2  |r|                                        |
 //! |                       |a|                                        |
@@ -81,8 +81,8 @@ use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
-    OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
-    mark_rgb, tool_letter,
+    OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, TAB_MAX_COLS, Theme, UNREAD_MARK, UNREAD_RGB,
+    context_rgb, host_rgb, mark_glyph, mark_rgb, tool_letter,
 };
 use crate::viewer::{MADE_NAME_COL, MadeRow, SideBody, SideLook, SideView, TextRow};
 
@@ -99,9 +99,15 @@ const TAB_CLOSE_COLS: usize = 3;
 /// Cells at the right end of a host's header that are its `+` when clicked: the `+` and one
 /// cell either side.
 const ADD_COLS: usize = 3;
-/// Lines of the legend, as in tmls: the marks and the ★ two a line, then the agents' letters
-/// on two lines.
-const LEGEND_LINES: usize = (LEGEND.len() + 1).div_ceil(2) + TOOL_LINES;
+/// The legend's entries after the status marks: what follows a name.
+const LEGEND_MORE: [(&str, [u8; 3], &str); 2] = [
+    (PIN, PIN_RGB, "pinned"),
+    (UNREAD_MARK, UNREAD_RGB, "unread"),
+];
+/// The status marks and `LEGEND_MORE`, two a line.
+const LEGEND_MARKS: usize = LEGEND.len() + LEGEND_MORE.len();
+/// Lines of the legend, as in tmls: the marks two a line, then the agents' letters on two lines.
+const LEGEND_LINES: usize = LEGEND_MARKS.div_ceil(2) + TOOL_LINES;
 /// The legend's lines for the agents' letters: `C Claude  O opencode`, `X Codex`.
 const TOOL_LINES: usize = 2;
 /// The agents of the legend, in tmls's order.
@@ -819,6 +825,8 @@ pub struct View {
     pub side: Option<SideView>,
     /// The panel has the keys: its divider shows it, as the list's line does for the list.
     pub side_focused: bool,
+    /// Sessions with output the user has not looked at (`Seen::unread`).
+    pub unread_rows: Vec<SessionKey>,
 }
 
 impl View {
@@ -889,9 +897,11 @@ pub struct RowLook {
     pub others: u32,
     /// Its tab is the one in front.
     pub active: bool,
+    /// The session has output the user has not looked at: `•` after the name.
+    pub unread: bool,
 }
 
-/// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name ★`,
+/// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name • ★`,
 /// then at the right end `◉N` when other clients are attached; under it, when there is a
 /// summary, that in dim. How full Claude's context is ends the summary's line, or the name's
 /// when there is no summary. The ★, the count and the percentage always fit; the name and the
@@ -933,16 +943,28 @@ pub fn session_spans<'a>(
         right = col.saturating_sub(1);
         Span::whole(0, col, text).colour(theme.muted_fg)
     });
-    let pin_cols = if look.pinned { 2 } else { 0 };
-    let name_cols = right.saturating_sub(name_col + pin_cols);
+    // After the name, in this order: `•` (unread), `★` (pinned); each with a space before it.
+    let after: Vec<(&'static str, [u8; 3])> = [
+        look.unread.then_some((UNREAD_MARK, UNREAD_RGB)),
+        look.pinned.then_some((PIN, PIN_RGB)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let after_cols: usize = after.iter().map(|(text, _)| columns(text) + 1).sum();
+    let name_cols = right.saturating_sub(name_col + after_cols);
     let name = Span::new(0, name_col, name_cols, info.key.name.as_str());
-    let pin_col = name_col + columns(&info.key.name).min(name_cols) + 1;
+    let mut col = name_col + columns(&info.key.name).min(name_cols) + 1;
     out.push(match look.active {
         true => name.colour(CURRENT_RGB).bold(),
         false => name.colour(theme.sidebar_fg),
     });
-    if look.pinned && pin_col < right {
-        out.push(Span::whole(0, pin_col, PIN).colour(PIN_RGB).bold());
+    for (text, colour) in after {
+        let cols = columns(text);
+        if col + cols <= right {
+            out.push(Span::whole(0, col, text).colour(colour).bold());
+        }
+        col += cols + 1;
     }
     out.extend(others);
 
@@ -1327,6 +1349,7 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                     pinned: list.is_pinned(key),
                     others: info.attached.saturating_sub(u32::from(own)),
                     active,
+                    unread: view.unread_rows.contains(key),
                 };
                 for span in session_spans(info, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);
@@ -1352,12 +1375,12 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         theme.sidebar_rule,
     );
     let entry_cols = LEGEND_ENTRY_COLS.min(l.list_cols.saturating_sub(2) / 2);
-    // The marks, then the ★, then the agents' letters from a line of their own on.
+    // The marks, then what follows a name, then the agents' letters from a line of their own on.
     let marks = LEGEND
         .iter()
         .map(|(status, word)| (mark_glyph(*status), mark_rgb(*status), *word))
-        .chain([(PIN, PIN_RGB, "pinned")]);
-    let tools_from = (LEGEND.len() + 1).div_ceil(2) * 2;
+        .chain(LEGEND_MORE.iter().copied());
+    let tools_from = LEGEND_MARKS.div_ceil(2) * 2;
     let tools = LEGEND_TOOLS.iter().filter_map(|(tool, word)| {
         let (letter, colour) = tool_letter(*tool)?;
         Some((letter, colour, *word))

@@ -482,6 +482,27 @@ impl Sidebar {
         next(Status::Waiting).or_else(|| next(Status::Unseen))
     }
 
+    /// The next session after `after` with news the user has not looked at (`unread`), wrapping
+    /// round: where Alt+Shift+N goes when nothing waits (tmls visits its "done" ones too).
+    /// Never `after` itself, never a session outside tmux.
+    pub fn next_unread(
+        &self,
+        after: Option<&SessionKey>,
+        unread: &dyn Fn(&SessionKey) -> bool,
+    ) -> Option<SessionKey> {
+        let count = self.rows.len();
+        let from = after
+            .and_then(|key| self.position(key))
+            .map_or(0, |at| at + 1);
+        (0..count)
+            .filter_map(|step| match &self.rows[(from + step) % count] {
+                Row::Session(info) => Some(&info.key),
+                _ => None,
+            })
+            .find(|key| Some(*key) != after && key.host != KITTY && unread(key))
+            .cloned()
+    }
+
     /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places
     /// on in the pinned (★) sessions listed now, in the list's order, wrapping round; the first
     /// of them when `from` is not pinned. `None` when no listed session is pinned — then the

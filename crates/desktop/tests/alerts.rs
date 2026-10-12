@@ -34,6 +34,8 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         last_output_age_s: None,
         pid: None,
         session_id: None,
+        pane: None,
+        activity: None,
     }
 }
 

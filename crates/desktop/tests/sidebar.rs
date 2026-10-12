@@ -56,6 +56,8 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         last_output_age_s: None,
         pid: None,
         session_id: None,
+        pane: None,
+        activity: None,
     }
 }
 
@@ -750,6 +752,8 @@ fn outside(name: &str, pid: u32, status: Status) -> SessionInfo {
         tool: Tool::Claude,
         pid: Some(pid),
         session_id: None,
+        pane: None,
+        activity: None,
         ..session(KITTY, name, status)
     }
 }
@@ -890,4 +894,39 @@ fn claude_outside_tmux_that_is_gone_is_forgotten() {
     // One of its name that comes later did not finish anything.
     s.deliver(&mut seen, listing(Some(Status::Idle)), None);
     assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Idle));
+}
+
+#[test]
+fn next_unread_wraps_and_never_returns_where_it_starts() {
+    let mut s = sidebar(&[LOCAL]);
+    s.apply(snapshot(
+        LOCAL,
+        vec![
+            session(LOCAL, "a", Status::Idle),
+            session(LOCAL, "b", Status::Idle),
+            session(LOCAL, "c", Status::Idle),
+        ],
+    ));
+    let unread = |k: &SessionKey| k.name == "a" || k.name == "c";
+    assert_eq!(s.next_unread(None, &unread), Some(key(LOCAL, "a")));
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "a")), &unread),
+        Some(key(LOCAL, "c"))
+    );
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "c")), &unread),
+        Some(key(LOCAL, "a")),
+        "wraps round"
+    );
+    let only_a = |k: &SessionKey| k.name == "a";
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "a")), &only_a),
+        None,
+        "not the one it starts from"
+    );
+    assert_eq!(
+        sidebar(&[LOCAL]).next_unread(None, &unread),
+        None,
+        "an empty list"
+    );
 }

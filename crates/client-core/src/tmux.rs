@@ -316,6 +316,12 @@ pub fn valid_session_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `pane` is a tmux pane id (`%` and digits): the only form of a pane that goes into a
+/// command.
+pub fn valid_pane(pane: &str) -> bool {
+    pane.strip_prefix('%').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// What a pipe has given so far, and a channel that closes when the pipe does.
 struct Output {
     bytes: Arc<Mutex<Vec<u8>>>,

@@ -46,14 +46,14 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
     );
 
     // The sidebar from the top: a band as high as the tab bar, the list's lines — each level
-    // with a row of the terminal, as many as end above the legend's line —, that line, five
+    // with a row of the terminal, as many as end above the legend's line —, that line, six
     // lines of legend, the buttons' two rows — the second level with the terminal's last row
     // (26 + 32 * 20) — and empty space down to the window's edge.
     assert_eq!(l.list_cols, SIDEBAR_COLS);
     assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 26.0, 280.0));
-    assert_eq!(l.list_lines, 25);
-    assert_eq!(l.list.h, 500.0);
-    assert_eq!((l.legend.y, l.legend.h), (546.0, 100.0));
+    assert_eq!(l.list_lines, 24);
+    assert_eq!(l.list.h, 480.0);
+    assert_eq!((l.legend.y, l.legend.h), (526.0, 120.0));
     assert_eq!((l.buttons.y, l.buttons.bottom()), (646.0, 686.0));
     assert_eq!(l.buttons.bottom(), l.terminal.y + l.grid.1 as f32 * 20.0);
     assert!(l.list.bottom() < l.legend.y);
@@ -88,8 +88,8 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     // The list's lines are a cell high, from the terminal's first row down.
     assert_eq!(l.hit(50.0, 26.0, 2), Hit::List { line: 0, col: 5 });
     assert_eq!(l.hit(279.0, 46.0, 2), Hit::List { line: 1, col: 27 });
-    assert_eq!(l.hit(0.0, 525.9, 2), Hit::List { line: 24, col: 0 });
-    assert_eq!(l.hit(50.0, 526.0, 2), Hit::Sidebar, "under the last line");
+    assert_eq!(l.hit(0.0, 505.9, 2), Hit::List { line: 23, col: 0 });
+    assert_eq!(l.hit(50.0, 506.0, 2), Hit::Sidebar, "under the last line");
     // The separator and the padding right of it are its handle, at any height.
     for y in [0.0, 26.0, 400.0, 725.0] {
         assert_ne!(l.hit(279.9, y, 2), Hit::Separator, "y {y}");
@@ -183,20 +183,20 @@ fn many_tabs_share_the_bar() {
 
 #[test]
 fn a_low_window_has_no_legend_and_no_buttons() {
-    // Four lines for the list, or the foot goes. At 292 the terminal has twelve rows, the
-    // buttons start at its last but one (26 + 10 * 20 = 226), the legend at 126: the list has
+    // Four lines for the list, or the foot goes. At 312 the terminal has thirteen rows, the
+    // buttons start at its last but one (26 + 11 * 20 = 246), the legend at 126: the list has
     // the 99 pixels from 26 to the legend's line.
-    let l = at(1281, 292);
-    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (100.0, 40.0, 4));
-    assert_eq!((l.list.y, l.legend.y, l.buttons.y), (26.0, 126.0, 226.0));
-    let l = at(1281, 291);
+    let l = at(1281, 312);
+    assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (120.0, 40.0, 4));
+    assert_eq!((l.list.y, l.legend.y, l.buttons.y), (26.0, 126.0, 246.0));
+    let l = at(1281, 311);
     assert_eq!((l.legend.h, l.buttons.h), (0.0, 0.0));
     assert_eq!(
-        l.list_lines, 13,
+        l.list_lines, 14,
         "the list has the whole height under the bar's band"
     );
     assert_eq!(l.hit(15.0, 250.0, 0), Hit::List { line: 11, col: 1 });
-    assert_eq!(l.hit(15.0, 286.0, 0), Hit::Sidebar);
+    assert_eq!(l.hit(15.0, 306.0, 0), Hit::Sidebar);
 }
 
 #[test]

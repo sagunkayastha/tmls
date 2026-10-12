@@ -7,6 +7,10 @@
 //!
 //! A session is known by its [`SessionKey`], so one renamed outside the app is a new session:
 //! its ◆ is lost with the old name.
+//!
+//! **Unread (`•`)**: a session whose `activity` is newer than when the user last looked at it
+//! (`looked`: its tab in front while the window has the focus). A session's first listing sets
+//! what it was looked at; sessions outside tmux are never unread.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +22,10 @@ pub struct Seen {
     last: HashMap<SessionKey, Status>,
     /// Sessions that finished and have not been opened since.
     unseen: HashSet<SessionKey>,
+    /// Each session's `activity` at its last listing.
+    activity: HashMap<SessionKey, u64>,
+    /// The `activity` each session had when the user last looked at it.
+    looked_at: HashMap<SessionKey, u64>,
 }
 
 impl Seen {
@@ -30,6 +38,11 @@ impl Seen {
     /// Applying a snapshot again is fine: its marks stay as they are until [`Seen::opened`].
     pub fn apply(&mut self, snap: &mut HostSnapshot) {
         for session in &mut snap.sessions {
+            if let (Some(at), false) = (session.activity, session.key.host == KITTY) {
+                self.activity.insert(session.key.clone(), at);
+                // a first listing: what is there now was there before anyone could look
+                self.looked_at.entry(session.key.clone()).or_insert(at);
+            }
             // a snapshot that went through here before says Unseen where the listing said Idle
             let listed = if session.status == Status::Unseen { Status::Idle } else { session.status };
             let before = self.last.insert(session.key.clone(), listed);
@@ -47,6 +60,19 @@ impl Seen {
     /// The user opened the session's tab: it is seen up to now.
     pub fn opened(&mut self, key: &SessionKey) {
         self.unseen.remove(key);
+    }
+
+    /// The user is looking at the session (its tab is in front and the window has the focus):
+    /// what it has shown so far is read.
+    pub fn looked(&mut self, key: &SessionKey) {
+        if let Some(at) = self.activity.get(key) {
+            self.looked_at.insert(key.clone(), *at);
+        }
+    }
+
+    /// The session has news the user has not looked at: the `•` after its name.
+    pub fn unread(&self, key: &SessionKey) -> bool {
+        matches!((self.activity.get(key), self.looked_at.get(key)), (Some(now), Some(looked)) if now > looked)
     }
 
     /// Forgets the sessions of `snap`'s host that it no longer lists. An offline host lists
@@ -72,5 +98,7 @@ impl Seen {
         let listed = |key: &SessionKey| !of_snap(key) || snap.sessions.iter().any(|s| s.key == *key);
         self.last.retain(|key, _| listed(key));
         self.unseen.retain(listed);
+        self.activity.retain(|key, _| listed(key));
+        self.looked_at.retain(|key, _| listed(key));
     }
 }

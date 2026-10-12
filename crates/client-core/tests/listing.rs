@@ -452,3 +452,33 @@ fn a_claude_outside_tmux_keeps_its_session_id_too() {
     let snap = parse_listing("nas", &format!("100\n---\n{file}\n"));
     assert_eq!(session(&snap, "notes").session_id.as_deref(), Some(id));
 }
+
+#[test]
+fn a_claude_session_has_its_pane_and_its_status_time() {
+    let snap = parse_listing(
+        "nas",
+        "100\nwork:1:0:90\nplain:1:0:42\n---\n{\"pid\":7,\"status\":\"idle\",\"statusUpdatedAt\":77000,\"tmux\":\"work:@1.%12\"}\n",
+    );
+    let work = session(&snap, "work");
+    assert_eq!(work.pane.as_deref(), Some("%12"));
+    // Claude's status time, not its window's: its status line repaints every minute.
+    assert_eq!(work.activity, Some(77));
+    let plain = session(&snap, "plain");
+    assert_eq!((plain.pane.as_deref(), plain.activity), (None, Some(42)));
+    // A pane that is not `%N` is not kept: it becomes part of a command later.
+    for bad in ["work:@1.%1;x", "work:@1.%", "work", "work:@1.12"] {
+        let snap = parse_listing("nas", &format!("100\nwork:1:0:90\n---\n{{\"status\":\"idle\",\"tmux\":\"{bad}\"}}\n"));
+        assert_eq!(session(&snap, "work").pane, None, "{bad:?}");
+    }
+}
+
+#[test]
+fn claude_outside_tmux_has_no_pane_and_no_activity() {
+    let pid = std::process::id();
+    let snap = parse_listing(
+        "me",
+        &format!("100\n---\n{{\"pid\":{pid},\"kind\":\"interactive\",\"status\":\"idle\",\"statusUpdatedAt\":5000,\"name\":\"notes\"}}\n"),
+    );
+    let outside = &snap.sessions[0];
+    assert_eq!((outside.pane.as_deref(), outside.activity), (None, None));
+}

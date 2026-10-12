@@ -475,3 +475,15 @@ fn the_script_arrives_on_stdin_and_long_listings_are_read_whole() {
     assert_eq!(snap.sessions[4999].key.name, "s4999");
     std::fs::remove_dir_all(d).unwrap();
 }
+
+#[test]
+fn a_listing_that_differs_only_in_activity_is_not_delivered() {
+    let _one = alone();
+    // The window's output time changes at every listing; its status (running) does not.
+    let (poller, rx) = start(&["a"], Duration::from_millis(100), Duration::from_secs(5), |_| {
+        sh("cat >/dev/null; n=$(od -An -N2 -tu2 /dev/urandom | tr -d ' '); echo 100; echo \"w:1:0:$((100 + n))\"")
+    });
+    next(&rx, Duration::from_secs(5));
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "new output alone is no news for the poller");
+    drop(poller);
+}
