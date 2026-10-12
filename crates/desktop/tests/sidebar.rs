@@ -9,6 +9,7 @@ use client_core::{
     Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, Tool,
     default_color,
 };
+use desktop::queue::Queue;
 use desktop::sidebar::{Action, Row, Sidebar, renamed_outside, summary};
 
 const LOCAL: &str = "laptop";
@@ -964,6 +965,38 @@ fn renamed_outside_follows_claudes_session_id() {
     assert!(renamed_outside(&before, &both).is_empty());
     assert!(renamed_outside(&before, &offline("nas")).is_empty());
     assert!(renamed_outside(&before, &snapshot("ph", vec![with("new", Some(id))])).is_empty());
+}
+
+#[test]
+fn a_session_renamed_outside_takes_its_queue_and_pin_along_tab_or_not() {
+    let dir = scratch("outside-rename");
+    let mut s = Sidebar::new(&config(&[LOCAL]), dir.clone());
+    let mut q = Queue::default();
+    s.apply(idle(LOCAL, &["a", "b"]));
+    s.select_key(&key(LOCAL, "a"));
+    assert!(s.toggle_pin());
+    q.add(&key(LOCAL, "a"), "hi".into());
+    // No tab is involved: what follows is the list's and the queue's.
+    assert!(desktop::sidebar::follow_outside_rename(
+        &mut s,
+        &mut q,
+        &key(LOCAL, "a"),
+        &key(LOCAL, "a2")
+    ));
+    assert!(s.take_pin_error().is_ok());
+    assert_eq!(
+        (q.count(&key(LOCAL, "a")), q.count(&key(LOCAL, "a2"))),
+        (0, 1)
+    );
+    s.apply(idle(LOCAL, &["a2", "b"]));
+    assert!(s.is_pinned(&key(LOCAL, "a2")));
+    // Neither pinned nor queued: nothing to follow.
+    assert!(!desktop::sidebar::follow_outside_rename(
+        &mut s,
+        &mut q,
+        &key(LOCAL, "b"),
+        &key(LOCAL, "b2")
+    ));
 }
 
 #[test]

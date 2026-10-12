@@ -946,22 +946,25 @@ impl Running {
         });
     }
 
-    /// A session with a tab was renamed elsewhere: the tab, its ★ and its queue take the new
-    /// name; the window's title too when it is in front.
+    /// A session was renamed elsewhere: its ★ and its queue take the new name, tab or not; its
+    /// tab too, if it has one and no tab has the new name, and the window's title when that tab
+    /// is in front. Said in the status line when anything of it followed.
     fn follow_rename(&mut self, old: &SessionKey, new: &SessionKey) {
-        let Some(index) = self.tabs.index_of(old) else {
-            return;
-        };
-        if self.tabs.index_of(new).is_some() {
-            return;
-        }
-        self.tabs.rekey(index, new.clone());
-        self.sidebar.renamed(old, new);
+        let moved = sidebar::follow_outside_rename(&mut self.sidebar, &mut self.queue, old, new);
         let pinned = self.sidebar.take_pin_error();
-        self.queue.renamed(old, new);
-        if self.tabs.active() == Some(index) {
-            self.window
-                .set_title(&format!("{} · {}", new.name, new.host));
+        let tab = self
+            .tabs
+            .index_of(old)
+            .filter(|_| self.tabs.index_of(new).is_none());
+        if let Some(index) = tab {
+            self.tabs.rekey(index, new.clone());
+            if self.tabs.active() == Some(index) {
+                self.window
+                    .set_title(&format!("{} · {}", new.name, new.host));
+            }
+        }
+        if tab.is_none() && !moved && pinned.is_ok() {
+            return;
         }
         // A ★ that could not be moved is what the user needs to hear; `say` also logs it.
         self.say(match pinned {

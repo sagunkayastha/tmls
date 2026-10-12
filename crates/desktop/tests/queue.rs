@@ -141,7 +141,7 @@ fn clear_and_kill_free_a_session_whose_message_is_on_its_way() {
 }
 
 #[test]
-fn a_message_goes_now_only_to_an_idle_session_with_nothing_before_it() {
+fn a_message_goes_now_only_to_an_idle_session_with_nothing_on_its_way() {
     let (mut q, k) = (Queue::default(), key("w"));
     assert!(q.goes_now(&k, Some(Status::Idle)));
     assert!(q.goes_now(&k, Some(Status::Unseen)));
@@ -158,11 +158,46 @@ fn a_message_goes_now_only_to_an_idle_session_with_nothing_before_it() {
     );
     q.sent(id, true);
     assert!(q.goes_now(&k, Some(Status::Idle)));
-    // Messages already waiting go first: a new one goes behind them.
-    q.add(&k, "older".into());
-    assert!(
-        !q.goes_now(&k, Some(Status::Idle)),
-        "the queue keeps its order"
+}
+
+#[test]
+fn a_head_left_behind_goes_with_the_next_message_to_an_idle_session() {
+    let (mut q, k) = (Queue::default(), key("w"));
+    // The head stayed: its send failed while the session was idle (or the host was away when
+    // the turn ended), and no turn ends any more to send it.
+    q.add(&k, "first".into());
+    let (id, _) = q.start(&k).unwrap();
+    q.sent(id, false);
+    assert_eq!(
+        q.turn_ended(&k, Some(Status::Idle), Some(Status::Idle), Some("%1")),
+        Turn::Wait
+    );
+    // A new message for the idle session starts the queue: its head first, the order kept.
+    let id = match q.submit(&k, Some(Status::Idle), Some("%1"), "second".into()) {
+        Turn::Send { id, text, .. } => {
+            assert_eq!(text, "first");
+            id
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(q.count(&k), 2);
+    q.sent(id, true);
+    assert_eq!(q.count(&k), 1);
+    assert_eq!(
+        text(q.due(&k, Some(Status::Running), Some(Status::Idle))),
+        Some("second".to_string())
+    );
+    // Busy, or one on its way: the new one only waits.
+    let (mut q, k) = (Queue::default(), key("v"));
+    q.add(&k, "first".into());
+    assert_eq!(
+        q.submit(&k, Some(Status::Running), Some("%1"), "x".into()),
+        Turn::Wait
+    );
+    q.start(&k).unwrap();
+    assert_eq!(
+        q.submit(&k, Some(Status::Idle), Some("%1"), "y".into()),
+        Turn::Wait
     );
 }
 

@@ -4,14 +4,13 @@
 //! (tmls `app.py`: `queue`, `_deliver_queued`). A send that fails keeps its message for the
 //! next turn end; one that is on its way is not started again.
 //!
-//! A message for an idle session with nothing before it goes at once (`goes_now`), but through
-//! here too (`add`, then `start`): while it is on its way the next one waits, so two pastes
-//! never mix in one prompt and the order is kept.
+//! A message for an idle session with nothing on its way goes at once (`goes_now`), but through
+//! here too (`add`, then `start`): the head goes first, so one that waits still goes before it,
+//! and while it is on its way the next one waits, so two pastes never mix in one prompt.
 //!
 //! Each send has an id (`SendId`) that its answer brings back to `sent`: the session may have
 //! been renamed meanwhile (the id follows it) or killed or cleared (the id is forgotten, and
 //! the answer then takes nothing from the queue).
-
 //!
 //! A message is typed only into Claude's own pane (`claude_pane`), as the listing has it at the
 //! moment it goes: never into the session's active pane (`=NAME:`). When Claude has exited, the
@@ -70,10 +69,12 @@ impl Queue {
         matches!(status, Some(Status::Running | Status::Waiting))
     }
 
-    /// Whether a new message for the session, in `status`, goes at once: it is not busy, none
-    /// waits for it and none is on its way.
+    /// Whether the session's queue starts with a new message for it, in `status`: it is not
+    /// busy and none is on its way. Messages that already wait go first (`start` sends the
+    /// head): a head left behind — its send failed while the session was idle, or its host was
+    /// away when the turn ended — would otherwise wait for a turn end that never comes.
     pub fn goes_now(&self, key: &SessionKey, status: Option<Status>) -> bool {
-        !Queue::busy(status) && self.count(key) == 0 && !self.sending.contains_key(key)
+        !Queue::busy(status) && !self.sending.contains_key(key)
     }
 
     /// Queues `text`; returns how many wait for the session now.

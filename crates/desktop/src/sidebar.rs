@@ -99,6 +99,21 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
         .map(|title| (title, false))
 }
 
+/// A session renamed outside the app (`renamed_outside`): its ★ and its queued messages take
+/// the new name, whether it has a tab or not (the tab is the app's to follow). Whether either
+/// moved; a ★ that could not be moved is in `take_pin_error`.
+pub fn follow_outside_rename(
+    sidebar: &mut Sidebar,
+    queue: &mut crate::queue::Queue,
+    old: &SessionKey,
+    new: &SessionKey,
+) -> bool {
+    let pinned = sidebar.renamed(old, new);
+    let queued = queue.count(old) > 0;
+    queue.renamed(old, new);
+    pinned || queued
+}
+
 /// The sessions of `snap`'s host renamed outside the app since `before` (that host's rows as
 /// the list had them): a name the listing no longer has whose Claude conversation
 /// (`session_id`) it lists under a name the list did not have. Pairs (old, new). Only a
