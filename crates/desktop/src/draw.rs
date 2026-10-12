@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! +-- sidebar (28 cols) --+s+-- tab bar (1 row) ---------------------+
-//! | LAPTOP              + |e| ▌● name  × | ▌? name  × |              |
+//! | LAPTOP              + |e| ▌● name  × | ▌? name  × |        Files |
 //! | ● C name ★            |p+----------------------------------------+
 //! |     title         58% |a|  terminal: the grid of the tab in front|
 //! | ○   name          ◉2  |r|                                        |
@@ -19,6 +19,12 @@
 //! that out, and `Layout::grid` is then the smaller terminal. The panel opens with half the
 //! columns (`default_panel_cols`); dragging the divider gives it more or fewer, never under
 //! `PANEL_MIN_COLS` for it or for the terminal.
+//!
+//! `Files`, the tab bar's last `FILES_COLS` columns, opens the panel without a file, on the
+//! list of the images the front tab's Claude session made (`viewer::MadeBody`), and closes it.
+//! The list's header says `Images · session · N` and has `Refresh` where a file has `Open in
+//! app`; a picture opened from the list has `‹` before its path, which leads back
+//! (`viewer::SideLook`, `side_header_with`).
 //!
 //! ```text
 //! +-- sidebar --+s+-- tab bar ---------------------------------------+
@@ -70,7 +76,7 @@ use crate::theme::{
     OFFLINE, PANEL_MIN_COLS, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
     mark_rgb, tool_letter,
 };
-use crate::viewer::{SideBody, SideView, TextRow};
+use crate::viewer::{MADE_NAME_COL, MadeRow, SideBody, SideLook, SideView, TextRow};
 
 /// What a tab whose session ended shows over its last screen.
 pub const ENDED_NOTICE: &str = "session ended — Enter to reattach";
@@ -104,6 +110,18 @@ const MIN_LIST_LINES: usize = 4;
 
 /// The label in the file panel's header that opens the file in the desktop's app.
 pub const OPEN_IN_APP: &str = "Open in app";
+/// The label in the header of the list of a session's images that reads the list again.
+pub const REFRESH: &str = "Refresh";
+/// At the start of the header of a picture opened from that list: back to the list.
+pub const BACK_MARK: &str = "‹";
+/// Cells at the start of such a header that lead back when clicked: the `‹` and the cell
+/// after it.
+const SIDE_BACK_COLS: usize = 2;
+/// The label at the tab bar's right end that opens and closes the panel with that list.
+pub const FILES: &str = "Files";
+/// Columns of the tab bar that are the label's: its own and one either side. The tabs share
+/// what is left of them.
+pub const FILES_COLS: usize = 7;
 /// Cells at the right end of the file panel's header that close it when clicked: the `×` and
 /// one cell either side.
 const SIDE_CLOSE_COLS: usize = 3;
@@ -252,6 +270,12 @@ pub enum Hit {
     SideDivider,
     /// `Open in app` in the file panel's header.
     SideOpen,
+    /// `Refresh` in the header of the list of a session's images.
+    SideRefresh,
+    /// `‹` in the header of a picture opened from that list.
+    SideBack,
+    /// `Files` at the tab bar's right end.
+    Files,
     /// The `×` of the file panel.
     SideClose,
     Status,
@@ -260,28 +284,50 @@ pub enum Hit {
 
 /// The columns of the file panel's header, of `cols` in all: the path from the first one,
 /// then `Open in app` and the `×` at the right end. A narrow panel has no `Open in app`.
+/// The list of a session's images has `Refresh` for `Open in app`; a picture opened from it
+/// has `‹` first and its path after that (`SideLook`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SideHeader {
+    /// The column the path starts at: the first, or the third after a `‹`.
+    pub title_col: usize,
     /// Columns the path may take.
     pub title_cols: usize,
-    /// The column `Open in app` starts at.
+    /// The column `Open in app` (or `Refresh`) starts at.
     pub open: Option<usize>,
     /// The column of the `×`.
     pub close: Option<usize>,
+    /// The column of the `‹`.
+    pub back: Option<usize>,
 }
 
+/// The header of a file's panel.
 pub fn side_header(cols: usize) -> SideHeader {
+    side_header_with(cols, SideLook::default())
+}
+
+/// The label at the header's right end, left of the `×`.
+fn side_label(look: SideLook) -> &'static str {
+    if look.refresh { REFRESH } else { OPEN_IN_APP }
+}
+
+/// The header of a panel that looks as `look` says.
+pub fn side_header_with(cols: usize, look: SideLook) -> SideHeader {
     let close = (cols >= SIDE_CLOSE_COLS).then(|| cols - 2);
-    let label = OPEN_IN_APP.chars().count();
+    let label = side_label(look).chars().count();
     // From the right: the `×` and its cells, a column, the label, two columns, the path.
     let open = cols
         .checked_sub(SIDE_CLOSE_COLS + 1 + label)
         .filter(|open| *open >= SIDE_TITLE_MIN_COLS + 2);
     let title_end = open.or(close.map(|close| close - 1)).unwrap_or(cols);
+    // The `‹` never shares a cell with the `×`.
+    let back = (look.back && cols >= SIDE_CLOSE_COLS + SIDE_BACK_COLS).then_some(0);
+    let title_col = back.map_or(0, |back| back + SIDE_BACK_COLS);
     SideHeader {
-        title_cols: title_end.saturating_sub(2),
+        title_col,
+        title_cols: title_end.saturating_sub(2 + title_col),
         open,
         close,
+        back,
     }
 }
 
@@ -529,11 +575,24 @@ pub fn layout_with(
 }
 
 impl Layout {
-    /// Width of a tab in cells when `tabs` are open: they share the bar evenly, up to
-    /// `TAB_MAX_COLS` each.
+    /// Width of a tab in cells when `tabs` are open: they share the bar, less the columns of
+    /// `Files`, evenly, up to `TAB_MAX_COLS` each.
     pub fn tab_cols(&self, tabs: usize) -> usize {
         let bar_cols = (self.tab_bar.w / self.cell.0).floor() as usize;
-        (bar_cols / tabs.max(1)).min(TAB_MAX_COLS)
+        let files_cols = (self.files_rect().w / self.cell.0).round() as usize;
+        (bar_cols.saturating_sub(files_cols) / tabs.max(1)).min(TAB_MAX_COLS)
+    }
+
+    /// `Files`: the tab bar's last `FILES_COLS` columns, up to its right end. Of no width in
+    /// a bar that has fewer.
+    pub fn files_rect(&self) -> Rect {
+        let w = FILES_COLS as f32 * self.cell.0;
+        let w = if self.tab_bar.w >= w { w } else { 0.0 };
+        Rect {
+            x: self.tab_bar.right() - w,
+            w,
+            ..self.tab_bar
+        }
     }
 
     /// The rectangle of tab `index` of `tabs`.
@@ -582,13 +641,13 @@ impl Layout {
     }
 
     /// What of the file panel is under a pixel inside `side`.
-    fn side_hit(&self, x: f32, y: f32) -> Hit {
+    fn side_hit(&self, x: f32, y: f32, look: SideLook) -> Hit {
         if !self.side_header.contains(x, y) || x < self.side_body.x {
             return Hit::Side;
         }
         let col = ((x - self.side_body.x) / self.cell.0).floor() as usize;
-        let header = side_header(self.side_cols);
-        let label = OPEN_IN_APP.chars().count();
+        let header = side_header_with(self.side_cols, look);
+        let label = side_label(look).chars().count();
         // The cells of the `×`, and what is left of the window right of the last column.
         if header.close.is_some() && col + SIDE_CLOSE_COLS >= self.side_cols {
             Hit::SideClose
@@ -596,7 +655,15 @@ impl Layout {
             .open
             .is_some_and(|open| (open..open + label).contains(&col))
         {
-            Hit::SideOpen
+            match look.refresh {
+                true => Hit::SideRefresh,
+                false => Hit::SideOpen,
+            }
+        } else if header
+            .back
+            .is_some_and(|back| (back..back + SIDE_BACK_COLS).contains(&col))
+        {
+            Hit::SideBack
         } else {
             Hit::Side
         }
@@ -618,8 +685,15 @@ impl Layout {
         col + ADD_COLS >= self.list_cols
     }
 
-    /// What is under a pixel while `tabs` tabs are open.
+    /// What is under a pixel while `tabs` tabs are open and the panel, if there is one, is
+    /// a file's.
     pub fn hit(&self, x: f32, y: f32, tabs: usize) -> Hit {
+        self.hit_with(x, y, tabs, SideLook::default())
+    }
+
+    /// What is under a pixel while `tabs` tabs are open and the panel's header looks as
+    /// `look` says (`viewer::SidePanel::look`).
+    pub fn hit_with(&self, x: f32, y: f32, tabs: usize, look: SideLook) -> Hit {
         let window = Rect {
             x: 0.0,
             y: 0.0,
@@ -649,7 +723,7 @@ impl Layout {
             return Hit::SideDivider;
         }
         if self.side.contains(x, y) {
-            return self.side_hit(x, y);
+            return self.side_hit(x, y, look);
         }
         // The terminal's rows, the padding at its left included.
         if y >= self.terminal.y && y < self.terminal.bottom() {
@@ -657,6 +731,9 @@ impl Layout {
         }
         if !self.tab_bar.contains(x, y) {
             return Hit::Status;
+        }
+        if self.files_rect().contains(x, y) {
+            return Hit::Files;
         }
         let cols = self.tab_cols(tabs);
         let col = ((x - self.tab_bar.x) / self.cell.0).floor() as usize;
@@ -704,6 +781,8 @@ pub struct View {
     pub unread: usize,
     /// The file panel, as far as it is in view.
     pub side: Option<SideView>,
+    /// The panel has the keys: its divider shows it, as the list's line does for the list.
+    pub side_focused: bool,
 }
 
 impl View {
@@ -914,14 +993,64 @@ pub fn keep_end(text: &str, cols: usize) -> String {
 
 /// The file panel's header on `cols` columns: the path, `Open in app`, `×` (`side_header`).
 pub fn side_header_spans(title: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>> {
-    let header = side_header(cols);
+    side_header_spans_with(title, cols, SideLook::default(), theme)
+}
+
+/// The header of a panel that looks as `look` says (`side_header_with`): `‹` if it leads
+/// back, the title, `Open in app` or `Refresh`, `×`.
+pub fn side_header_spans_with(
+    title: &str,
+    cols: usize,
+    look: SideLook,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let header = side_header_with(cols, look);
+    let mut out = Vec::with_capacity(4);
+    if let Some(back) = header.back {
+        out.push(Span::whole(0, back, BACK_MARK).colour(COPY_RGB).bold());
+    }
     let title = keep_end(title, header.title_cols);
-    let mut out = vec![Span::new(0, 0, header.title_cols, title).colour(theme.sidebar_fg)];
+    out.push(Span::new(0, header.title_col, header.title_cols, title).colour(theme.sidebar_fg));
     if let Some(open) = header.open {
-        out.push(Span::whole(0, open, OPEN_IN_APP).colour(COPY_RGB).bold());
+        let label = side_label(look);
+        out.push(Span::whole(0, open, label).colour(COPY_RGB).bold());
     }
     if let Some(close) = header.close {
         out.push(Span::whole(0, close, CLOSE_MARK).colour(theme.muted_fg));
+    }
+    out
+}
+
+/// The list of a session's images on `cols` columns, one line a row: when the file was
+/// written, its name — in the accent colour under the cursor — and two columns on, dimmed,
+/// its folder. `message`: the one line said when there are no rows.
+pub fn side_made_spans<'a>(
+    rows: &'a [MadeRow],
+    message: Option<&'a str>,
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    if let (Some(message), true) = (message, rows.is_empty()) {
+        return vec![Span::new(0, 0, cols, message).colour(theme.muted_fg)];
+    }
+    let mut out = Vec::with_capacity(3 * rows.len());
+    for (line, row) in rows.iter().enumerate() {
+        let when_cols = (MADE_NAME_COL - 1).min(cols);
+        out.push(Span::new(line, 0, when_cols, row.when.as_str()).colour(theme.dim_fg));
+        if cols <= MADE_NAME_COL {
+            continue;
+        }
+        let name_cols = cols - MADE_NAME_COL;
+        let name = Span::new(line, MADE_NAME_COL, name_cols, row.name.as_str());
+        out.push(match row.selected {
+            true => name.colour(CURSOR_RGB).bold(),
+            false => name.colour(theme.sidebar_fg),
+        });
+        let folder_col = MADE_NAME_COL + columns(&row.name) + 2;
+        if !row.folder.is_empty() && folder_col < cols {
+            let folder = Span::new(line, folder_col, cols - folder_col, row.folder.as_str());
+            out.push(folder.colour(theme.dim_fg));
+        }
     }
     out
 }
@@ -1271,6 +1400,16 @@ fn tab_bar(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             p.label(CLOSE_MARK, at(cols - 2), y, 1, theme.muted_fg);
         }
     }
+    // `Files`, lit while the panel is open.
+    let files = l.files_rect();
+    if files.w > 0.0 {
+        let colour = match view.side {
+            Some(_) => theme.tab_active_fg,
+            None => theme.muted_fg,
+        };
+        let y = p.text_y(files);
+        p.label(FILES, files.x + cell_w, y, FILES_COLS - 2, colour);
+    }
 }
 
 fn status_line(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
@@ -1289,7 +1428,8 @@ fn status_line(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
 }
 
 /// The file panel: its divider, its header and the rows of the file in view, the marked one
-/// on a band. Of a picture, the header and the background it is drawn over.
+/// on a band. Of a picture, the header and the background it is drawn over. Of the list of a
+/// session's images, the rows in view, the cursor's on a band.
 fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     let Some(side) = &view.side else {
         return;
@@ -1298,11 +1438,16 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         return;
     }
     p.rect(l.side, theme.sidebar_bg);
-    p.rect(l.side_divider, theme.sidebar_rule);
+    // The divider shows that the panel has the keys, as the list's line does.
+    let divider = match view.side_focused {
+        true => theme.focus_ring,
+        false => theme.sidebar_rule,
+    };
+    p.rect(l.side_divider, divider);
     p.rect(l.side_header, theme.bar_bg);
     if l.side_header.h >= p.m.height {
         let origin = (l.side_body.x, p.text_y(l.side_header));
-        for span in side_header_spans(&side.title, l.side_cols, theme) {
+        for span in side_header_spans_with(&side.title, l.side_cols, side.look, theme) {
             p.span(origin, &span);
         }
     }
@@ -1323,6 +1468,22 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         }
         // The picture is not made of quads: the app draws it over the body's background.
         SideBody::Image => {}
+        SideBody::Made { rows, message } => {
+            let rows = &rows[..rows.len().min(l.side_lines)];
+            if let Some(selected) = rows.iter().position(|row| row.selected) {
+                let band = Rect {
+                    y: l.side_body.y + selected as f32 * p.m.height,
+                    h: p.m.height,
+                    ..l.side_header
+                };
+                p.rect(band, theme.row_selected_bg);
+            }
+            if l.side_lines > 0 {
+                for span in side_made_spans(rows, *message, l.side_cols, theme) {
+                    p.span((l.side_body.x, l.side_body.y), &span);
+                }
+            }
+        }
     }
 }
 

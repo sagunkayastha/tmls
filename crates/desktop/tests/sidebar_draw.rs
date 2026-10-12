@@ -39,6 +39,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         attached: 0,
         last_output_age_s: None,
         pid: None,
+        session_id: None,
     }
 }
 
@@ -111,6 +112,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         sketch: false,
         unread: 0,
         side: None,
+        side_focused: false,
     }
 }
 

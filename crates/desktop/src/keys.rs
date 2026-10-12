@@ -9,8 +9,13 @@
 //!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
-//! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here the
+//! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here a file's
 //!   panel never has the keys, so Esc stays the terminal's)
+//! - Alt+Shift+F — open the panel on the list of the images the front tab's Claude session
+//!   made, or close the panel
+//! - in that list, once a click gave it the keys (`panel_key`): j / k or the arrows move, Enter
+//!   opens the picture, Backspace or Esc lead from the picture back to the list, and from the
+//!   list back to the terminal
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
 //! - Enter on a tab whose session ended — reattach (`route`, which knows the tab's state)
 //!
@@ -37,6 +42,9 @@ pub enum Focus {
     Terminal,
     Sidebar,
     Form,
+    /// The panel beside the terminal, while it shows the list of a session's images or a
+    /// picture opened from it (`viewer::SidePanel::takes_keys`).
+    Panel,
 }
 
 /// What a bound key asks the window to do.
@@ -49,6 +57,9 @@ pub enum Global {
     CloseTab,
     /// Closes the file panel beside the terminal.
     ClosePanel,
+    /// Opens the panel on the list of the images the front tab's session made, or closes
+    /// the panel if it is open.
+    ToggleFiles,
     NextWaiting,
     Quit,
     ZoomIn,
@@ -117,6 +128,7 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Char(c) if c.eq_ignore_ascii_case(&'n') => Some(Global::NextWaiting),
             Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
             Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'f') => Some(Global::ToggleFiles),
             _ => None,
         };
     }
@@ -143,6 +155,8 @@ pub enum Route {
     Sidebar,
     /// To the open form.
     Form,
+    /// To the panel beside the terminal (`panel_key`).
+    Panel,
     /// Nowhere: the release or a repeat of a bound key, or a key for a tab that has no live
     /// session.
     Drop,
@@ -156,6 +170,7 @@ pub fn route(ev: &KeyEvent, focus: Focus, tab: Option<TabState>) -> Route {
     match (focus, tab) {
         (Focus::Sidebar, _) => Route::Sidebar,
         (Focus::Form, _) => Route::Form,
+        (Focus::Panel, _) => Route::Panel,
         (Focus::Terminal, Some(TabState::Live)) => Route::Terminal,
         (Focus::Terminal, Some(TabState::Ended { .. })) => {
             let enter = ev.key == Key::Named(Named::Enter) && ev.mods == NONE;
@@ -243,6 +258,32 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('c') if !ev.repeat => Some(ListKey::New),
         Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
         Key::Char('a') if !ev.repeat => Some(ListKey::Alerts),
+        _ => None,
+    }
+}
+
+/// A key of the panel beside the terminal while it has the keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelKey {
+    Up,
+    Down,
+    /// Shows the picture under the list's cursor.
+    Open,
+    /// From a picture back to the list it was opened from; from the list back to the
+    /// terminal.
+    Back,
+}
+
+/// What a key routed to the panel (`Route::Panel`) does there; `None` for every other key.
+pub fn panel_key(ev: &KeyEvent) -> Option<PanelKey> {
+    if !ev.pressed || ev.mods != NONE {
+        return None;
+    }
+    match ev.key {
+        Key::Named(Named::Up) | Key::Char('k') => Some(PanelKey::Up),
+        Key::Named(Named::Down) | Key::Char('j') => Some(PanelKey::Down),
+        Key::Named(Named::Enter) if !ev.repeat => Some(PanelKey::Open),
+        Key::Named(Named::Backspace | Named::Escape) if !ev.repeat => Some(PanelKey::Back),
         _ => None,
     }
 }

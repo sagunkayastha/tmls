@@ -5,13 +5,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use client_core::Config;
+use client_core::SessionKey;
+use client_core::files::Made;
 use desktop::draw::{
-    Chrome, Layout, OPEN_IN_APP, Rect, Span, View, default_panel_cols, keep_end, layout_with,
-    side_header, side_header_spans, side_text_spans,
+    BACK_MARK, Chrome, FILES, Layout, OPEN_IN_APP, REFRESH, Rect, Span, View, default_panel_cols,
+    keep_end, layout_with, side_header, side_header_spans, side_header_spans_with,
+    side_header_with, side_made_spans, side_text_spans,
 };
 use desktop::sidebar::Sidebar;
 use desktop::theme::{CLOSE_MARK, COPY_RGB, CURSOR_RGB, Theme};
-use desktop::viewer::{Document, SideBody, SidePanel, SideView, TextBody, TextRow};
+use desktop::viewer::{
+    Document, MadeBody, MadeRow, NO_CLAUDE, NO_IMAGES, SideBody, SideLook, SidePanel, SideView,
+    TextBody, TextRow,
+};
 use s2_wgpu::gfx::atlas::{Atlas, FontSpec};
 use s2_wgpu::gfx::grid::{Instance, KIND_SOLID, clusters};
 
@@ -388,6 +394,7 @@ fn no_panel_no_quads() {
     let view = View {
         side: Some(SideView {
             title: "/x".to_string(),
+            look: SideLook::default(),
             body: SideBody::Text {
                 gutter: 2,
                 rows: Vec::new(),
@@ -445,4 +452,249 @@ fn a_pictures_header_says_its_size_and_how_large_it_is_drawn() {
     assert_eq!(glyphs(&top, l.side_body, theme.dim_fg), 0);
     assert_eq!(solids(&top, l.side, theme.sidebar_bg).len(), 1);
     assert!(top.iter().all(|quad| inside(quad, l.side)));
+}
+
+// --- the images a session made ---------------------------------------------------------------
+
+const LIST: SideLook = SideLook {
+    refresh: true,
+    back: false,
+};
+const FROM_LIST: SideLook = SideLook {
+    refresh: false,
+    back: true,
+};
+
+fn work() -> SessionKey {
+    SessionKey {
+        host: LOCAL.to_string(),
+        name: "work".to_string(),
+    }
+}
+
+fn made(count: usize) -> MadeBody {
+    let files = (0..count)
+        .map(|n| Made {
+            path: format!("/w/plots/fig-{n}.png"),
+            modified_s: 1_760_000_000 - 86_400 * n as u64,
+            bytes: 1,
+        })
+        .collect();
+    MadeBody::listed(work(), files)
+}
+
+fn made_row(when: &str, name: &str, folder: &str, selected: bool) -> MadeRow {
+    MadeRow {
+        when: when.to_string(),
+        name: name.to_string(),
+        folder: folder.to_string(),
+        selected,
+    }
+}
+
+#[test]
+fn the_lists_header_says_whose_images_and_has_refresh_in_place_of_open_in_app() {
+    let theme = Theme::default();
+    let spans = side_header_spans_with("Images · work · 3", 49, LIST, &theme);
+    assert_eq!(spans.len(), 3);
+    assert_eq!(
+        (spans[0].col, spans[0].shown().as_str()),
+        (0, "Images · work · 3")
+    );
+    assert_eq!((spans[1].col, spans[1].text.as_ref()), (38, REFRESH));
+    assert_eq!((spans[1].colour, spans[1].bold), (COPY_RGB, true));
+    assert_eq!((spans[2].col, spans[2].text.as_ref()), (47, CLOSE_MARK));
+    assert!(spans.iter().all(|span| span.text != OPEN_IN_APP));
+    // A picture opened from the list: the way back first, then the path, and `Open in app`.
+    let title = "/w/plots/fig-0.png 400×300 · 80 %";
+    let spans = side_header_spans_with(title, 49, FROM_LIST, &theme);
+    assert_eq!(spans.len(), 4);
+    assert_eq!((spans[0].col, spans[0].text.as_ref()), (0, BACK_MARK));
+    assert_eq!((spans[0].colour, spans[0].bold), (COPY_RGB, true));
+    assert_eq!(spans[1].col, 2);
+    let shown = spans[1].shown();
+    assert!(
+        shown.starts_with('…') && shown.ends_with("400×300 · 80 %"),
+        "{shown}"
+    );
+    assert_eq!(width(&shown), 30);
+    assert_eq!((spans[2].col, spans[2].text.as_ref()), (34, OPEN_IN_APP));
+    assert_eq!((spans[3].col, spans[3].text.as_ref()), (47, CLOSE_MARK));
+    // Without a look it is the header of a file, as before.
+    assert_eq!(
+        side_header_spans(title, 49, &theme),
+        side_header_spans_with(title, 49, SideLook::default(), &theme)
+    );
+    // Every width: the pieces stay apart and inside, and are where `side_header_with` says.
+    for look in [LIST, FROM_LIST] {
+        for cols in 0..80 {
+            let spans = side_header_spans_with(title, cols, look, &theme);
+            assert_within(&spans, cols);
+            let header = side_header_with(cols, look);
+            let has = |text: &str| spans.iter().any(|span| span.text == text);
+            let label = if look.refresh { REFRESH } else { OPEN_IN_APP };
+            assert_eq!(has(label), header.open.is_some(), "{cols} columns");
+            assert_eq!(has(CLOSE_MARK), header.close.is_some(), "{cols} columns");
+            assert_eq!(has(BACK_MARK), header.back.is_some(), "{cols} columns");
+        }
+    }
+}
+
+#[test]
+fn a_row_of_the_list_is_the_time_the_name_and_the_folder() {
+    let theme = Theme::default();
+    let rows = [
+        made_row("14:05", "fig-0.png", "/w/plots", true),
+        made_row(
+            "Oct 10",
+            "a-rather-long-name-for-a-figure.png",
+            "…/out",
+            false,
+        ),
+        made_row("Jan 3", "x.jpg", "", false),
+    ];
+    let spans = side_made_spans(&rows, None, 49, &theme);
+    let on = |line: usize| -> Vec<(usize, String, [u8; 3], bool)> {
+        let of_line = spans.iter().filter(|span| span.line == line);
+        of_line
+            .map(|span| (span.col, span.shown(), span.colour, span.bold))
+            .collect()
+    };
+    // The cursor's row: the name in the accent colour.
+    assert_eq!(
+        on(0),
+        [
+            (0, "14:05".to_string(), theme.dim_fg, false),
+            (7, "fig-0.png".to_string(), CURSOR_RGB, true),
+            (18, "/w/plots".to_string(), theme.dim_fg, false),
+        ]
+    );
+    assert_eq!(
+        on(1),
+        [
+            (0, "Oct 10".to_string(), theme.dim_fg, false),
+            (
+                7,
+                "a-rather-long-name-for-a-figure.png".to_string(),
+                theme.sidebar_fg,
+                false
+            ),
+            (44, "…/out".to_string(), theme.dim_fg, false),
+        ]
+    );
+    // No folder: no span for one.
+    assert_eq!(on(2).len(), 2);
+    assert_within(&spans, 49);
+    // Every width, with the rows as the list makes them for it.
+    let body = made(6);
+    for cols in 0..80 {
+        let rows = body.rows(4, cols, 1_760_000_000);
+        let spans = side_made_spans(&rows, None, cols, &theme);
+        assert_within(&spans, cols);
+        if cols >= 30 {
+            assert_eq!(spans.len(), 12, "{cols} columns: time, name and folder");
+        }
+    }
+    // What is no list is one line, dimmed, cut where the panel ends.
+    for line in [NO_IMAGES, NO_CLAUDE] {
+        let spans = side_made_spans(&[], Some(line), 49, &theme);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(
+            (spans[0].line, spans[0].col, spans[0].shown().as_str()),
+            (0, 0, line)
+        );
+        assert_eq!(spans[0].colour, theme.muted_fg);
+        for cols in 0..40 {
+            assert_within(&side_made_spans(&[], Some(line), cols, &theme), cols);
+        }
+    }
+}
+
+#[test]
+fn the_list_is_drawn_with_a_band_under_the_cursors_row() {
+    let theme = Theme::default();
+    let mut body = made(40);
+    body.move_by(2, 10);
+    let panel = SidePanel::made(body);
+    let (base, top, l) = built(true, |l| {
+        Some(panel.view_at(l.side_lines, l.side_cols, l.side_body, 1_760_000_000))
+    });
+    assert!(l.side_lines >= 9 && l.side_cols >= 30);
+    // The header: its text, and `Refresh` where the hit is.
+    assert!(glyphs(&top, l.side_header, theme.sidebar_fg) >= 10);
+    let header = side_header_with(l.side_cols, LIST);
+    let label = Rect {
+        x: l.side_body.x + header.open.unwrap() as f32 * l.cell.0,
+        w: REFRESH.len() as f32 * l.cell.0,
+        ..l.side_header
+    };
+    assert_eq!(glyphs(&top, label, COPY_RGB), REFRESH.len());
+    assert_eq!(glyphs(&top, l.side_header, COPY_RGB), REFRESH.len());
+    // One band, on the third row; every row in view has its time, name and folder.
+    let bands = solids(&top, l.side_body, theme.row_selected_bg);
+    assert_eq!(bands.len(), 1);
+    assert_eq!(bands[0].pos[1], row(&l, 2).y);
+    assert_eq!(bands[0].size[1], l.cell.1);
+    for line in 0..l.side_lines {
+        let name = if line == 2 {
+            CURSOR_RGB
+        } else {
+            theme.sidebar_fg
+        };
+        assert!(glyphs(&top, row(&l, line), name) >= 9, "row {line}");
+        assert!(glyphs(&top, row(&l, line), theme.dim_fg) >= 5, "row {line}");
+    }
+    assert!(top.iter().all(|quad| inside(quad, l.side)));
+    // `Files` at the tab bar's right end, lit while the panel is open.
+    assert_eq!(
+        glyphs(&base, l.files_rect(), theme.tab_active_fg),
+        FILES.len()
+    );
+
+    // Closed: the label is there, dimmed, and nothing else of the panel.
+    let (base, top, l) = built(false, |_| None);
+    assert_eq!(glyphs(&base, l.files_rect(), theme.muted_fg), FILES.len());
+    assert_eq!(glyphs(&base, l.files_rect(), theme.tab_active_fg), 0);
+    assert!(top.is_empty());
+}
+
+#[test]
+fn a_list_with_nothing_in_it_draws_its_one_line() {
+    let theme = Theme::default();
+    for (body, line) in [
+        (made(0), NO_IMAGES),
+        (MadeBody::no_claude(work()), NO_CLAUDE),
+    ] {
+        let panel = SidePanel::made(body);
+        let (_, top, l) = built(true, |l| {
+            Some(panel.view(l.side_lines, l.side_cols, l.side_body))
+        });
+        let words = line.chars().filter(|c| *c != ' ').count();
+        assert_eq!(glyphs(&top, row(&l, 0), theme.muted_fg), words, "{line}");
+        assert_eq!(glyphs(&top, l.side_body, theme.sidebar_fg), 0);
+        assert!(solids(&top, l.side_body, theme.row_selected_bg).is_empty());
+    }
+}
+
+#[test]
+fn the_divider_shows_that_the_panel_has_the_keys() {
+    let theme = Theme::default();
+    let panel = SidePanel::made(made(3));
+    for (focused, colour) in [(false, theme.sidebar_rule), (true, theme.focus_ring)] {
+        let mut atlas = atlas();
+        let cols = default_panel_cols(WINDOW, 1.0, &atlas.metrics(), &theme);
+        let l = layout_with(WINDOW, 1.0, &atlas.metrics(), &theme, Some(cols));
+        let view = View {
+            side: Some(panel.view(l.side_lines, l.side_cols, l.side_body)),
+            side_focused: focused,
+            ..View::default()
+        };
+        let mut chrome = Chrome::new();
+        assert!(chrome.update(&view, &sidebar(), &l, &theme, &mut atlas));
+        assert_eq!(
+            solids(chrome.top(), l.side_divider, colour).len(),
+            1,
+            "{focused}"
+        );
+    }
 }

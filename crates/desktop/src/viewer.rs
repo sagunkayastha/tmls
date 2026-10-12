@@ -26,7 +26,7 @@
 //! the window. Its body is one of `Body`'s kinds. `TextBody` keeps the lines, the line that was
 //! asked for and how far it is scrolled; `rows` gives what is in view. A line longer than the
 //! panel is cut, not wrapped (tmls: `soft_wrap=False`); a tab goes to the next multiple of
-//! `TAB_COLS` columns. The panel never has the keyboard.
+//! `TAB_COLS` columns.
 //!
 //! **A picture** in the panel (`ImageBody`) is fitted into the body, never larger than it is;
 //! a click shows it at its own size (one texel a pixel) and the wheel then moves it, a click
@@ -35,6 +35,15 @@
 //! divider that changed never stretches it. The pixels are not kept here: the app uploads
 //! them once (`picture::PictureRenderer`) and the panel remembers the size. The header says
 //! the size and how large it is drawn (`1280×800 · 43 %`).
+//!
+//! **The images a session made** (`MadeBody`): the panel can open without a file, on the list
+//! of the pictures the Claude session of the tab in front names in its transcript and that
+//! are still on its host, newest first (`made` asks the host: `client_core::files::made_argv`;
+//! a path with a space is not found). A row is the time or the day the file was written, its
+//! name and its folder. One of them is under the cursor; opening it shows the picture as any
+//! other, and that panel keeps the list (`SidePanel::back`) to return to. A tab whose session
+//! is not Claude's has no list and says so. Only such a panel takes the keys, and only once
+//! it was clicked (`SidePanel::takes_keys`): a file's panel never has them.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -42,11 +51,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use client_core::SessionKey;
-use client_core::files::{self, Kind, Located};
+use client_core::files::{self, Kind, LocalTime, Located, Made};
 use client_core::tmux;
 use s2_wgpu::gfx::grid::clusters;
 
-use crate::draw::Rect;
+use crate::draw::{Rect, keep_end};
 use crate::links::FileLink;
 
 /// The largest file the panel shows (tmls `MAX_BYTES`).
@@ -84,6 +93,24 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 pub const COPY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long reading a picture of up to `MAX_IMAGE_BYTES` may take (tmls: 60 s).
 pub const IMAGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long listing a session's images may take: as long as reading a file's text.
+pub const MADE_TIMEOUT: Duration = READ_TIMEOUT;
+
+/// What the list says when the session's transcript names no picture that is still there.
+pub const NO_IMAGES: &str = "no images from this session yet";
+/// What it says in a tab whose session is not Claude's.
+pub const NO_CLAUDE: &str = "no Claude session in this tab";
+/// While the host is asked.
+pub const MADE_LOADING: &str = "looking for images …";
+/// The host did not answer; the status line says why.
+pub const MADE_FAILED: &str = "the images could not be listed";
+
+/// Columns of a row's time or day, and where its name starts.
+const WHEN_COLS: usize = 6;
+pub const MADE_NAME_COL: usize = WHEN_COLS + 1;
+/// A folder is shown in no fewer columns than this.
+const FOLDER_MIN_COLS: usize = 4;
 
 /// Runs a command within a time limit and returns the bytes it printed; `run` in the app.
 pub type Runner<'a> = &'a dyn Fn(&[String], Duration) -> anyhow::Result<Vec<u8>>;
@@ -278,6 +305,13 @@ pub enum Opened {
     /// For the desktop's app: the file or folder on this machine to give to `xdg-open`, and
     /// the line for the status line once that is started.
     Outside { target: String, said: String },
+    /// The images the Claude session in the tmux session `session` on `host` made, newest
+    /// first: the panel's list.
+    Made {
+        host: String,
+        session: String,
+        files: Vec<Made>,
+    },
 }
 
 /// `path` with its host, unless that is this machine: how messages name a file.
@@ -423,6 +457,27 @@ fn image(
     }
 }
 
+/// Asks the host of the session `key` for the images its Claude session `session_id` made
+/// (`files::made_argv`, within `MADE_TIMEOUT`). A session without a transcript has none. The
+/// error is the line for the status line. Blocks for as long as the host takes: not for the UI
+/// thread.
+pub fn made(
+    key: &SessionKey,
+    session_id: &str,
+    local_name: &str,
+    run: Runner,
+) -> Result<Opened, String> {
+    let argv = files::made_argv(&key.host, session_id, None, local_name);
+    let name = named(&key.host, &key.name, local_name);
+    let out = run(&argv, MADE_TIMEOUT).map_err(|e| format!("images of {name}: {}", why(&e)))?;
+    let files = files::parse_made(&String::from_utf8_lossy(&out)).unwrap_or_default();
+    Ok(Opened::Made {
+        host: key.host.clone(),
+        session: key.name.clone(),
+        files,
+    })
+}
+
 /// Gets the file at the absolute `path` on `host` ready for the desktop's app: the panel's
 /// `Open in app`.
 pub fn open_in_app(
@@ -554,11 +609,21 @@ pub struct TextRow {
     pub marked: bool,
 }
 
+/// What a panel's header has besides its title and the `×`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SideLook {
+    /// `Refresh` where a file has `Open in app`: the list of a session's images.
+    pub refresh: bool,
+    /// `‹` at its start: a picture opened from that list.
+    pub back: bool,
+}
+
 /// What the panel shows now: what `draw` paints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideView {
-    /// The header's text: the file.
+    /// The header's text: the file, or whose images.
     pub title: String,
+    pub look: SideLook,
     pub body: SideBody,
 }
 
@@ -570,6 +635,11 @@ pub enum SideBody {
     /// A picture: the chrome draws the body's background, `picture::PictureRenderer` the
     /// picture over it.
     Image,
+    /// The images a session made: the rows in view, or the one line said in their place.
+    Made {
+        rows: Vec<MadeRow>,
+        message: Option<&'static str>,
+    },
 }
 
 /// A file's text in the panel: its lines, the one that is marked, and the first one in view.
@@ -799,21 +869,243 @@ impl ImageBody {
     }
 }
 
+/// What a row of the list says of when its file was written: the time for one of today
+/// (`14:05`), the day for any other (`Oct 11`).
+pub fn when(modified: LocalTime, now: LocalTime) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let day = |t: LocalTime| (t.year, t.month, t.day);
+    if day(modified) == day(now) {
+        return format!("{:02}:{:02}", modified.hour, modified.minute);
+    }
+    let month = (modified.month as usize)
+        .checked_sub(1)
+        .and_then(|index| MONTHS.get(index));
+    format!("{} {}", month.unwrap_or(&"?"), modified.day)
+}
+
+/// One image of the list, as its row says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MadeRow {
+    /// `when`'s words, on this machine's clock.
+    pub when: String,
+    /// The file's name. It may be longer than the panel: drawing cuts it.
+    pub name: String,
+    /// The folder it is in, cut at its start to the columns left after the name; empty when
+    /// those are too few.
+    pub folder: String,
+    /// The cursor is on it.
+    pub selected: bool,
+}
+
+/// How far the list of a session's images is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MadeState {
+    /// The host is asked and has not answered.
+    Loading,
+    /// The host answered: the list is what it said, which may be nothing.
+    Listed,
+    /// The tab's session is not Claude's: nothing was asked.
+    NoClaude,
+    /// The host did not answer in time, or not with a list.
+    Failed,
+}
+
+/// The images the Claude session of one tab made: the files, newest first, the one the
+/// cursor is on, and the first one in view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MadeBody {
+    /// The tab's session.
+    pub key: SessionKey,
+    files: Vec<Made>,
+    /// Index of the file the cursor is on.
+    cursor: usize,
+    /// Index of the first file in view, as last asked for; `top` is what it comes to.
+    top: usize,
+    state: MadeState,
+}
+
+impl MadeBody {
+    fn new(key: SessionKey, files: Vec<Made>, state: MadeState) -> MadeBody {
+        MadeBody {
+            key,
+            files,
+            cursor: 0,
+            top: 0,
+            state,
+        }
+    }
+
+    /// The host is being asked.
+    pub fn loading(key: SessionKey) -> MadeBody {
+        MadeBody::new(key, Vec::new(), MadeState::Loading)
+    }
+
+    /// A tab whose session is not Claude's.
+    pub fn no_claude(key: SessionKey) -> MadeBody {
+        MadeBody::new(key, Vec::new(), MadeState::NoClaude)
+    }
+
+    /// The list as the host gave it, the cursor on the newest.
+    pub fn listed(key: SessionKey, files: Vec<Made>) -> MadeBody {
+        MadeBody::new(key, files, MadeState::Listed)
+    }
+
+    /// The host answered (again): `files` in place of the list. The cursor stays on the file
+    /// it was on, on the same line of the panel; if that file is gone it stays where it was
+    /// in the list, or goes to the last one.
+    pub fn set_files(&mut self, files: Vec<Made>) {
+        let on = self.selected().map(|file| file.path.as_str());
+        let found = on.and_then(|path| files.iter().position(|file| file.path == path));
+        let line = self.cursor.saturating_sub(self.top);
+        self.cursor = found
+            .unwrap_or(self.cursor)
+            .min(files.len().saturating_sub(1));
+        self.top = self.cursor.saturating_sub(line);
+        self.files = files;
+        self.state = MadeState::Listed;
+    }
+
+    /// The host did not answer. A list that is there stays: it is as old as it was.
+    pub fn failed(&mut self) {
+        if self.state == MadeState::Loading {
+            self.state = MadeState::Failed;
+        }
+    }
+
+    pub fn state(&self) -> MadeState {
+        self.state
+    }
+
+    /// How many images are listed.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// The file the cursor is on.
+    pub fn selected(&self) -> Option<&Made> {
+        self.files.get(self.cursor)
+    }
+
+    /// The one line said in place of the rows, when there are none.
+    pub fn message(&self) -> Option<&'static str> {
+        match self.state {
+            MadeState::Loading => Some(MADE_LOADING),
+            MadeState::NoClaude => Some(NO_CLAUDE),
+            MadeState::Failed => Some(MADE_FAILED),
+            MadeState::Listed if self.files.is_empty() => Some(NO_IMAGES),
+            MadeState::Listed => None,
+        }
+    }
+
+    /// The last file that can be first in view when `visible` rows fit.
+    fn max_top(&self, visible: usize) -> usize {
+        self.files.len().saturating_sub(visible.max(1))
+    }
+
+    /// Index of the first file in view when `visible` rows fit.
+    pub fn top(&self, visible: usize) -> usize {
+        self.top.min(self.max_top(visible))
+    }
+
+    /// Moves the cursor by `delta` rows (negative: up), as far as the list goes, and scrolls
+    /// so it is in view when `visible` rows fit. Returns whether it moved.
+    pub fn move_by(&mut self, delta: i32, visible: usize) -> bool {
+        let Some(last) = self.files.len().checked_sub(1) else {
+            return false;
+        };
+        let from = self.cursor.min(last);
+        let to = (from as i64 + delta as i64).clamp(0, last as i64) as usize;
+        self.cursor = to;
+        let top = self.top(visible);
+        self.top = if to < top {
+            to
+        } else {
+            top.max((to + 1).saturating_sub(visible.max(1)))
+        };
+        to != from
+    }
+
+    /// The wheel: scrolls by `rows` rows (negative: up); the cursor stays on its file.
+    /// Returns whether anything moved.
+    pub fn scroll(&mut self, rows: i32, visible: usize) -> bool {
+        let from = self.top(visible);
+        let to = (from as i64 + rows as i64).clamp(0, self.max_top(visible) as i64) as usize;
+        self.top = to;
+        to != from
+    }
+
+    /// A click on line `line` of the `visible` in view: the cursor goes to the file there,
+    /// which is returned. `None` under the last row.
+    pub fn click(&mut self, line: usize, visible: usize) -> Option<&Made> {
+        let index = self.top(visible) + line;
+        if line >= visible || index >= self.files.len() {
+            return None;
+        }
+        self.cursor = index;
+        self.files.get(index)
+    }
+
+    /// The rows in view when `visible` rows of `cols` columns fit; `now_s`: the time now, in
+    /// seconds since 1970, which decides what is of today.
+    pub fn rows(&self, visible: usize, cols: usize, now_s: u64) -> Vec<MadeRow> {
+        let top = self.top(visible);
+        let now = files::local_time(now_s);
+        let end = self.files.len().min(top + visible);
+        (top..end)
+            .map(|index| {
+                let file = &self.files[index];
+                let (folder, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
+                let folder = if folder.is_empty() { "/" } else { folder };
+                let name_cols = columns(name).min(cols.saturating_sub(MADE_NAME_COL));
+                // Two columns between the name and its folder.
+                let left = cols.saturating_sub(MADE_NAME_COL + name_cols + 2);
+                let modified = files::local_time(file.modified_s);
+                MadeRow {
+                    when: match (modified, now) {
+                        (Some(modified), Some(now)) => when(modified, now),
+                        _ => String::new(),
+                    },
+                    name: name.to_string(),
+                    folder: match left >= FOLDER_MIN_COLS {
+                        true => keep_end(folder, left),
+                        false => String::new(),
+                    },
+                    selected: index == self.cursor,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Columns a text takes on the cell grid.
+fn columns(text: &str) -> usize {
+    clusters(text).iter().map(|(_, width)| width).sum()
+}
+
 /// What a panel shows under its header.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Text(TextBody),
     Image(ImageBody),
+    Made(MadeBody),
 }
 
-/// The panel beside the terminal: one file of one host.
+/// The panel beside the terminal: one file of one host, or the list of a session's images.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SidePanel {
     pub host: String,
-    /// Absolute, on `host`: what `Open in app` opens.
+    /// Absolute, on `host`: what `Open in app` opens. Empty for a list.
     pub path: String,
     title: String,
     pub body: Body,
+    /// The list a picture was opened from, as it was then: where `‹` leads back to.
+    pub back: Option<MadeBody>,
 }
 
 /// What a panel's header calls the file: with its host unless that is this machine.
@@ -833,6 +1125,7 @@ impl SidePanel {
             path: document.path.clone(),
             title: titled(&document.host, &document.path, local_name),
             body: Body::Text(TextBody::new(&document.text, document.line)),
+            back: None,
         }
     }
 
@@ -850,6 +1143,19 @@ impl SidePanel {
             path: path.to_string(),
             title: titled(host, path, local_name),
             body: Body::Image(ImageBody::new(size, file)),
+            back: None,
+        }
+    }
+
+    /// A panel for the list of the images a session made: `Images · SESSION`, and how many
+    /// once the host has said.
+    pub fn made(body: MadeBody) -> SidePanel {
+        SidePanel {
+            host: body.key.host.clone(),
+            path: String::new(),
+            title: format!("Images · {}", body.key.name),
+            body: Body::Made(body),
+            back: None,
         }
     }
 
@@ -857,7 +1163,37 @@ impl SidePanel {
     pub fn image_body(&self) -> Option<&ImageBody> {
         match &self.body {
             Body::Image(image) => Some(image),
-            Body::Text(_) => None,
+            Body::Text(_) | Body::Made(_) => None,
+        }
+    }
+
+    /// The list of a session's images, if that is what the panel shows.
+    pub fn made_body(&self) -> Option<&MadeBody> {
+        match &self.body {
+            Body::Made(made) => Some(made),
+            Body::Text(_) | Body::Image(_) => None,
+        }
+    }
+
+    pub fn made_body_mut(&mut self) -> Option<&mut MadeBody> {
+        match &mut self.body {
+            Body::Made(made) => Some(made),
+            Body::Text(_) | Body::Image(_) => None,
+        }
+    }
+
+    /// Whether a click on the panel gives it the keys: the list (the cursor, Enter) and a
+    /// picture opened from it (Backspace or Esc lead back). A file opened from the terminal
+    /// has nothing for them.
+    pub fn takes_keys(&self) -> bool {
+        self.back.is_some() || matches!(self.body, Body::Made(_))
+    }
+
+    /// What the header has besides the title and the `×`.
+    pub fn look(&self) -> SideLook {
+        SideLook {
+            refresh: matches!(self.body, Body::Made(_)),
+            back: self.back.is_some(),
         }
     }
 
@@ -865,14 +1201,15 @@ impl SidePanel {
     pub fn reveal(&mut self, lines: usize) {
         match &mut self.body {
             Body::Text(text) => text.reveal(lines),
-            Body::Image(_) => {}
+            Body::Image(_) | Body::Made(_) => {}
         }
     }
 
-    /// The wheel over a panel of text. Returns whether the picture changed.
+    /// The wheel over a panel of text or a list. Returns whether the picture changed.
     pub fn scroll(&mut self, rows: i32, lines: usize) -> bool {
         match &mut self.body {
             Body::Text(text) => text.scroll(rows, lines),
+            Body::Made(made) => made.scroll(rows, lines),
             Body::Image(_) => false,
         }
     }
@@ -882,25 +1219,33 @@ impl SidePanel {
     pub fn pan(&mut self, by: (f32, f32), area: Rect) -> bool {
         match &mut self.body {
             Body::Image(image) => image.pan(by, area),
-            Body::Text(_) => false,
+            Body::Text(_) | Body::Made(_) => false,
         }
     }
 
     /// A click on the body. Returns whether the picture changed: a picture goes between
-    /// fitted and its own size, text has nothing to click.
+    /// fitted and its own size, text has nothing to click. A list's rows are `MadeBody::click`'s,
+    /// which needs the line.
     pub fn click(&mut self) -> bool {
         match &mut self.body {
             Body::Image(image) => {
                 image.toggle();
                 true
             }
-            Body::Text(_) => false,
+            Body::Text(_) | Body::Made(_) => false,
         }
     }
 
     /// What to draw in a panel of `lines` lines of `cols` columns under its header; `area`
-    /// is that body in pixels (`Layout::side_body`), which a picture's header needs.
+    /// is that body in pixels (`Layout::side_body`), which a picture's header needs. A list's
+    /// rows say the time by this machine's clock as it is now.
     pub fn view(&self, lines: usize, cols: usize, area: Rect) -> SideView {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        self.view_at(lines, cols, area, now.map_or(0, |now| now.as_secs()))
+    }
+
+    /// `view` at the time `now_s`, in seconds since 1970.
+    pub fn view_at(&self, lines: usize, cols: usize, area: Rect, now_s: u64) -> SideView {
         let (title, body) = match &self.body {
             Body::Text(text) => {
                 let rows = text.rows(lines, cols);
@@ -913,7 +1258,20 @@ impl SidePanel {
                 let title = format!("{} {width}×{height} · {percent} %", self.title);
                 (title, SideBody::Image)
             }
+            Body::Made(made) => {
+                let title = match made.state() {
+                    MadeState::Listed => format!("{} · {}", self.title, made.len()),
+                    _ => self.title.clone(),
+                };
+                let rows = made.rows(lines, cols, now_s);
+                let message = made.message();
+                (title, SideBody::Made { rows, message })
+            }
         };
-        SideView { title, body }
+        SideView {
+            title,
+            look: self.look(),
+            body,
+        }
     }
 }

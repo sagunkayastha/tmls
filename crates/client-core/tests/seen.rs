@@ -21,6 +21,7 @@ fn snap(host: &str, sessions: &[(&str, Status)]) -> HostSnapshot {
             attached: 0,
             last_output_age_s: Some(0),
             pid: None,
+            session_id: None,
         })
         .collect();
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }

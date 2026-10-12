@@ -1,9 +1,11 @@
 //! The window's layout and what a click hits. No atlas: the cell box is given.
 
 use desktop::draw::{
-    Button, Hit, Layout, Rect, SideHeader, default_panel_cols, layout, layout_with, side_header,
+    Button, FILES_COLS, Hit, Layout, Rect, SideHeader, default_panel_cols, layout, layout_with,
+    side_header, side_header_with,
 };
 use desktop::theme::{PANEL_MIN_COLS, SIDEBAR_COLS, TAB_MAX_COLS, Theme};
+use desktop::viewer::SideLook;
 use s2_wgpu::gfx::atlas::CellMetrics;
 
 /// A 10 x 20 pixel cell.
@@ -164,9 +166,11 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
 #[test]
 fn many_tabs_share_the_bar() {
     let l = at(1281, 726);
-    assert_eq!(l.tab_cols(10), 10);
-    assert_eq!(l.tab_rect(9, 10).right(), 1281.0);
-    assert_eq!(l.hit(1280.0, 10.0, 10), Hit::TabClose(9));
+    // 100 columns, less the seven of `Files` at the bar's right end.
+    assert_eq!(l.tab_cols(10), 9);
+    assert_eq!(l.tab_rect(9, 10).right(), 1181.0);
+    assert_eq!(l.hit(1180.0, 10.0, 10), Hit::TabClose(9));
+    assert_eq!(l.hit(1181.0, 10.0, 10), Hit::TabBar);
     // Too narrow for a close mark: every click selects.
     assert_eq!(l.tab_cols(40), 2);
     assert_eq!(l.hit(281.0 + 39.0, 10.0, 40), Hit::Tab(1));
@@ -355,9 +359,11 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
 #[test]
 fn the_header_has_the_path_then_open_in_app_then_the_close_mark() {
     let header = |title_cols, open, close| SideHeader {
+        title_col: 0,
         title_cols,
         open,
         close,
+        back: None,
     };
     // 49 columns: × on 47 (cells 46-48), a column, `Open in app` on 34-44, two columns.
     assert_eq!(side_header(49), header(32, Some(34), Some(47)));
@@ -401,8 +407,9 @@ fn clicks_hit_the_panels_close_mark_and_open_in_app() {
         assert_eq!(l.hit(x, 52.0, 1), text, "first line of text, x {x}");
     }
     // Above and below it the window is as before.
-    assert_eq!(l.hit(1270.0, 10.0, 0), Hit::TabBar);
-    assert_eq!(l.hit(1270.0, 25.9, 0), Hit::TabBar);
+    assert_eq!(l.hit(1200.0, 10.0, 0), Hit::TabBar);
+    assert_eq!(l.hit(1200.0, 25.9, 0), Hit::TabBar);
+    assert_eq!(l.hit(1270.0, 25.9, 0), Hit::Files);
     assert_eq!(l.hit(1270.0, 700.0, 1), Hit::Status);
     assert_eq!(l.hit(1281.0, 30.0, 1), Hit::Outside);
     assert_eq!(l.hit(283.0, 30.0, 1), Hit::Separator);
@@ -710,5 +717,152 @@ fn a_drag_keeps_the_pixel_of_the_handle_that_was_pressed() {
                 "scale {scale}"
             );
         }
+    }
+}
+
+#[test]
+fn files_is_the_tab_bars_last_seven_columns_and_the_tabs_lose_them() {
+    let rect = |x, y, w, h| Rect { x, y, w, h };
+    for l in [at(1281, 726), with_panel(1281, 726)] {
+        assert_eq!(FILES_COLS, 7);
+        // The bar is 1000 px from x 281: its last 70 are the label's, whatever is under it.
+        assert_eq!(l.files_rect(), rect(1211.0, 0.0, 70.0, 26.0));
+        for tabs in [0, 1, 2, 10, 500] {
+            assert_eq!(l.hit(1210.9, 10.0, tabs), Hit::TabBar, "{tabs} tabs");
+            assert_eq!(l.hit(1211.0, 0.0, tabs), Hit::Files, "{tabs} tabs");
+            assert_eq!(l.hit(1280.9, 25.9, tabs), Hit::Files, "{tabs} tabs");
+            assert_ne!(l.hit(1250.0, 26.0, tabs), Hit::Files, "under the bar");
+        }
+        // 93 columns are the tabs': no tab reaches into the label.
+        assert_eq!(l.tab_cols(1), TAB_MAX_COLS);
+        assert_eq!(l.tab_cols(3), TAB_MAX_COLS);
+        assert_eq!(l.tab_cols(4), 23);
+        assert_eq!(l.tab_cols(93), 1);
+        assert_eq!(l.tab_cols(94), 0);
+        for tabs in 1..120 {
+            let last = l.tab_rect(tabs - 1, tabs);
+            assert!(last.right() <= l.files_rect().x, "{tabs} tabs");
+        }
+    }
+    // A bar of fewer than seven columns has no label, and its tabs keep what there is.
+    let narrow = at(100, 400);
+    assert_eq!(narrow.tab_bar.w, 49.0);
+    assert_eq!(narrow.files_rect().w, 0.0);
+    assert_eq!(narrow.tab_cols(1), 4);
+    for x in 0..100 {
+        assert_ne!(narrow.hit(x as f32, 5.0, 1), Hit::Files, "x {x}");
+    }
+    // Seven and more: it is there, at the right end.
+    let enough = at(160, 400);
+    assert_eq!(enough.tab_bar.w, 79.0);
+    assert_eq!(enough.files_rect(), rect(90.0, 0.0, 70.0, 26.0));
+    assert_eq!(enough.tab_cols(1), 0);
+    assert_eq!(enough.hit(100.0, 5.0, 1), Hit::Files);
+}
+
+const LIST: SideLook = SideLook {
+    refresh: true,
+    back: false,
+};
+const FROM_LIST: SideLook = SideLook {
+    refresh: false,
+    back: true,
+};
+
+#[test]
+fn the_lists_header_has_refresh_and_a_picture_from_the_list_a_way_back() {
+    assert_eq!(side_header_with(49, SideLook::default()), side_header(49));
+    // 49 columns: × on 47, a column, `Refresh` on 38-44, two columns, the title.
+    let list = side_header_with(49, LIST);
+    assert_eq!(
+        list,
+        SideHeader {
+            title_col: 0,
+            title_cols: 36,
+            open: Some(38),
+            close: Some(47),
+            back: None,
+        }
+    );
+    // The label goes when the title would have fewer than eight columns beside it.
+    assert_eq!(side_header_with(21, LIST).open, Some(10));
+    assert_eq!(side_header_with(20, LIST).open, None);
+    // From the list: `‹` on the first column, a column, then the path.
+    assert_eq!(
+        side_header_with(49, FROM_LIST),
+        SideHeader {
+            title_col: 2,
+            title_cols: 30,
+            open: Some(34),
+            close: Some(47),
+            back: Some(0),
+        }
+    );
+    // Narrow: the way back stays as long as the × does not need its cells.
+    let narrow = side_header_with(5, FROM_LIST);
+    assert_eq!(
+        (narrow.back, narrow.close, narrow.title_cols),
+        (Some(0), Some(3), 0)
+    );
+    let none = side_header_with(4, FROM_LIST);
+    assert_eq!((none.back, none.close, none.title_col), (None, Some(2), 0));
+    for cols in 0..80 {
+        for look in [SideLook::default(), LIST, FROM_LIST] {
+            let h = side_header_with(cols, look);
+            let end = h.open.or(h.close).unwrap_or(cols);
+            assert!(h.title_col + h.title_cols <= end, "{cols} {look:?}");
+        }
+    }
+}
+
+#[test]
+fn clicks_hit_refresh_and_the_way_back() {
+    let l = with_panel(1281, 726);
+    let col = |col: usize| 791.0 + col as f32 * 10.0;
+    // The list: `Refresh` where the label is; nothing opens in an app, nothing goes back.
+    for (x, hit) in [
+        (col(0), Hit::Side),
+        (col(1), Hit::Side),
+        (col(34), Hit::Side),
+        (col(37) + 9.0, Hit::Side),
+        (col(38), Hit::SideRefresh),
+        (col(44) + 9.0, Hit::SideRefresh),
+        (col(45), Hit::Side),
+        (col(46), Hit::SideClose),
+    ] {
+        assert_eq!(l.hit_with(x, 30.0, 1, LIST), hit, "list header, x {x}");
+        assert_eq!(l.hit_with(x, 60.0, 1, LIST), Hit::Side, "list body, x {x}");
+    }
+    // A picture from the list: `‹` and the cell after it.
+    for (x, hit) in [
+        (790.0, Hit::SideDivider),
+        (col(0), Hit::SideBack),
+        (col(1) + 9.0, Hit::SideBack),
+        (col(2), Hit::Side),
+        (col(34), Hit::SideOpen),
+        (col(46), Hit::SideClose),
+    ] {
+        assert_eq!(
+            l.hit_with(x, 30.0, 1, FROM_LIST),
+            hit,
+            "picture header, x {x}"
+        );
+        let body = match hit {
+            Hit::SideDivider => hit,
+            _ => Hit::Side,
+        };
+        assert_eq!(
+            l.hit_with(x, 60.0, 1, FROM_LIST),
+            body,
+            "picture body, x {x}"
+        );
+    }
+    // Without a look it is the header of a file.
+    assert_eq!(l.hit(col(0), 30.0, 1), Hit::Side);
+    assert_eq!(l.hit(col(38), 30.0, 1), Hit::SideOpen);
+    // The look changes nothing outside the panel.
+    for (x, y) in [(50.0, 30.0), (500.0, 300.0), (1250.0, 10.0), (600.0, 710.0)] {
+        assert_eq!(l.hit_with(x, y, 2, LIST), l.hit(x, y, 2));
+        assert_eq!(l.hit_with(x, y, 2, FROM_LIST), l.hit(x, y, 2));
     }
 }

@@ -133,6 +133,8 @@ cleanup() {
   tmux kill-session -t "=$NEW" 2>/dev/null
   tmux kill-session -t "=$RENAMED" 2>/dev/null
   tmux kill-session -t "=$BYE" 2>/dev/null
+  # The stand-in for a Claude process (the images' list), if it still runs.
+  [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
 }
@@ -594,6 +596,99 @@ print(inside, box, outside)
   tmux send-keys -t "=$ONE:" 'clear' Enter
   sleep 0.5
   check_typed "after the panel typing still arrives" "$ONE" viewed
+
+  # --- the images a session made: Alt+Shift+F and `Files` ----------------------------------------
+  # $ONE is in front and no Claude session yet: the panel opens (with the 40 columns dragged
+  # above, so the pane has its $COLS_DRAGGED) and says so; no command runs for it.
+  keys -M alt -M shift -k f -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_DRAGGED"; then
+    pass "Alt+Shift+F opens the panel without a file: the pane is narrower ($COLS_BEFORE -> $(pane_cols) columns)"
+  else
+    fail "Alt+Shift+F opens the panel without a file: the pane is narrower" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  check "screenshot 12j-made-no-claude (no Claude session in this tab)" shot 12j-made-no-claude
+  NO_CLAUDE_PICTURE=$(picture)
+  # Now $ONE is a Claude session for the listing: a status file named after a live process (a
+  # sleep of this script's; the listing skips the file once that is gone) that names $ONE's
+  # pane and a session id, and that id's transcript, which names the orange picture and one
+  # that does not exist. The next listing (every 5 s) tells the app, which then asks for the
+  # list by itself: the panel is open on this tab.
+  SID='0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+  sleep 900 &
+  FAKE_CLAUDE=$!
+  mkdir -p "$HOME/.claude/sessions" "$HOME/.claude/projects/-work"
+  printf '{"type":"assistant","message":"saved %s and %s"}\n' "$ORANGE" "$HOME/missing.png" \
+    >"$HOME/.claude/projects/-work/$SID.jsonl"
+  printf '{"pid":%s,"sessionId":"%s","status":"idle","statusUpdatedAt":1,"tmux":"%s:@0.%%0","cwd":"/work"}\n' \
+    "$FAKE_CLAUDE" "$SID" "$ONE" >"$HOME/.claude/sessions/$FAKE_CLAUDE.json"
+  listed_now() { [ "$(picture)" != "$NO_CLAUDE_PICTURE" ]; }
+  if wait_for 15 listed_now; then
+    pass "once the listing has $ONE as a Claude session the panel lists its images by itself (the picture changed)"
+  else
+    fail "once the listing has $ONE as a Claude session the panel lists its images by itself" "same picture as without a Claude session"
+  fi
+  check "screenshot 12h-made-list" shot 12h-made-list
+  check "the list shows no picture yet: no pixel of the screen is the orange" orange_is "0 none 0"
+  check "with the list open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
+  # The list's rows start under the panel's header (23 px, as the tab bar): the first is y 46-62.
+  click 1100 54
+  if wait_for 8 orange_is "76800 320x240+960+* 0"; then
+    pass "a click on the list's first row shows the picture the transcript names, fitted: $(orange | cut -d' ' -f2)"
+  else
+    fail "a click on the list's first row shows the picture the transcript names" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "screenshot 12i-made-image" shot 12i-made-image
+  # `‹` is the header's first column (x 960-967) and the cell after it.
+  click 964 34
+  if wait_for 5 orange_is "0 none 0"; then
+    pass "a click on the ‹ of the picture's header leads back to the list"
+  else
+    fail "a click on the ‹ of the picture's header leads back to the list" "orange pixels: $(orange)"
+  fi
+  # The click gave the panel the keys: Enter opens the row under the cursor, Backspace leads
+  # back, and what is typed there reaches no session.
+  sleep 0.5
+  key_enter
+  if wait_for 8 orange_at_least 10000; then
+    pass "Enter in the list opens the picture under the cursor"
+  else
+    fail "Enter in the list opens the picture under the cursor" "orange pixels: $(orange)"
+  fi
+  keys -k BackSpace
+  if wait_for 5 orange_is "0 none 0"; then
+    pass "Backspace at the picture leads back to the list"
+  else
+    fail "Backspace at the picture leads back to the list" "orange pixels: $(orange)"
+  fi
+  keys "inlist$NONCE"
+  sleep 0.5
+  check "keys typed with the list focused reach no session" nowhere "inlist$NONCE"
+  # Esc in the list gives the keys back to the terminal.
+  keys -k Escape
+  check_typed "after Esc in the list the keys are the terminal's again" "$ONE" afterlist
+  keys -M alt -M shift -k f -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "Alt+Shift+F again closes the panel: the pane has its $COLS_BEFORE columns again"
+  else
+    fail "Alt+Shift+F again closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  # `Files` is the tab bar's last seven columns (x 1224-1279).
+  click 1250 11
+  if wait_for 8 as_wide_as "$COLS_DRAGGED"; then
+    pass "a click on Files at the tab bar's right end opens the panel"
+  else
+    fail "a click on Files at the tab bar's right end opens the panel" "columns $(pane_cols)"
+  fi
+  click 1250 11
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "a click on Files again closes it"
+  else
+    fail "a click on Files again closes it" "columns $(pane_cols)"
+  fi
+  # $ONE is no Claude session any more for what follows.
+  kill "$FAKE_CLAUDE" 2>/dev/null
+  wait "$FAKE_CLAUDE" 2>/dev/null
+  check_typed "after the list typing still arrives" "$ONE" listed
 else
   fail "the headless seat takes a pointer (vptr.py)" "$(tail -2 "$OUT/vptr.log" | tr '\n' ' ')"
   # The later checks need $ONE in front.

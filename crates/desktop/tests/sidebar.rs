@@ -55,6 +55,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         attached: 0,
         last_output_age_s: None,
         pid: None,
+        session_id: None,
     }
 }
 
@@ -748,6 +749,7 @@ fn outside(name: &str, pid: u32, status: Status) -> SessionInfo {
     SessionInfo {
         tool: Tool::Claude,
         pid: Some(pid),
+        session_id: None,
         ..session(KITTY, name, status)
     }
 }

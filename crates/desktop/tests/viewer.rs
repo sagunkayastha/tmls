@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use client_core::SessionKey;
-use client_core::files::{locate_argv, read_argv};
+use client_core::files::{LocalTime, Made, local_time, locate_argv, made_argv, read_argv};
 use desktop::draw::Rect;
 use desktop::links::FileLink;
 use desktop::viewer::{
-    self, COPY_TIMEOUT, Document, IMAGE_TIMEOUT, ImageBody, LOCATE_TIMEOUT, MAX_BYTES,
-    MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MAX_OUTSIDE_BYTES, MAX_SIDE, Opened, READ_TIMEOUT, SideBody,
-    SidePanel, TextBody, decode, expand, extension, opens_outside, place,
+    self, COPY_TIMEOUT, Document, IMAGE_TIMEOUT, ImageBody, LOCATE_TIMEOUT, MADE_FAILED,
+    MADE_LOADING, MADE_TIMEOUT, MAX_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MAX_OUTSIDE_BYTES,
+    MAX_SIDE, MadeBody, MadeRow, MadeState, NO_CLAUDE, NO_IMAGES, Opened, READ_TIMEOUT, SideBody,
+    SideLook, SidePanel, TextBody, decode, expand, extension, opens_outside, place, when,
 };
 
 /// This machine's name; `nas` is another host.
@@ -1265,4 +1266,417 @@ fn work_that_panics_is_an_answer_too() {
     assert_eq!(answer, Err("broken image".to_string()));
     let fine = viewer::guarded(|| Err("as it was".to_string()));
     assert_eq!(fine, Err("as it was".to_string()));
+}
+
+// --- the images a session made ---------------------------------------------------------------
+
+const ID: &str = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+
+fn file(path: &str, modified_s: u64) -> Made {
+    Made {
+        path: path.to_string(),
+        modified_s,
+        bytes: 10,
+    }
+}
+
+/// `count` files `/w/plots/N.png`, the newest (N = 0) first.
+fn files(count: usize) -> Vec<Made> {
+    (0..count)
+        .map(|n| file(&format!("/w/plots/{n}.png"), 1_760_000_000 - n as u64))
+        .collect()
+}
+
+fn names(body: &MadeBody, visible: usize) -> Vec<String> {
+    body.rows(visible, 60, 1_760_000_000)
+        .into_iter()
+        .map(|row| row.name)
+        .collect()
+}
+
+fn selected(body: &MadeBody, visible: usize) -> Vec<String> {
+    body.rows(visible, 60, 1_760_000_000)
+        .into_iter()
+        .filter(|row| row.selected)
+        .map(|row| row.name)
+        .collect()
+}
+
+#[test]
+fn the_list_is_asked_of_the_sessions_host_within_the_time_limit() {
+    let out = "1760000300\t12\t/w/plots/c.png\n1760000200\t3456\t/w/b.jpg\n";
+    for host in [LOCAL, "nas"] {
+        let calls = RefCell::new(Vec::new());
+        let run = |argv: &[String], timeout: Duration| {
+            calls.borrow_mut().push((argv.to_vec(), timeout));
+            Ok(out.as_bytes().to_vec())
+        };
+        let opened = viewer::made(&key(host), ID, LOCAL, &run).unwrap();
+        assert_eq!(
+            opened,
+            Opened::Made {
+                host: host.to_string(),
+                session: "work".to_string(),
+                files: vec![
+                    Made {
+                        path: "/w/plots/c.png".to_string(),
+                        modified_s: 1_760_000_300,
+                        bytes: 12
+                    },
+                    Made {
+                        path: "/w/b.jpg".to_string(),
+                        modified_s: 1_760_000_200,
+                        bytes: 3456
+                    },
+                ],
+            }
+        );
+        // One command: the one `client_core::files` builds for that id, and nothing else.
+        let calls = calls.into_inner();
+        assert_eq!(
+            calls,
+            vec![(made_argv(host, ID, None, LOCAL), MADE_TIMEOUT)]
+        );
+        assert_eq!(calls[0].0[0], if host == LOCAL { "sh" } else { "ssh" });
+    }
+    assert_eq!(
+        MADE_TIMEOUT, READ_TIMEOUT,
+        "as long as a file's text may take"
+    );
+}
+
+#[test]
+fn a_session_without_a_transcript_has_no_images_and_a_dead_link_says_so() {
+    let none = |_: &[String], _: Duration| Ok(b"no-transcript\n".to_vec());
+    let opened = viewer::made(&key("nas"), ID, LOCAL, &none).unwrap();
+    assert_eq!(
+        opened,
+        Opened::Made {
+            host: "nas".to_string(),
+            session: "work".to_string(),
+            files: Vec::new()
+        }
+    );
+    // What `tmux::run_bytes` says of a command it had to kill.
+    let dead = |_: &[String], _: Duration| Err(anyhow::anyhow!("ssh timed out after 10.0 s"));
+    assert_eq!(
+        viewer::made(&key("nas"), ID, LOCAL, &dead),
+        Err("images of work on nas: ssh timed out after 10.0 s".to_string())
+    );
+    let refused = |_: &[String], _: Duration| {
+        Err(anyhow::anyhow!(
+            "ssh: connect to host nas port 22: Connection refused\nmore"
+        ))
+    };
+    assert_eq!(
+        viewer::made(&key(LOCAL), ID, LOCAL, &refused),
+        Err("images of work: ssh: connect to host nas port 22: Connection refused".to_string())
+    );
+}
+
+#[test]
+fn an_id_that_is_none_never_reaches_a_command() {
+    let seen = RefCell::new(Vec::new());
+    let run = |argv: &[String], _: Duration| {
+        seen.borrow_mut().push(argv.to_vec());
+        Ok(b"no-transcript\n".to_vec())
+    };
+    let opened = viewer::made(&key("nas"), "$(reboot)", LOCAL, &run).unwrap();
+    assert!(matches!(opened, Opened::Made { files, .. } if files.is_empty()));
+    for argv in seen.into_inner() {
+        assert!(argv.iter().all(|word| !word.contains("reboot")), "{argv:?}");
+    }
+}
+
+#[test]
+fn the_rows_are_in_the_lists_order_with_name_and_folder_apart() {
+    let listed = vec![
+        file("/w/plots/c.png", 1_760_000_300),
+        file(
+            "/home/someone/projects/weather/output/figures/b.jpg",
+            1_760_000_200,
+        ),
+        file("/a.webp", 1_760_000_100),
+    ];
+    let body = MadeBody::listed(key(LOCAL), listed);
+    assert_eq!(body.state(), MadeState::Listed);
+    assert_eq!(body.len(), 3);
+    assert_eq!(body.message(), None);
+    let rows = body.rows(10, 40, 1_760_000_400);
+    let shown: Vec<(&str, &str, bool)> = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.folder.as_str(), row.selected))
+        .collect();
+    // 40 columns: seven for the time, the name, two apart, the folder in what is left (26).
+    assert_eq!(
+        shown,
+        [
+            ("c.png", "/w/plots", true),
+            ("b.jpg", "…ts/weather/output/figures", false),
+            ("a.webp", "/", false),
+        ]
+    );
+    assert_eq!(width(&rows[1].folder), 26);
+    // Too narrow for a folder worth reading: the name alone.
+    let rows = body.rows(10, 15, 1_760_000_400);
+    assert_eq!(
+        (rows[0].name.as_str(), rows[0].folder.as_str()),
+        ("c.png", "")
+    );
+    // Only what is in view.
+    assert_eq!(names(&body, 2), ["c.png", "b.jpg"]);
+    assert_eq!(names(&body, 0), Vec::<String>::new());
+}
+
+#[test]
+fn a_row_says_the_time_of_today_and_the_day_of_any_other() {
+    let at = |month, day, hour, minute| LocalTime {
+        year: 2026,
+        month,
+        day,
+        hour,
+        minute,
+    };
+    let now = at(10, 11, 14, 5);
+    assert_eq!(when(at(10, 11, 9, 7), now), "09:07");
+    assert_eq!(when(at(10, 11, 0, 0), now), "00:00");
+    assert_eq!(when(at(10, 10, 23, 59), now), "Oct 10");
+    assert_eq!(when(at(1, 3, 12, 0), now), "Jan 3");
+    assert_eq!(when(at(12, 31, 12, 0), now), "Dec 31");
+    // The same day of another year is not today.
+    let last_year = LocalTime { year: 2025, ..now };
+    assert_eq!(when(last_year, now), "Oct 11");
+    // A month no calendar has does not panic.
+    assert_eq!(when(at(13, 1, 0, 0), now), "? 1");
+
+    // On this machine's clock: a file of this very moment is of today, one of 40 days ago not.
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let body = MadeBody::listed(
+        key(LOCAL),
+        vec![
+            file("/w/new.png", now_s),
+            file("/w/old.png", now_s - 40 * 86_400),
+        ],
+    );
+    let rows = body.rows(5, 60, now_s);
+    let clock = local_time(now_s).expect("this machine's time");
+    assert_eq!(
+        rows[0].when,
+        format!("{:02}:{:02}", clock.hour, clock.minute)
+    );
+    let old = local_time(now_s - 40 * 86_400).unwrap();
+    assert!(
+        rows[1].when.ends_with(&format!(" {}", old.day)),
+        "{:?}",
+        rows[1].when
+    );
+    assert!(rows.iter().all(|row| width(&row.when) <= 6), "{rows:?}");
+}
+
+#[test]
+fn the_cursor_stops_at_both_ends_and_stays_in_view() {
+    let mut body = MadeBody::listed(key(LOCAL), files(10));
+    assert_eq!(selected(&body, 4), ["0.png"]);
+    assert_eq!(
+        body.selected().map(|file| file.path.as_str()),
+        Some("/w/plots/0.png")
+    );
+    assert!(!body.move_by(-1, 4), "already on the first");
+    assert!(!body.move_by(-100, 4));
+    assert_eq!(selected(&body, 4), ["0.png"]);
+    assert!(body.move_by(1, 4));
+    assert_eq!(selected(&body, 4), ["1.png"]);
+    assert_eq!(names(&body, 4), ["0.png", "1.png", "2.png", "3.png"]);
+    // Past the last line in view: the list follows.
+    assert!(body.move_by(3, 4));
+    assert_eq!(names(&body, 4), ["1.png", "2.png", "3.png", "4.png"]);
+    assert_eq!(selected(&body, 4), ["4.png"]);
+    assert!(body.move_by(100, 4));
+    assert_eq!(names(&body, 4), ["6.png", "7.png", "8.png", "9.png"]);
+    assert_eq!(selected(&body, 4), ["9.png"]);
+    assert!(!body.move_by(1, 4), "already on the last");
+    assert!(body.move_by(-9, 4));
+    assert_eq!(names(&body, 4), ["0.png", "1.png", "2.png", "3.png"]);
+    // No room at all, or nothing listed: nothing to divide by, nothing moves.
+    assert!(body.move_by(1, 0));
+    let mut empty = MadeBody::listed(key(LOCAL), Vec::new());
+    assert!(!empty.move_by(1, 4));
+    assert!(!empty.move_by(-1, 0));
+    assert_eq!(empty.selected(), None);
+}
+
+#[test]
+fn the_wheel_scrolls_the_list_between_its_ends() {
+    let mut body = MadeBody::listed(key(LOCAL), files(10));
+    assert!(!body.scroll(-3, 4), "at the top");
+    assert!(body.scroll(3, 4));
+    assert_eq!(names(&body, 4), ["3.png", "4.png", "5.png", "6.png"]);
+    // The cursor stays on its file, in view or not.
+    assert_eq!(
+        body.selected().map(|file| file.path.as_str()),
+        Some("/w/plots/0.png")
+    );
+    assert_eq!(selected(&body, 4), Vec::<String>::new());
+    assert!(body.scroll(100, 4));
+    assert_eq!(names(&body, 4), ["6.png", "7.png", "8.png", "9.png"]);
+    assert!(!body.scroll(1, 4), "at the end");
+    // A taller panel: the end stays at its foot.
+    assert_eq!(names(&body, 8).len(), 8);
+    assert_eq!(names(&body, 8)[7], "9.png");
+    assert_eq!(names(&body, 30).len(), 10);
+    assert!(!body.scroll(5, 30), "all of it is in view");
+    // A click takes the row under it; under the last row there is none.
+    body.scroll(-100, 4);
+    assert_eq!(
+        body.click(2, 4).map(|file| file.path.as_str()),
+        Some("/w/plots/2.png")
+    );
+    assert_eq!(selected(&body, 4), ["2.png"]);
+    assert_eq!(body.click(4, 4), None, "under the panel");
+    let mut short = MadeBody::listed(key(LOCAL), files(2));
+    assert_eq!(short.click(2, 10), None);
+    assert_eq!(
+        short.click(1, 10).map(|file| file.path.as_str()),
+        Some("/w/plots/1.png")
+    );
+}
+
+#[test]
+fn what_is_not_a_list_is_one_line() {
+    let empty = MadeBody::listed(key(LOCAL), Vec::new());
+    assert_eq!(NO_IMAGES, "no images from this session yet");
+    assert_eq!(empty.message(), Some(NO_IMAGES));
+    assert_eq!(empty.rows(10, 60, 0), Vec::<MadeRow>::new());
+    let none = MadeBody::no_claude(key(LOCAL));
+    assert_eq!(NO_CLAUDE, "no Claude session in this tab");
+    assert_eq!(
+        (none.state(), none.message()),
+        (MadeState::NoClaude, Some(NO_CLAUDE))
+    );
+    let mut loading = MadeBody::loading(key(LOCAL));
+    assert_eq!(
+        (loading.state(), loading.message()),
+        (MadeState::Loading, Some(MADE_LOADING))
+    );
+    // The host did not answer: said, and a later answer is still taken.
+    loading.failed();
+    assert_eq!(
+        (loading.state(), loading.message()),
+        (MadeState::Failed, Some(MADE_FAILED))
+    );
+    loading.set_files(files(2));
+    assert_eq!(
+        (loading.state(), loading.message()),
+        (MadeState::Listed, None)
+    );
+
+    // As the panel draws them: the line, and no rows.
+    for (body, line, title) in [
+        (empty, NO_IMAGES, "Images · work · 0"),
+        (none, NO_CLAUDE, "Images · work"),
+        (MadeBody::loading(key(LOCAL)), MADE_LOADING, "Images · work"),
+    ] {
+        let view = SidePanel::made(body).view(20, 60, AREA);
+        assert_eq!(view.title, title);
+        assert_eq!(
+            view.body,
+            SideBody::Made {
+                rows: Vec::new(),
+                message: Some(line)
+            }
+        );
+    }
+}
+
+#[test]
+fn a_list_that_is_read_again_keeps_the_cursor_on_its_file() {
+    let mut body = MadeBody::listed(key(LOCAL), files(6));
+    body.move_by(3, 4);
+    assert_eq!(selected(&body, 4), ["3.png"]);
+    // Two new files came first.
+    let mut newer = vec![
+        file("/w/new-a.png", 1_760_000_900),
+        file("/w/new-b.png", 1_760_000_800),
+    ];
+    newer.extend(files(6));
+    body.set_files(newer);
+    assert_eq!(body.len(), 8);
+    assert_eq!(
+        body.selected().map(|file| file.path.as_str()),
+        Some("/w/plots/3.png")
+    );
+    assert_eq!(selected(&body, 4), ["3.png"], "and in view");
+    // Its file is gone: the cursor stays on its line, or the last there is.
+    body.set_files(files(2));
+    assert_eq!(
+        body.selected().map(|file| file.path.as_str()),
+        Some("/w/plots/1.png")
+    );
+    body.set_files(Vec::new());
+    assert_eq!((body.selected(), body.message()), (None, Some(NO_IMAGES)));
+    // A failure does not take a list away that is there.
+    let mut kept = MadeBody::listed(key(LOCAL), files(2));
+    kept.failed();
+    assert_eq!((kept.state(), kept.len()), (MadeState::Listed, 2));
+}
+
+#[test]
+fn the_lists_panel_says_whose_images_and_how_many_and_a_picture_from_it_leads_back() {
+    let mut panel = SidePanel::made(MadeBody::listed(key("nas"), files(3)));
+    assert_eq!(panel.host, "nas");
+    assert_eq!(panel.path, "", "nothing to open in an app");
+    let view = panel.view_at(2, 60, AREA, 1_760_000_000);
+    assert_eq!(view.title, "Images · work · 3");
+    assert_eq!(
+        view.look,
+        SideLook {
+            refresh: true,
+            back: false
+        }
+    );
+    let SideBody::Made { rows, message } = &view.body else {
+        panic!("{view:?}");
+    };
+    assert_eq!((rows.len(), *message), (2, None));
+    assert!(panel.takes_keys());
+    assert!(panel.made_body().is_some() && panel.image_body().is_none());
+    // The wheel moves the list; a click on it is the app's to place.
+    assert!(panel.scroll(1, 2));
+    assert!(!panel.pan((0.0, 10.0), AREA));
+    assert!(!panel.click());
+    panel.reveal(2);
+
+    // A picture opened from it keeps the list to go back to, as it was.
+    let list = panel.made_body().unwrap().clone();
+    let mut picture = SidePanel::image("nas", "/w/plots/1.png", (40, 30), (40, 30), LOCAL);
+    assert!(
+        !picture.takes_keys(),
+        "a picture from the terminal has no keys"
+    );
+    assert_eq!(picture.view(20, 60, AREA).look, SideLook::default());
+    picture.back = Some(list.clone());
+    assert!(picture.takes_keys());
+    assert_eq!(
+        picture.view(20, 60, AREA).look,
+        SideLook {
+            refresh: false,
+            back: true
+        }
+    );
+    assert_eq!(picture.back.take(), Some(list));
+    // Text has neither.
+    let text = SidePanel::text(
+        &Document {
+            host: LOCAL.to_string(),
+            path: "/w/a.rs".to_string(),
+            line: None,
+            text: "x".to_string(),
+        },
+        LOCAL,
+    );
+    assert!(!text.takes_keys() && text.made_body().is_none());
+    assert_eq!(text.view(20, 60, AREA).look, SideLook::default());
 }
