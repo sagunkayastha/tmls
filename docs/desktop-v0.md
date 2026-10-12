@@ -257,7 +257,7 @@ not found. Other hosts' sessions outside tmux are not shown, as in tmls. They ra
 | right-click a Claude session | its menu ends with Send message… |
 | `+` on a host's header | new-session form for that host |
 | `New` button | new-session form for the host of the session under the cursor |
-| `Open` button | attach the session under the cursor |
+| `Open` button | the session under the cursor in a new terminal window (`$TERMINAL`, else kitty, else `x-terminal-emulator`), as in tmls; a session outside tmux: its kitty window comes to the front |
 | `Copy` button | copy the `tmux attach` command of that session |
 | click in a form | focus a field, choose a Start, press a button; a click on Host shows the next host |
 | click beside an open menu | close it |

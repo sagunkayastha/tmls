@@ -1406,15 +1406,7 @@ impl Running {
             }
             MenuResult::Pick(MenuItem::OpenTerminal) => {
                 self.close_modal();
-                let terminal = std::env::var("TERMINAL").ok();
-                let said = forms::open_terminal(
-                    &key,
-                    &self.cfg.local_name,
-                    terminal.as_deref(),
-                    &forms::on_path,
-                    &mut forms::spawn_detached,
-                );
-                self.say(said);
+                self.open_in_terminal(&key);
             }
             MenuResult::Pick(MenuItem::CopyAttach) => {
                 self.close_modal();
@@ -2270,7 +2262,10 @@ impl Running {
                     self.say(links::open(&url).map(|()| format!("opened {url}")));
                 }
             }
-            (Button::Open, Some(key)) => self.open(&key),
+            // As in tmls: a terminal window of its own on the session, beside the app. A
+            // session outside tmux has nothing to attach: its kitty window comes to the front.
+            (Button::Open, Some(key)) if key.host == KITTY => self.open(&key),
+            (Button::Open, Some(key)) => self.open_in_terminal(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
                 // From a session outside tmux: on this machine.
@@ -2285,6 +2280,21 @@ impl Running {
             (Button::Help, _) => self.open_help(),
             (Button::Open | Button::Copy, None) => {}
         }
+    }
+
+    /// The session in a new terminal window (`$TERMINAL`, else kitty, else
+    /// `x-terminal-emulator`), attached there: the `Open` button and the menu's
+    /// "Open in new terminal". No tab is opened or changed here.
+    fn open_in_terminal(&mut self, key: &SessionKey) {
+        let terminal = std::env::var("TERMINAL").ok();
+        let said = forms::open_terminal(
+            key,
+            &self.cfg.local_name,
+            terminal.as_deref(),
+            &forms::on_path,
+            &mut forms::spawn_detached,
+        );
+        self.say(said);
     }
 
     /// A Claude session outside tmux has no tab: its kitty window is brought to the front
