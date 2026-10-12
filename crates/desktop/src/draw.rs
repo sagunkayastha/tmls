@@ -13,25 +13,33 @@
 //! +-----------------------+-+----------------------------------------+
 //! ```
 //!
-//! With a file open (`viewer::SidePanel`) the terminal's area is split: the terminal keeps the
-//! left part, a line divides, and the panel has the right part — a header of one row (the
-//! path, `Open in app`, `×`) over the file's text with its line numbers. `layout_with` lays
+//! **One row grid.** Every row of text — the list's, the terminal's, the panel's, the legend's
+//! and the buttons' — is at `terminal.y + k * cell_h`: the list and the panel's text start at
+//! `terminal.y`, level with the terminal's first row. The three bars (tab bar, panel header,
+//! status line) are equally high and set their text at the same height in them
+//! (`Layout::bar_text_y`); the status line's text starts at the terminal's first column
+//! (`Layout::status_text_x`).
+//!
+//! With a file open (`viewer::SidePanel`) the area right of the list is split: the terminal
+//! and its tab bar keep the left part, a line divides, and the panel has the right part — a
+//! header (the path, `Open in app`, `×`) in the tab bar's band over the file's text with its
+//! line numbers, whose rows are the terminal's. `layout_with` lays
 //! that out, and `Layout::grid` is then the smaller terminal. The panel opens with half the
 //! columns (`default_panel_cols`); dragging the divider gives it more or fewer, never under
 //! `PANEL_MIN_COLS` for it or for the terminal.
 //!
-//! `Files`, the tab bar's last `FILES_COLS` columns, opens the panel without a file, on the
+//! `Files`, the tab bar's last `FILES_COLS` columns (left of the panel when one is open), opens the panel without a file, on the
 //! list of the images the front tab's Claude session made (`viewer::MadeBody`), and closes it.
 //! The list's header says `Images · session · N` and has `Refresh` where a file has `Open in
 //! app`; a picture opened from the list has `‹` before its path, which leads back
 //! (`viewer::SideLook`, `side_header_with`).
 //!
 //! ```text
-//! +-- sidebar --+s+-- tab bar ---------------------------------------+
-//! |             |e+---------------------+d+--------------------------+
-//! |             |p|  terminal           |i| …/src/main.rs  Open in app × |
-//! |             | |                     |v|  11 fn main() {          |
+//! +-- sidebar --+s+-- tab bar ----- Files +d+ …/main.rs  Open in app × +
+//! |             |e+---------------------+i+--------------------------+
+//! |             |p|  terminal           |v|  11 fn main() {          |
 //! |             | |                     | |  12     run();           |
+//! |             | |                     | |  13 }                    |
 //! |             | +---------------------+-+--------------------------+
 //! |             | | status line                                      |
 //! +-------------+-+--------------------------------------------------+
@@ -205,7 +213,9 @@ pub struct Layout {
     /// Pixels right of the separator that are still its handle for dragging: the padding
     /// left of the terminal's text, six logical pixels at most.
     pub grab: f32,
-    /// The session list: `list_lines` lines of a cell's height.
+    /// The session list: `list_lines` lines of a cell's height from the terminal's first
+    /// row down, each level with a row of the terminal. The band above it, as high as the
+    /// tab bar, is empty.
     pub list: Rect,
     pub list_lines: usize,
     /// Columns of the sidebar. A row's text leaves one free at either end.
@@ -214,6 +224,8 @@ pub struct Layout {
     /// is too low for them.
     pub legend: Rect,
     pub buttons: Rect,
+    /// Above the terminal and as wide as it and its padding: an open file panel has its
+    /// header right of it, in the same band.
     pub tab_bar: Rect,
     /// The grid's area; its corner is the grid's origin. Half a cell right of the separator,
     /// so the text does not touch it.
@@ -223,18 +235,19 @@ pub struct Layout {
     pub grid: (u16, u16),
     /// Width of the host colour bar at a tab's left edge.
     pub host_bar: f32,
-    /// The file panel, its divider included: the right part of what the terminal has
-    /// without one. Empty, like the five below, when no panel is open or the window is too
+    /// The file panel, its divider included: the right part of what the tab bar and the
+    /// terminal have without one, from the window's top to the status line. Empty, like the five below, when no panel is open or the window is too
     /// narrow for one.
     pub side: Rect,
     /// The line between the terminal and the panel.
     pub side_divider: Rect,
     /// The divider and `grab` pixels either side of it: its handle for dragging.
     pub side_grab: Rect,
-    /// The panel's header: one row, as high as the tab bar.
+    /// The panel's header: as high as the tab bar and beside it.
     pub side_header: Rect,
     /// The panel's text: `side_lines` lines of `side_cols` columns, half a cell right of the
-    /// divider. The header's text is on the same columns.
+    /// divider, its first line level with the terminal's first row. The header's text is on
+    /// the same columns.
     pub side_body: Rect,
     pub side_cols: usize,
     pub side_lines: usize,
@@ -460,10 +473,13 @@ pub fn layout_with(
         w: right_w - pad - panel_w,
         h: (win_h - 2.0 * bar_h).max(0.0),
     };
+    // The panel's header is in the tab bar's band, so its text starts where the terminal's
+    // does and has the terminal's rows.
     let side = Rect {
         x: win_w - panel_w,
+        y: 0.0,
         w: panel_w,
-        ..terminal
+        h: terminal.bottom(),
     };
     let side_line = if panel_w > 0.0 { line } else { 0.0 };
     let side_header = Rect {
@@ -475,7 +491,7 @@ pub fn layout_with(
     let side_pad = if panel_w > 0.0 { pad } else { 0.0 };
     let side_cols = ((side_header.w - side_pad).max(0.0) / cell_w).floor() as usize;
     let side_lines = if panel_w > 0.0 {
-        ((side.h - side_header.h) / cell_h).floor() as usize
+        (terminal.h / cell_h).floor() as usize
     } else {
         0
     };
@@ -485,7 +501,9 @@ pub fn layout_with(
     let term_rows = (terminal.h / cell_h).floor().max(BUTTONS.len() as f32);
     let buttons_y = terminal.y + (term_rows - BUTTONS.len() as f32) * cell_h;
     let legend_y = buttons_y - LEGEND_LINES as f32 * cell_h;
-    let foot = legend_y - line - inset >= MIN_LIST_LINES as f32 * cell_h;
+    // The list's lines are the terminal's rows, from the first one.
+    let list_y = terminal.y;
+    let foot = legend_y - line - list_y >= MIN_LIST_LINES as f32 * cell_h;
     let below = Rect {
         x: 0.0,
         y: win_h,
@@ -508,7 +526,7 @@ pub fn layout_with(
         false => (below, below),
     };
     let list_bottom = if foot { legend_y - line } else { win_h };
-    let list_lines = ((list_bottom - inset).max(0.0) / cell_h).floor() as usize;
+    let list_lines = ((list_bottom - list_y).max(0.0) / cell_h).floor() as usize;
     // Not into the terminal's cells left of the list's line: the padding there at most.
     let grab = px(6.0).min(pad);
     let side_grab = if panel_w > 0.0 { grab } else { 0.0 };
@@ -529,7 +547,7 @@ pub fn layout_with(
             h: win_h,
         },
         list: Rect {
-            y: inset,
+            y: list_y,
             h: list_lines as f32 * cell_h,
             ..below
         },
@@ -540,7 +558,7 @@ pub fn layout_with(
         tab_bar: Rect {
             x: right_x,
             y: 0.0,
-            w: right_w,
+            w: right_w - panel_w,
             h: bar_h,
         },
         terminal,
@@ -565,7 +583,7 @@ pub fn layout_with(
         side_header,
         side_body: Rect {
             x: side_header.x + side_pad,
-            y: side_header.bottom(),
+            y: terminal.y,
             w: side_cols as f32 * cell_w,
             h: side_lines as f32 * cell_h,
         },
@@ -575,6 +593,24 @@ pub fn layout_with(
 }
 
 impl Layout {
+    /// The top of one line of text in a bar — the tab bar, the panel's header, the status
+    /// line: in the middle of it, on a whole pixel. The same distance from the top of each,
+    /// as they are equally high.
+    pub fn bar_text_y(&self, bar: Rect) -> f32 {
+        bar.y + ((bar.h - self.cell.1) / 2.0).floor().max(0.0)
+    }
+
+    /// The left edge of the status line's text: the terminal's first column.
+    pub fn status_text_x(&self) -> f32 {
+        self.terminal.x
+    }
+
+    /// Columns of the status line's text: whole ones from `status_text_x`, less one at the
+    /// right end.
+    pub fn status_cols(&self) -> usize {
+        let cols = ((self.status.right() - self.status_text_x()) / self.cell.0).floor();
+        (cols.max(0.0) as usize).saturating_sub(1)
+    }
     /// Width of a tab in cells when `tabs` are open: they share the bar, less the columns of
     /// `Files`, evenly, up to `TAB_MAX_COLS` each.
     pub fn tab_cols(&self, tabs: usize) -> usize {
@@ -1150,11 +1186,6 @@ impl Painter<'_> {
         let y = origin.1 + span.line as f32 * self.m.height;
         self.styled(&span.text, x, y, span.cols, span.colour, style);
     }
-
-    /// The y that centres one line of text in `r`.
-    fn text_y(&self, r: Rect) -> f32 {
-        r.y + ((r.h - self.m.height) / 2.0).floor().max(0.0)
-    }
 }
 
 /// The cached quads of everything but the terminal.
@@ -1395,7 +1426,7 @@ fn tab_bar(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             },
             theme.separator,
         );
-        let y = p.text_y(r);
+        let y = l.bar_text_y(r);
         let at = |col: usize| r.x + col as f32 * cell_w;
         if let Some((mark, colour)) = tab.mark.filter(|_| cols >= 3) {
             p.label(mark.encode_utf8(&mut [0; 4]), at(1), y, 1, colour);
@@ -1423,23 +1454,16 @@ fn tab_bar(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
             Some(_) => theme.tab_active_fg,
             None => theme.muted_fg,
         };
-        let y = p.text_y(files);
+        let y = l.bar_text_y(files);
         p.label(FILES, files.x + cell_w, y, FILES_COLS - 2, colour);
     }
 }
 
 fn status_line(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     p.rect(l.status, theme.bar_bg);
-    let cols = ((l.status.w / p.m.width).floor() as usize).saturating_sub(2);
     if l.status.h >= p.m.height {
-        let y = p.text_y(l.status);
-        p.label(
-            &view.status,
-            l.status.x + p.m.width,
-            y,
-            cols,
-            theme.muted_fg,
-        );
+        let (x, y) = (l.status_text_x(), l.bar_text_y(l.status));
+        p.label(&view.status, x, y, l.status_cols(), theme.muted_fg);
     }
 }
 
@@ -1463,7 +1487,7 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     p.rect(l.side_divider, divider);
     p.rect(l.side_header, theme.bar_bg);
     if l.side_header.h >= p.m.height {
-        let origin = (l.side_body.x, p.text_y(l.side_header));
+        let origin = (l.side_body.x, l.bar_text_y(l.side_header));
         let focused = view.side_focused;
         for span in side_header_spans_focused(&side.title, l.side_cols, side.look, focused, theme) {
             p.span(origin, &span);

@@ -45,13 +45,14 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
         "the cells that fit the terminal's area, not the window"
     );
 
-    // The sidebar from the top: an inset, the list's lines, a line, five lines of legend,
-    // the buttons' two rows — the second level with the terminal's last row (26 + 32 * 20) —
-    // and empty space down to the window's edge.
+    // The sidebar from the top: a band as high as the tab bar, the list's lines — each level
+    // with a row of the terminal, as many as end above the legend's line —, that line, five
+    // lines of legend, the buttons' two rows — the second level with the terminal's last row
+    // (26 + 32 * 20) — and empty space down to the window's edge.
     assert_eq!(l.list_cols, SIDEBAR_COLS);
-    assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 3.0, 280.0));
-    assert_eq!(l.list_lines, 27);
-    assert_eq!(l.list.h, 540.0);
+    assert_eq!((l.list.x, l.list.y, l.list.w), (0.0, 26.0, 280.0));
+    assert_eq!(l.list_lines, 25);
+    assert_eq!(l.list.h, 500.0);
     assert_eq!((l.legend.y, l.legend.h), (546.0, 100.0));
     assert_eq!((l.buttons.y, l.buttons.bottom()), (646.0, 686.0));
     assert_eq!(l.buttons.bottom(), l.terminal.y + l.grid.1 as f32 * 20.0);
@@ -60,7 +61,7 @@ fn sidebar_tab_bar_terminal_and_status_line_fill_the_window() {
         l.list_lines_rect(2, 2),
         desktop::draw::Rect {
             x: 0.0,
-            y: 43.0,
+            y: 66.0,
             w: 280.0,
             h: 40.0
         }
@@ -84,11 +85,11 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
     let l = at(1281, 726);
     assert_eq!(l.hit(-1.0, 5.0, 2), Hit::Outside);
     assert_eq!(l.hit(5.0, 800.0, 2), Hit::Outside);
-    // The list's lines are a cell high, below one inset of padding.
-    assert_eq!(l.hit(50.0, 3.0, 2), Hit::List { line: 0, col: 5 });
-    assert_eq!(l.hit(279.0, 23.0, 2), Hit::List { line: 1, col: 27 });
-    assert_eq!(l.hit(0.0, 542.9, 2), Hit::List { line: 26, col: 0 });
-    assert_eq!(l.hit(50.0, 543.0, 2), Hit::Sidebar, "under the last line");
+    // The list's lines are a cell high, from the terminal's first row down.
+    assert_eq!(l.hit(50.0, 26.0, 2), Hit::List { line: 0, col: 5 });
+    assert_eq!(l.hit(279.0, 46.0, 2), Hit::List { line: 1, col: 27 });
+    assert_eq!(l.hit(0.0, 525.9, 2), Hit::List { line: 24, col: 0 });
+    assert_eq!(l.hit(50.0, 526.0, 2), Hit::Sidebar, "under the last line");
     // The separator and the padding right of it are its handle, at any height.
     for y in [0.0, 26.0, 400.0, 725.0] {
         assert_ne!(l.hit(279.9, y, 2), Hit::Separator, "y {y}");
@@ -96,7 +97,8 @@ fn clicks_hit_rows_tabs_and_their_close_marks() {
         assert_eq!(l.hit(285.9, y, 2), Hit::Separator, "y {y}");
         assert_ne!(l.hit(286.0, y, 2), Hit::Separator, "y {y}");
     }
-    assert_eq!(l.hit(50.0, 2.0, 2), Hit::Sidebar, "above the first row");
+    assert_eq!(l.hit(50.0, 25.9, 2), Hit::Sidebar, "above the first row");
+    assert_eq!(l.hit(50.0, 0.0, 2), Hit::Sidebar, "above the first row");
     // The last three cells of a line are the `+` of a host's header.
     assert!(!l.on_add(24) && l.on_add(25) && l.on_add(27));
 
@@ -181,16 +183,20 @@ fn many_tabs_share_the_bar() {
 
 #[test]
 fn a_low_window_has_no_legend_and_no_buttons() {
-    // Four lines for the list, or the foot goes. At 252 the terminal has ten rows, the
-    // buttons start at its last but one (26 + 8 * 20 = 186), the legend at 86: 82 pixels for
-    // the list.
-    let l = at(1281, 252);
+    // Four lines for the list, or the foot goes. At 292 the terminal has twelve rows, the
+    // buttons start at its last but one (26 + 10 * 20 = 226), the legend at 126: the list has
+    // the 99 pixels from 26 to the legend's line.
+    let l = at(1281, 292);
     assert_eq!((l.legend.h, l.buttons.h, l.list_lines), (100.0, 40.0, 4));
-    let l = at(1281, 251);
+    assert_eq!((l.list.y, l.legend.y, l.buttons.y), (26.0, 126.0, 226.0));
+    let l = at(1281, 291);
     assert_eq!((l.legend.h, l.buttons.h), (0.0, 0.0));
-    assert_eq!(l.list_lines, 12, "the list has the whole height");
-    assert_eq!(l.hit(15.0, 230.0, 0), Hit::List { line: 11, col: 1 });
-    assert_eq!(l.hit(15.0, 245.0, 0), Hit::Sidebar);
+    assert_eq!(
+        l.list_lines, 13,
+        "the list has the whole height under the bar's band"
+    );
+    assert_eq!(l.hit(15.0, 250.0, 0), Hit::List { line: 11, col: 1 });
+    assert_eq!(l.hit(15.0, 286.0, 0), Hit::Sidebar);
 }
 
 #[test]
@@ -302,12 +308,12 @@ fn without_a_panel_nothing_is_laid_out_for_one() {
 #[test]
 fn an_open_panel_has_the_right_half_of_the_terminals_area() {
     let (closed, l) = (at(1281, 726), with_panel(1281, 726));
-    // Everything around the terminal stays where it is.
+    // Everything around the terminal stays where it is, but the tab bar: it ends where the
+    // terminal does, and the panel's header is beside it.
     assert_eq!(
         (
             l.sidebar,
             l.separator,
-            l.tab_bar,
             l.status,
             l.list,
             l.legend,
@@ -316,7 +322,6 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
         (
             closed.sidebar,
             closed.separator,
-            closed.tab_bar,
             closed.status,
             closed.list,
             closed.legend,
@@ -330,8 +335,10 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
         49
     );
     let rect = |x, y, w, h| Rect { x, y, w, h };
-    assert_eq!(l.side, rect(785.0, 26.0, 496.0, 674.0));
-    assert_eq!(l.side_divider, rect(785.0, 26.0, 1.0, 674.0));
+    assert_eq!(l.side, rect(785.0, 0.0, 496.0, 700.0));
+    assert_eq!(l.side_divider, rect(785.0, 0.0, 1.0, 700.0));
+    assert_eq!(closed.tab_bar, rect(281.0, 0.0, 1000.0, 26.0));
+    assert_eq!(l.tab_bar, rect(281.0, 0.0, 504.0, 26.0));
     assert_eq!(l.terminal, rect(286.0, 26.0, 499.0, 674.0));
     assert_eq!(
         l.terminal.right(),
@@ -344,10 +351,11 @@ fn an_open_panel_has_the_right_half_of_the_terminals_area() {
         "the sessions are resized to the narrower terminal"
     );
     assert_eq!(closed.grid, (99, 33));
-    // The header is a row like the tab bar; the text is half a cell right of the divider.
-    assert_eq!(l.side_header, rect(786.0, 26.0, 495.0, 26.0));
-    assert_eq!(l.side_body, rect(791.0, 52.0, 490.0, 640.0));
-    assert_eq!((l.side_cols, l.side_lines), (49, 32));
+    // The header is in the tab bar's band; the text is half a cell right of the divider and
+    // has the terminal's rows.
+    assert_eq!(l.side_header, rect(786.0, 0.0, 495.0, 26.0));
+    assert_eq!(l.side_body, rect(791.0, 26.0, 490.0, 660.0));
+    assert_eq!((l.side_cols, l.side_lines), (49, 33));
     assert_eq!(
         l.side_body.right(),
         1281.0,
@@ -398,22 +406,23 @@ fn clicks_hit_the_panels_close_mark_and_open_in_app() {
         (col(48) + 9.0, Hit::SideClose),
         (1280.0, Hit::SideClose),
     ] {
-        assert_eq!(l.hit(x, 30.0, 1), hit, "header, x {x}");
-        assert_eq!(l.hit(x, 51.9, 1), hit, "header's last pixel row, x {x}");
+        assert_eq!(l.hit(x, 0.0, 1), hit, "header's first pixel row, x {x}");
+        assert_eq!(l.hit(x, 10.0, 1), hit, "header, x {x}");
+        assert_eq!(l.hit(x, 25.9, 1), hit, "header's last pixel row, x {x}");
         let text = match hit {
             Hit::SideDivider => hit,
             _ => Hit::Side,
         };
-        assert_eq!(l.hit(x, 52.0, 1), text, "first line of text, x {x}");
+        assert_eq!(l.hit(x, 26.0, 1), text, "first line of text, x {x}");
     }
-    // Above and below it the window is as before.
-    assert_eq!(l.hit(1200.0, 10.0, 0), Hit::TabBar);
-    assert_eq!(l.hit(1200.0, 25.9, 0), Hit::TabBar);
-    assert_eq!(l.hit(1270.0, 25.9, 0), Hit::Files);
+    // Left of it and below it the window is as before; `Files` is the last of the tab bar.
+    assert_eq!(l.hit(700.0, 10.0, 0), Hit::TabBar);
+    assert_eq!(l.hit(700.0, 25.9, 0), Hit::TabBar);
+    assert_eq!(l.hit(750.0, 25.9, 0), Hit::Files);
     assert_eq!(l.hit(1270.0, 700.0, 1), Hit::Status);
     assert_eq!(l.hit(1281.0, 30.0, 1), Hit::Outside);
     assert_eq!(l.hit(283.0, 30.0, 1), Hit::Separator);
-    assert_eq!(l.hit(50.0, 30.0, 1), Hit::List { line: 1, col: 5 });
+    assert_eq!(l.hit(50.0, 30.0, 1), Hit::List { line: 0, col: 5 });
 }
 
 #[test]
@@ -427,8 +436,8 @@ fn a_narrow_window_has_a_narrow_panel_or_none() {
         (l.grid.0, l.side_cols),
         (PANEL_MIN_COLS as u16, PANEL_MIN_COLS)
     );
-    assert_eq!(l.hit(680.0, 30.0, 0), Hit::SideClose);
-    assert_eq!(l.hit(500.0, 30.0, 0), Hit::Side);
+    assert_eq!(l.hit(680.0, 10.0, 0), Hit::SideClose);
+    assert_eq!(l.hit(500.0, 10.0, 0), Hit::Side);
     // A pixel less, or much less: no panel, and the terminal keeps it all.
     for (width, height) in [(1, 1), (40, 30), (56, 300), (320, 200), (least - 1, 300)] {
         let (closed, l) = (at(width, height), with_panel(width, height));
@@ -622,18 +631,20 @@ fn the_divider_and_a_few_pixels_either_side_of_it_are_its_handle() {
     let l = panel_of(1281, 726, 40);
     // 406 px of panel: the divider is the pixel column 875, the handle five more each way.
     let rect = |x, y, w, h| Rect { x, y, w, h };
-    assert_eq!(l.side_divider, rect(875.0, 26.0, 1.0, 674.0));
+    // It is as high as the panel: from the window's top to the status line.
+    assert_eq!(l.side_divider, rect(875.0, 0.0, 1.0, 700.0));
     assert_eq!(l.grab, 5.0);
-    assert_eq!(l.side_grab, rect(870.0, 26.0, 11.0, 674.0));
-    for y in [26.0, 30.0, 300.0, 699.9] {
-        assert_eq!(l.hit(869.9, y, 1), Hit::Terminal, "y {y}");
+    assert_eq!(l.side_grab, rect(870.0, 0.0, 11.0, 700.0));
+    for y in [0.0, 10.0, 26.0, 30.0, 300.0, 699.9] {
+        // Left of the handle: `Files` in the tab bar's band, the terminal under it.
+        let left = if y < 26.0 { Hit::Files } else { Hit::Terminal };
+        assert_eq!(l.hit(869.9, y, 1), left, "y {y}");
         assert_eq!(l.hit(870.0, y, 1), Hit::SideDivider, "y {y}");
         assert_eq!(l.hit(875.0, y, 1), Hit::SideDivider, "y {y}");
         assert_eq!(l.hit(880.9, y, 1), Hit::SideDivider, "y {y}");
         assert_eq!(l.hit(881.0, y, 1), Hit::Side, "y {y}");
     }
-    // Not above or below the panel.
-    assert_eq!(l.hit(875.0, 25.9, 1), Hit::TabBar);
+    // Not below the panel.
     assert_eq!(l.hit(875.0, 700.0, 1), Hit::Status);
     // The handle follows the scale, and the divider is in the middle of it.
     for scale in SCALES {
@@ -723,22 +734,27 @@ fn a_drag_keeps_the_pixel_of_the_handle_that_was_pressed() {
 #[test]
 fn files_is_the_tab_bars_last_seven_columns_and_the_tabs_lose_them() {
     let rect = |x, y, w, h| Rect { x, y, w, h };
-    for l in [at(1281, 726), with_panel(1281, 726)] {
+    // The bar is 1000 px from x 281, or 504 px beside an open panel (its divider is the pixel
+    // column 785): its last 70 are the label's, whatever is under it.
+    for (l, right, tab_cols) in [
+        (at(1281, 726), 1281.0, 93),
+        (with_panel(1281, 726), 785.0, 43),
+    ] {
         assert_eq!(FILES_COLS, 7);
-        // The bar is 1000 px from x 281: its last 70 are the label's, whatever is under it.
-        assert_eq!(l.files_rect(), rect(1211.0, 0.0, 70.0, 26.0));
+        assert_eq!(l.tab_bar.right(), right);
+        assert_eq!(l.files_rect(), rect(right - 70.0, 0.0, 70.0, 26.0));
         for tabs in [0, 1, 2, 10, 500] {
-            assert_eq!(l.hit(1210.9, 10.0, tabs), Hit::TabBar, "{tabs} tabs");
-            assert_eq!(l.hit(1211.0, 0.0, tabs), Hit::Files, "{tabs} tabs");
-            assert_eq!(l.hit(1280.9, 25.9, tabs), Hit::Files, "{tabs} tabs");
-            assert_ne!(l.hit(1250.0, 26.0, tabs), Hit::Files, "under the bar");
+            assert_eq!(l.hit(right - 70.1, 10.0, tabs), Hit::TabBar, "{tabs} tabs");
+            assert_eq!(l.hit(right - 70.0, 0.0, tabs), Hit::Files, "{tabs} tabs");
+            // (The bar's last five pixels are the divider's handle when a panel is open.)
+            assert_eq!(l.hit(right - 5.1, 25.9, tabs), Hit::Files, "{tabs} tabs");
+            assert_ne!(l.hit(right - 30.0, 26.0, tabs), Hit::Files, "under the bar");
         }
-        // 93 columns are the tabs': no tab reaches into the label.
+        // The other columns are the tabs': no tab reaches into the label.
         assert_eq!(l.tab_cols(1), TAB_MAX_COLS);
-        assert_eq!(l.tab_cols(3), TAB_MAX_COLS);
-        assert_eq!(l.tab_cols(4), 23);
-        assert_eq!(l.tab_cols(93), 1);
-        assert_eq!(l.tab_cols(94), 0);
+        assert_eq!(l.tab_cols(4), (tab_cols / 4).min(TAB_MAX_COLS));
+        assert_eq!(l.tab_cols(tab_cols), 1);
+        assert_eq!(l.tab_cols(tab_cols + 1), 0);
         for tabs in 1..120 {
             let last = l.tab_rect(tabs - 1, tabs);
             assert!(last.right() <= l.files_rect().x, "{tabs} tabs");
@@ -830,7 +846,7 @@ fn clicks_hit_refresh_and_the_way_back() {
         (col(45), Hit::Side),
         (col(46), Hit::SideClose),
     ] {
-        assert_eq!(l.hit_with(x, 30.0, 1, LIST), hit, "list header, x {x}");
+        assert_eq!(l.hit_with(x, 10.0, 1, LIST), hit, "list header, x {x}");
         assert_eq!(l.hit_with(x, 60.0, 1, LIST), Hit::Side, "list body, x {x}");
     }
     // A picture from the list: `‹` and the cell after it.
@@ -843,7 +859,7 @@ fn clicks_hit_refresh_and_the_way_back() {
         (col(46), Hit::SideClose),
     ] {
         assert_eq!(
-            l.hit_with(x, 30.0, 1, FROM_LIST),
+            l.hit_with(x, 10.0, 1, FROM_LIST),
             hit,
             "picture header, x {x}"
         );
@@ -858,11 +874,161 @@ fn clicks_hit_refresh_and_the_way_back() {
         );
     }
     // Without a look it is the header of a file.
-    assert_eq!(l.hit(col(0), 30.0, 1), Hit::Side);
-    assert_eq!(l.hit(col(38), 30.0, 1), Hit::SideOpen);
+    assert_eq!(l.hit(col(0), 10.0, 1), Hit::Side);
+    assert_eq!(l.hit(col(38), 10.0, 1), Hit::SideOpen);
     // The look changes nothing outside the panel.
-    for (x, y) in [(50.0, 30.0), (500.0, 300.0), (1250.0, 10.0), (600.0, 710.0)] {
+    for (x, y) in [(50.0, 30.0), (500.0, 300.0), (750.0, 10.0), (600.0, 710.0)] {
         assert_eq!(l.hit_with(x, y, 2, LIST), l.hit(x, y, 2));
         assert_eq!(l.hit_with(x, y, 2, FROM_LIST), l.hit(x, y, 2));
+    }
+}
+
+// --- one row grid -------------------------------------------------------------------------------
+
+/// The window and the cell of a display at `scale` with a font of `font` logical pixels: a
+/// cell is about 0.6 x 1.3 of the font's size, on whole physical pixels (8 x 17 at 13 px and
+/// scale 1, as the app's own font gives).
+fn display_with(scale: f32, font: f32) -> ((u32, u32), CellMetrics) {
+    let px = |logical: f32| (logical * scale).round().max(1.0);
+    let m = CellMetrics {
+        width: px(font * 0.6),
+        height: px(font * 1.3),
+        baseline: px(font),
+        underline_y: px(font * 1.1),
+        strike_y: px(font * 0.65),
+        stroke: px(1.0),
+    };
+    ((px(1280.0) as u32, px(800.0) as u32), m)
+}
+
+const FONTS: [f32; 3] = [11.0, 13.0, 16.0];
+
+/// Every display of the grid tests, without a panel and with one, and what it is called in
+/// a failure.
+fn grids() -> Vec<(String, Layout)> {
+    let theme = Theme::default();
+    let mut out = Vec::new();
+    for scale in SCALES {
+        for font in FONTS {
+            let (window, m) = display_with(scale, font);
+            let cols = default_panel_cols(window, scale, &m, &theme);
+            assert!(cols > 0, "scale {scale} font {font}: a panel fits");
+            for side in [None, Some(cols)] {
+                let name = format!("scale {scale}, font {font}, panel {side:?}");
+                out.push((name, layout_with(window, scale, &m, &theme, side)));
+            }
+        }
+    }
+    out
+}
+
+/// How far `y` is from a row of the terminal, in pixels.
+fn off_grid(l: &Layout, y: f32) -> f32 {
+    let rows = (y - l.terminal.y) / l.cell.1;
+    (rows - rows.round()).abs() * l.cell.1
+}
+
+#[test]
+fn every_row_of_text_is_on_a_row_of_the_terminal() {
+    for (name, l) in grids() {
+        // The list: its first line is the terminal's first row, and so on down.
+        assert_eq!(l.list.y, l.terminal.y, "{name}: the list's first line");
+        assert!(l.list_lines > 4, "{name}");
+        for line in 0..l.list_lines {
+            let y = l.list_lines_rect(line, 1).y;
+            assert!(off_grid(&l, y) <= 0.01, "{name}: list line {line} at {y}");
+        }
+        // The legend's lines and the buttons' rows.
+        assert!(l.legend.h > 0.0 && l.buttons.h > 0.0, "{name}: a foot");
+        assert!(
+            off_grid(&l, l.legend.y) <= 0.01,
+            "{name}: legend at {}",
+            l.legend.y
+        );
+        assert_eq!(
+            (l.legend.h / l.cell.1).fract(),
+            0.0,
+            "{name}: whole legend lines"
+        );
+        assert!(
+            off_grid(&l, l.buttons.y) <= 0.01,
+            "{name}: buttons at {}",
+            l.buttons.y
+        );
+        assert!(
+            l.list.bottom() < l.legend.y,
+            "{name}: the list ends above the legend"
+        );
+        // The panel's text: the terminal's rows, all of them.
+        if l.side.w > 0.0 {
+            assert_eq!(
+                l.side_body.y, l.terminal.y,
+                "{name}: the panel's first line"
+            );
+            assert_eq!(
+                l.side_lines, l.grid.1 as usize,
+                "{name}: as many lines as rows"
+            );
+            assert!(l.side_body.bottom() <= l.status.y, "{name}");
+        }
+        // All of it on whole pixels.
+        for y in [l.terminal.y, l.list.y, l.legend.y, l.buttons.y, l.status.y] {
+            assert_eq!(y.fract(), 0.0, "{name}");
+        }
+    }
+}
+
+#[test]
+fn the_bars_are_equally_high_and_set_their_text_alike() {
+    for (name, l) in grids() {
+        assert_eq!(l.tab_bar.h, l.status.h, "{name}");
+        assert!(
+            l.tab_bar.h >= l.cell.1,
+            "{name}: a bar holds a line of text"
+        );
+        let in_bar = l.bar_text_y(l.tab_bar) - l.tab_bar.y;
+        assert_eq!(l.bar_text_y(l.status) - l.status.y, in_bar, "{name}");
+        assert_eq!(in_bar.fract(), 0.0, "{name}");
+        assert_eq!(l.tab_bar.bottom(), l.terminal.y, "{name}");
+        if l.side.w > 0.0 {
+            // The panel's header is in the tab bar's band, right of it.
+            assert_eq!(l.side_header.h, l.tab_bar.h, "{name}");
+            assert_eq!(l.side_header.y, l.tab_bar.y, "{name}");
+            assert_eq!(
+                l.bar_text_y(l.side_header),
+                l.bar_text_y(l.tab_bar),
+                "{name}"
+            );
+            assert_eq!(l.tab_bar.right(), l.side_divider.x, "{name}");
+            assert_eq!(l.side_divider.right(), l.side_header.x, "{name}");
+            assert_eq!(l.files_rect().right(), l.tab_bar.right(), "{name}");
+        } else {
+            assert_eq!(l.tab_bar.right(), l.window.0, "{name}");
+        }
+    }
+}
+
+#[test]
+fn text_starts_on_a_whole_column_of_its_area() {
+    for (name, l) in grids() {
+        // The status line's text starts where the terminal's does.
+        assert_eq!(l.status_text_x(), l.terminal.x, "{name}");
+        let end = l.status_text_x() + l.status_cols() as f32 * l.cell.0;
+        assert!(end <= l.status.right() && l.status_cols() > 20, "{name}");
+        // The list's columns are from the window's edge.
+        assert_eq!(l.list.x, 0.0, "{name}");
+        if l.side.w > 0.0 {
+            // The panel's text and its header's are on the columns from `side_body.x`: whole
+            // ones up to the window's edge, half a cell right of the divider as the
+            // terminal's are right of the list's line.
+            assert_eq!(l.side_body.w, l.side_cols as f32 * l.cell.0, "{name}");
+            assert_eq!(l.side_body.right(), l.window.0, "{name}");
+            assert_eq!(
+                l.side_body.x - l.side_divider.right(),
+                l.terminal.x - l.separator.right(),
+                "{name}: the same padding"
+            );
+            assert_eq!(l.side_body.x.fract(), 0.0, "{name}");
+        }
     }
 }

@@ -143,8 +143,17 @@ trap cleanup EXIT
 echo "== tmls-rs e2e: $(date -u +%FT%TZ)  bin $(sha256sum "$BIN" 2>/dev/null | cut -c1-12)  nonce $NONCE"
 
 # --- compositor -------------------------------------------------------------------------------
-cat >"$SCRATCH/sway.conf" <<'EOF'
-output HEADLESS-1 resolution 1280x800 scale 1
+# SMOKE_SCALE: the output's scale (default 1). The output keeps its 1280x800 logical pixels —
+# its mode is that times the scale — so vptr.py's positions (it sends them as parts of 1280x800)
+# mean the same places at any scale, and a screenshot is the scale times as large.
+SCALE=${SMOKE_SCALE:-1}
+MODE=$(python3 -c 'import sys; s = float(sys.argv[1]); print("%dx%d" % (round(1280 * s), round(800 * s)))' "$SCALE") || {
+  echo "e2e.sh: SMOKE_SCALE=$SCALE is no number" >&2
+  exit 2
+}
+echo "== output: mode $MODE, scale $SCALE"
+cat >"$SCRATCH/sway.conf" <<EOF
+output HEADLESS-1 resolution $MODE scale $SCALE
 default_border none
 default_floating_border none
 focus_follows_mouse no
@@ -206,6 +215,37 @@ check "the app reports its adapter on stderr" grep -q 'tmls-rs: adapter' "$OUT/a
 sleep 2
 check "screenshot 01-start (list, nothing open)" shot 01-start
 check "the window is drawn (not one flat colour)" picture_drawn
+
+# --- SMOKE_ONLY=measure: the text panel beside a full terminal, one screenshot, and out -----------
+# For tooling/smoke/rows.py, at any SMOKE_SCALE: the first session attached and its pane filled
+# with a path, the panel opened on that file by Ctrl+click, `measure-panel.png` taken. None of
+# the checks further down run (their pixel checks are for scale 1).
+if [ "${SMOKE_ONLY:-}" = measure ]; then
+  keys -k Return
+  wait_for 8 bash -c 'tmux list-clients -F "#{session_name}" | grep -qxF -- "$0"' "$ODD" &&
+    pass "Enter attaches \"$ODD\"" || fail "Enter attaches \"$ODD\""
+  VIEWED="$HOME/viewme.txt"
+  seq -f 'line %g of the viewed file' 1 200 >"$VIEWED"
+  tmux send-keys -t "=$ODD:" "clear; for i in \$(seq 1 120); do echo $VIEWED; done" Enter
+  sleep 1.5
+  COLS_BEFORE=$(tmux display -p -t "=$ODD:" '#{window_width}')
+  check "screenshot measure-terminal" shot measure-terminal
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  timeout 10 python3 /work/tooling/smoke/vptr.py 300 300 2>>"$OUT/vptr.log"
+  if wait_for 8 bash -c '[ "$(tmux display -p -t "=$0:" "#{window_width}")" -lt "$1" ]' "$ODD" "$COLS_BEFORE"; then
+    pass "Ctrl+click on the path opens the panel ($COLS_BEFORE -> $(tmux display -p -t "=$ODD:" '#{window_width}') columns)"
+  else
+    fail "Ctrl+click on the path opens the panel" "columns $COLS_BEFORE"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot measure-panel" shot measure-panel
+  grep -E 'tmls-rs: (adapter|scale)' "$OUT/app.stderr" | sed 's/^/    /'
+  echo "== $FAILED of $N checks failed (SMOKE_ONLY=measure, scale $SCALE)"
+  [ "$FAILED" -eq 0 ]
+  exit
+fi
 START_PICTURE=$(picture)
 
 # --- with no tab open: pin, zoom, unpin ---------------------------------------------------------
@@ -390,15 +430,16 @@ if click 300 11; then
     fail "a click on the × of the second tab closes it; the session lives on" "clients: $(attached | tr '\n' '|')"
   fi
   check "screenshot 11-closed-by-click" shot 11-closed-by-click
-  # The list: line 0 is the host's header, line 1 "$ODD", line 2 $ONE.
-  click 100 11
+  # The list: line 0 is the host's header, line 1 "$ODD", line 2 $ONE. Its lines are the
+  # terminal's rows: 17 px each from y 23, under a band as high as the tab bar.
+  click 100 31
   sleep 0.5
   if [ "$(attached | wc -l)" -eq 1 ]; then
     pass "a click on the host's header attaches nothing"
   else
     fail "a click on the host's header attaches nothing" "clients: $(attached | tr '\n' '|')"
   fi
-  click 100 45
+  click 100 65
   if wait_for 8 attached_to "$ONE"; then
     pass "a click on the list's third line attaches $ONE"
   else
@@ -649,7 +690,8 @@ print(crop.hexdigest()[:16])
   check "screenshot 12h-made-list" shot 12h-made-list
   check "the list shows no picture yet: no pixel of the screen is the orange" orange_is "0 none 0"
   check "with the list open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
-  # The list's rows start under the panel's header (23 px, as the tab bar): the first is y 46-62.
+  # The panel's header is in the tab bar's band (y 0-22), so the list's rows are the terminal's:
+  # the first is y 23-39.
   # Clicked until the picture shows or 20 s passed: a click that came before the row was there
   # (on the one line a panel without a list has) does nothing, and the next one is the row's.
   # Never a click once the picture shows: that one would be the picture's.
@@ -657,7 +699,7 @@ print(crop.hexdigest()[:16])
     local deadline=$((SECONDS + 20))
     until orange_at_least 10000; do
       [ "$SECONDS" -ge "$deadline" ] && return 1
-      click 1100 54
+      click 1100 31
       wait_for 4 orange_at_least 10000 && return 0
     done
   }
@@ -668,7 +710,7 @@ print(crop.hexdigest()[:16])
   fi
   check "screenshot 12i-made-image" shot 12i-made-image
   # `‹` is the header's first column (x 960-967) and the cell after it.
-  click 964 34
+  click 964 11
   if wait_for 5 orange_is "0 none 0"; then
     pass "a click on the ‹ of the picture's header leads back to the list"
   else
@@ -708,14 +750,15 @@ print(crop.hexdigest()[:16])
   else
     fail "Alt+Shift+F again closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
   fi
-  # `Files` is the tab bar's last seven columns (x 1224-1279).
+  # `Files` is the tab bar's last seven columns: x 1224-1279 with no panel, and left of the
+  # panel's divider (the pixel column 955, as dragged above) with one: x 899-954.
   click 1250 11
   if wait_for 8 as_wide_as "$COLS_DRAGGED"; then
     pass "a click on Files at the tab bar's right end opens the panel"
   else
     fail "a click on Files at the tab bar's right end opens the panel" "columns $(pane_cols)"
   fi
-  click 1250 11
+  click 925 11
   if wait_for 8 as_wide_as "$COLS_BEFORE"; then
     pass "a click on Files again closes it"
   else
@@ -949,7 +992,7 @@ sleep 7
 NOTIFIED=$(notified)
 # Right-click on "$ODD" (the list's second line): its menu at the pointer. Esc closes it.
 PLAIN=$(picture)
-click 100 28 right
+click 100 48 right
 check "screenshot 29-menu-by-mouse" shot 29-menu-by-mouse
 if [ "$(picture)" != "$PLAIN" ]; then
   pass "a right-click on a session opens its menu (the picture changed)"
@@ -959,7 +1002,7 @@ fi
 keys -k Escape
 check_typed "Esc closes the menu: the keys are the terminal's again" "$ODD" aftermenu
 # A click on the `+` of the host's header opens the form; the session is made from it.
-click 212 11
+click 212 31
 keys -k Tab -k Tab
 keys "$BYE"
 keys -k Tab -k Up
