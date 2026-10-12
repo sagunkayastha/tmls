@@ -8,9 +8,10 @@ use client_core::Config;
 use client_core::SessionKey;
 use client_core::files::Made;
 use desktop::draw::{
-    BACK_MARK, Chrome, FILES, Layout, OPEN_IN_APP, REFRESH, Rect, Span, View, default_panel_cols,
-    keep_end, layout_with, side_header, side_header_spans, side_header_spans_focused,
-    side_header_spans_with, side_header_with, side_made_spans, side_text_spans,
+    BACK_MARK, Chrome, FILES, Layout, OPEN_FOLDER, OPEN_IN_APP, REFRESH, Rect, Span, View,
+    default_panel_cols, keep_end, layout_with, side_header, side_header_spans,
+    side_header_spans_focused, side_header_spans_with, side_header_with, side_made_spans,
+    side_text_spans,
 };
 use desktop::sidebar::Sidebar;
 use desktop::theme::{CLOSE_MARK, COPY_RGB, CURSOR_RGB, Theme};
@@ -70,14 +71,16 @@ fn a_long_path_keeps_its_end() {
 fn the_header_says_the_path_open_in_app_and_the_close_mark() {
     let theme = Theme::default();
     let spans = side_header_spans("/w/src/main.rs", 49, &theme);
-    assert_eq!(spans.len(), 3);
+    assert_eq!(spans.len(), 4);
     assert_eq!(
         (spans[0].col, spans[0].shown().as_str()),
         (0, "/w/src/main.rs")
     );
-    assert_eq!((spans[1].col, spans[1].text.as_ref()), (34, OPEN_IN_APP));
+    assert_eq!((spans[1].col, spans[1].text.as_ref()), (26, OPEN_FOLDER));
     assert_eq!((spans[1].colour, spans[1].bold), (COPY_RGB, true));
-    assert_eq!((spans[2].col, spans[2].text.as_ref()), (47, CLOSE_MARK));
+    assert_eq!((spans[2].col, spans[2].text.as_ref()), (34, OPEN_IN_APP));
+    assert_eq!((spans[2].colour, spans[2].bold), (COPY_RGB, true));
+    assert_eq!((spans[3].col, spans[3].text.as_ref()), (47, CLOSE_MARK));
     assert_within(&spans, 49);
 
     // Too long: cut at its start, two columns clear of the label.
@@ -88,7 +91,7 @@ fn the_header_says_the_path_open_in_app_and_the_close_mark() {
         shown.starts_with('…') && shown.ends_with("/src/viewer.rs"),
         "{shown}"
     );
-    assert_eq!(width(&shown), 32);
+    assert_eq!(width(&shown), 24);
     assert_within(&spans, 49);
 
     // Every width: the pieces stay apart and inside, and are where `side_header` says.
@@ -98,8 +101,17 @@ fn the_header_says_the_path_open_in_app_and_the_close_mark() {
         let header = side_header(cols);
         let has = |text: &str| spans.iter().any(|span| span.text == text);
         assert_eq!(has(OPEN_IN_APP), header.open.is_some(), "{cols} columns");
+        assert_eq!(has(OPEN_FOLDER), header.folder.is_some(), "{cols} columns");
         assert_eq!(has(CLOSE_MARK), header.close.is_some(), "{cols} columns");
+        // `Folder` is the first to go: never without `Open in app`.
+        assert!(
+            header.folder.is_none() || header.open.is_some(),
+            "{cols} columns"
+        );
     }
+    // Too narrow for both labels: `Open in app` stays.
+    let narrow = side_header(30);
+    assert_eq!((narrow.folder, narrow.open), (None, Some(15)));
 }
 
 #[test]
@@ -504,11 +516,15 @@ fn the_lists_header_says_whose_images_and_has_refresh_in_place_of_open_in_app() 
     assert_eq!((spans[1].col, spans[1].text.as_ref()), (38, REFRESH));
     assert_eq!((spans[1].colour, spans[1].bold), (COPY_RGB, true));
     assert_eq!((spans[2].col, spans[2].text.as_ref()), (47, CLOSE_MARK));
-    assert!(spans.iter().all(|span| span.text != OPEN_IN_APP));
+    assert!(
+        spans
+            .iter()
+            .all(|span| span.text != OPEN_IN_APP && span.text != OPEN_FOLDER)
+    );
     // A picture opened from the list: the way back first, then the path, and `Open in app`.
     let title = "/w/plots/fig-0.png 400×300 · 80 %";
     let spans = side_header_spans_with(title, 49, FROM_LIST, &theme);
-    assert_eq!(spans.len(), 4);
+    assert_eq!(spans.len(), 5);
     assert_eq!((spans[0].col, spans[0].text.as_ref()), (0, BACK_MARK));
     assert_eq!((spans[0].colour, spans[0].bold), (COPY_RGB, true));
     assert_eq!(spans[1].col, 2);
@@ -517,9 +533,10 @@ fn the_lists_header_says_whose_images_and_has_refresh_in_place_of_open_in_app() 
         shown.starts_with('…') && shown.ends_with("400×300 · 80 %"),
         "{shown}"
     );
-    assert_eq!(width(&shown), 30);
-    assert_eq!((spans[2].col, spans[2].text.as_ref()), (34, OPEN_IN_APP));
-    assert_eq!((spans[3].col, spans[3].text.as_ref()), (47, CLOSE_MARK));
+    assert_eq!(width(&shown), 22);
+    assert_eq!((spans[2].col, spans[2].text.as_ref()), (26, OPEN_FOLDER));
+    assert_eq!((spans[3].col, spans[3].text.as_ref()), (34, OPEN_IN_APP));
+    assert_eq!((spans[4].col, spans[4].text.as_ref()), (47, CLOSE_MARK));
     // Without a look it is the header of a file, as before.
     assert_eq!(
         side_header_spans(title, 49, &theme),
@@ -534,6 +551,11 @@ fn the_lists_header_says_whose_images_and_has_refresh_in_place_of_open_in_app() 
             let has = |text: &str| spans.iter().any(|span| span.text == text);
             let label = if look.refresh { REFRESH } else { OPEN_IN_APP };
             assert_eq!(has(label), header.open.is_some(), "{cols} columns");
+            assert_eq!(has(OPEN_FOLDER), header.folder.is_some(), "{cols} columns");
+            assert!(
+                !look.refresh || header.folder.is_none(),
+                "a list has no folder"
+            );
             assert_eq!(has(CLOSE_MARK), header.close.is_some(), "{cols} columns");
             assert_eq!(has(BACK_MARK), header.back.is_some(), "{cols} columns");
         }

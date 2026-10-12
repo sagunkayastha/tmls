@@ -303,6 +303,9 @@ pub enum Opened {
         file: (u32, u32),
         picture: Picture,
     },
+    /// `opened`, of this machine: the path the click asked for is not on `asked`, the
+    /// session's host, and is here (`open_link_while`).
+    Elsewhere { asked: String, opened: Box<Opened> },
     /// For the desktop's app: the file or folder on this machine to give to `xdg-open`, and
     /// the line for the status line once that is started.
     Outside { target: String, said: String },
@@ -375,7 +378,47 @@ pub fn open_link(
 /// a copy for the desktop's app is written, which would else take the place of the copy a
 /// newer click made of a file of the same name. A click that is overtaken gives `overtaken`'s
 /// line, which nobody reads: its answer is dropped.
+///
+/// A path from the root or the home directory that the session's host does not have is looked
+/// for on this machine too: output often names a file of the machine the user sits at (one
+/// read through ssh, a screenshot). What is found here comes as `Opened::Elsewhere`, so that
+/// the status line says whose file it is.
 pub fn open_link_while(
+    key: &SessionKey,
+    link: &FileLink,
+    local_name: &str,
+    cache: Option<&Path>,
+    run: Runner,
+    wanted: &dyn Fn() -> bool,
+) -> Result<Opened, String> {
+    match open_on(key, link, local_name, cache, run, wanted) {
+        Err(problem) if key.host != local_name && is_missing(&link.path, &problem) => {
+            let here = SessionKey {
+                host: local_name.to_string(),
+                name: String::new(),
+            };
+            match open_on(&here, link, local_name, cache, run, wanted) {
+                Ok(opened) => Ok(Opened::Elsewhere {
+                    asked: key.host.clone(),
+                    opened: Box::new(opened),
+                }),
+                // The first answer stands: it names the host that was asked.
+                Err(_) => Err(problem),
+            }
+        }
+        answer => answer,
+    }
+}
+
+/// Whether `problem` says that the host has nothing at `path`, and `path` means the same on
+/// every host: from the root or the home directory, not from a pane's directory.
+fn is_missing(path: &str, problem: &str) -> bool {
+    let fixed = path.starts_with('/') || path == "~" || path.starts_with("~/");
+    fixed && problem.ends_with(": not found")
+}
+
+/// `open_link_while` on the host of `key` alone.
+fn open_on(
     key: &SessionKey,
     link: &FileLink,
     local_name: &str,
@@ -538,6 +581,38 @@ pub fn open_in_app(
     };
     let located = locate(&key, path, local_name, run)?;
     outside(host, &located, local_name, cache, None, run, &|| true)
+}
+
+/// What `links::open_folder` is to be given for the folder the absolute `path` on `host` is
+/// in, and the line for the status line: the folder itself on this machine, else its
+/// `sftp://` address, which the desktop's file manager reads the folder through (as tmls
+/// does; nothing is copied).
+pub fn folder_target(host: &str, path: &str, local_name: &str) -> Result<(String, String), String> {
+    let name = named(host, path, local_name);
+    if !path.starts_with('/') {
+        return Err(format!("{name}: no folder to open"));
+    }
+    let folder = match path.trim_end_matches('/').rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((folder, _)) => folder,
+    };
+    if host == local_name {
+        return Ok((folder.to_string(), format!("opened {folder}")));
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    if host.is_empty() || host.starts_with('-') || !host.chars().all(plain) {
+        return Err(format!("{name}: no sftp address for the host"));
+    }
+    let mut target = format!("sftp://{host}");
+    for byte in folder.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
+                target.push(byte as char)
+            }
+            other => target.push_str(&format!("%{other:02X}")),
+        }
+    }
+    Ok((target, format!("opened {folder} on {host}")))
 }
 
 /// What `xdg-open` is to be given for `located`: the path itself on this machine, else a

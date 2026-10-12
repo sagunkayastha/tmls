@@ -70,7 +70,7 @@ fn home_stays_outside_the_quotes_and_a_relative_path_asks_the_sessions_pane() {
         let script = script(path);
         let asks = "d=$(tmux display-message -p -t '=it'\\''s mine:' '#{pane_current_path}') || exit 1; ";
         assert!(script.starts_with(asks), "{path}: {script}");
-        assert!(script.contains(&format!("p=\"$d\"/'{path}'; ")), "{path}: {script}");
+        assert!(script.contains(&format!("r='{path}'; q=; p=\"$d/$r\"; ")), "{path}: {script}");
     }
 }
 
@@ -387,4 +387,41 @@ fn local_time_is_what_date_says() {
         assert_eq!(format!("{} {} {} {} {}", t.year, t.month, t.day, t.hour, t.minute), said.trim(), "{secs}");
     }
     assert_eq!(local_time(u64::MAX), None);
+}
+
+#[test]
+fn a_relative_path_is_found_one_directory_below_the_panes_when_only_one_has_it() {
+    let dir = scratch("below");
+    let (cwd, home) = (dir.join("cwd"), dir.join("home"));
+    for folder in ["one/src", "two/src", "a b/docs", &"x".repeat(3)] {
+        std::fs::create_dir_all(cwd.join(folder)).unwrap();
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(cwd.join("one/src/main.rs"), "1").unwrap();
+    std::fs::write(cwd.join("two/src/main.rs"), "22").unwrap();
+    std::fs::write(cwd.join("two/src/only.rs"), "333").unwrap();
+    std::fs::write(cwd.join("a b/docs/it's $HOME;x.md"), "4444").unwrap();
+    std::fs::write(cwd.join("top.txt"), "55555").unwrap();
+    std::fs::write(cwd.join("one/top.txt"), "666666").unwrap();
+    let locate = |asked: &str| {
+        as_remote(&locate_argv(&key("ph", "work"), asked, LOCAL), &cwd, &home)
+            .map(|out| parse_located(&out).unwrap_or_else(|| panic!("{asked:?}: {out:?}")))
+            .map_err(|e| format!("{e:#}"))
+    };
+    let at = |path: &str| format!("{}/{path}", cwd.to_str().unwrap());
+    // In the pane's own directory first, whatever is below.
+    assert_eq!(locate("top.txt").unwrap().size, 5);
+    // Below, in one directory only; a name with every hostile character too.
+    let only = locate("src/only.rs").unwrap();
+    let real = std::fs::canonicalize(at("two/src/only.rs")).unwrap();
+    assert_eq!((only.path.as_str(), only.size), (real.to_str().unwrap(), 3));
+    assert_eq!(locate("docs/it's $HOME;x.md").unwrap().size, 4);
+    // From below and up again: as Claude names a file outside the directory it works in.
+    let up = locate("../top.txt").unwrap();
+    let real = std::fs::canonicalize(cwd.join("top.txt")).unwrap();
+    assert_eq!((up.path.as_str(), up.size), (real.to_str().unwrap(), 5), "no `..` left in it");
+    // In two of them: not guessed.
+    assert_eq!(locate("src/main.rs"), Err("not found".to_string()));
+    assert_eq!(locate("src/nope.rs"), Err("not found".to_string()));
+    let _ = std::fs::remove_dir_all(&dir);
 }
