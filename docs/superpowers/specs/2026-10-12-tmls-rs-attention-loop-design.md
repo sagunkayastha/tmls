@@ -173,6 +173,12 @@ absent on a host the sidebar's host header shows `· poll` dimly and everything 
 - F3 `ssh_base(host, flags)` (attach needs `-t` and no BatchMode); socket dir `$XDG_RUNTIME_DIR/tmls-rs` else
   `~/.cache/tmls-rs`; too long a path → plain ssh, never a bind failure.
 - `tmux::run_with_stdin` is built in F2 (the `wl-copy` fallback needs it), not F7. `?` in the list accepts Shift.
+- F7 `T` = Claude's pane only, never `=NAME:` (fix wave, C1). Text is typed only into a row that is still
+  `Tool::Claude` with a valid `pane`, re-checked against the listing when the head goes (poll or push) and when the
+  Ask form is submitted (the form keeps no pane). Otherwise nothing is typed, the message stays queued and the
+  status line says `Claude is gone from NAME; N kept`: after Claude exits its row is the shell it left (the listing
+  drops a dead process's status file), and a paste + Enter there would run `` ` `` / `$(…)`. A session id alone no
+  longer makes a row Claude's for Send. Approvals' capture / send-keys keep the `=NAME:` fallback.
 
 ## Decisions (veto any)
 

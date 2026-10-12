@@ -97,7 +97,7 @@ use crate::kitty;
 use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
 use crate::picture::PictureRenderer;
-use crate::queue::{Queue, SendId};
+use crate::queue::{self, Queue, SendId, Turn};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
@@ -889,13 +889,13 @@ impl Running {
         if let Some((key, state)) = images {
             self.relist_made(&key, state, was);
         }
-        // A turn that ended sends the head of its session's queue.
+        // A turn that ended sends the head of its session's queue, into Claude's pane as this
+        // listing has it; if Claude is gone from the session nothing is typed anywhere.
         for (key, before) in queued {
             let after = self.sidebar.status(&key);
-            if let Some((id, text)) = self.queue.due(&key, before, after) {
-                let pane = self.sidebar.info(&key).and_then(|info| info.pane.clone());
-                self.deliver_queued(key, pane, id, text);
-            }
+            let pane = queue::claude_pane(self.sidebar.info(&key)).map(str::to_string);
+            let turn = self.queue.turn_ended(&key, before, after, pane.as_deref());
+            self.deliver(key, turn);
         }
         self.invalidate();
     }
@@ -909,22 +909,27 @@ impl Running {
         if !forms::is_claude(info) {
             return self.say(Err(format!("{} is not a Claude session", key.name)));
         }
-        let pane = info.pane.clone();
         let saved =
             forms::saved_prompts(std::fs::read_to_string(&self.prompts_file).ok().as_deref());
         let queued = self.queue.count(&key);
-        self.open_modal(Modal::Form(Form::ask(key, pane, saved, queued)), None);
+        self.open_modal(Modal::Form(Form::ask(key, saved, queued)), None);
     }
 
-    /// A message the queue started (`due` or `start`), sent to Claude's `pane` of the session
-    /// on a thread; the answer is `UserEvent::Sent`.
-    fn deliver_queued(&mut self, key: SessionKey, pane: Option<String>, id: SendId, text: String) {
-        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
-        std::thread::spawn(move || {
-            let result =
-                forms::send_text(&key, pane.as_deref(), &text, &local, &forms::run_tmux_with);
-            let _ = proxy.send_event(UserEvent::Sent(id, key, result));
-        });
+    /// What the queue decided for the session: a message sent to Claude's pane on a thread
+    /// (the answer is `UserEvent::Sent`), or the status line saying Claude is gone from it.
+    fn deliver(&mut self, key: SessionKey, turn: Turn) {
+        match turn {
+            Turn::Wait => {}
+            Turn::Gone(kept) => self.say(Err(queue::gone_note(&key.name, kept))),
+            Turn::Send { id, text, pane } => {
+                let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+                std::thread::spawn(move || {
+                    let result =
+                        forms::send_text(&key, &pane, &text, &local, &forms::run_tmux_with);
+                    let _ = proxy.send_event(UserEvent::Sent(id, key, result));
+                });
+            }
+        }
     }
 
     /// A send is over: its message leaves the queue if it went; the status line says so.
@@ -1436,15 +1441,19 @@ impl Running {
                     let _ = proxy.send_event(UserEvent::Done(request, result));
                 });
             }
-            FormResult::Ask { key, pane, text } => {
+            FormResult::Ask { key, text } => {
                 self.close_modal();
                 // At once only to an idle session with nothing waiting or on its way; and then
-                // through the queue as well, so the next message waits for this one.
-                let now = self.queue.goes_now(&key, self.sidebar.status(&key));
-                let waiting = self.queue.add(&key, text);
-                match now.then(|| self.queue.start(&key)).flatten() {
-                    Some((id, text)) => self.deliver_queued(key, pane, id, text),
-                    None => self.say(Ok(format!("queued for {} ({waiting} waiting)", key.name))),
+                // through the queue as well, so the next message waits for this one. Only into
+                // Claude's pane as the list has it now: the form may have been open a while.
+                let status = self.sidebar.status(&key);
+                let pane = queue::claude_pane(self.sidebar.info(&key)).map(str::to_string);
+                match self.queue.submit(&key, status, pane.as_deref(), text) {
+                    Turn::Wait => {
+                        let waiting = self.queue.count(&key);
+                        self.say(Ok(format!("queued for {} ({waiting} waiting)", key.name)));
+                    }
+                    turn => self.deliver(key, turn),
                 }
             }
             FormResult::ClearQueue(key) => {

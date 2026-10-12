@@ -866,12 +866,7 @@ fn a_dialog_that_comes_back_after_the_user_moved_on_opens_no_form() {
 #[test]
 fn ask_sends_the_typed_text_or_a_saved_prompt() {
     let k = key(LOCAL, "w");
-    let mut form = Form::ask(
-        k.clone(),
-        Some("%3".into()),
-        vec!["What's the progress?".into()],
-        0,
-    );
+    let mut form = Form::ask(k.clone(), vec!["What's the progress?".into()], 0);
     assert_eq!(form.focus(), Stop::Name);
     assert_eq!(form.key(&named(Named::Enter)), FormResult::Pending);
     assert_eq!(form.error(), Some("type a message first"));
@@ -882,33 +877,30 @@ fn ask_sends_the_typed_text_or_a_saved_prompt() {
         form.key(&named(Named::Enter)),
         FormResult::Ask {
             key: k.clone(),
-            pane: Some("%3".into()),
             text: "hi there".into()
         }
     );
     let saved = vec!["a".to_string(), "b".to_string()];
-    let mut down = Form::ask(k.clone(), None, saved.clone(), 0);
+    let mut down = Form::ask(k.clone(), saved.clone(), 0);
     down.key(&named(Named::Down));
     assert_eq!(
         down.key(&named(Named::Enter)),
         FormResult::Ask {
             key: k.clone(),
-            pane: None,
             text: "a".into()
         }
     );
-    let mut up = Form::ask(k.clone(), None, saved, 0);
+    let mut up = Form::ask(k.clone(), saved, 0);
     up.key(&named(Named::Up));
     assert_eq!(
         up.key(&named(Named::Enter)),
         FormResult::Ask {
             key: k.clone(),
-            pane: None,
             text: "b".into()
         }
     );
     assert_eq!(
-        Form::ask(k, None, vec![], 0).key(&named(Named::Escape)),
+        Form::ask(k, vec![], 0).key(&named(Named::Escape)),
         FormResult::Cancelled
     );
 }
@@ -916,7 +908,7 @@ fn ask_sends_the_typed_text_or_a_saved_prompt() {
 #[test]
 fn ask_shows_the_queue_and_can_clear_it() {
     let k = key(LOCAL, "w");
-    let mut form = Form::ask(k.clone(), None, vec![], 2);
+    let mut form = Form::ask(k.clone(), vec![], 2);
     let texts: Vec<String> = form
         .panel()
         .cells
@@ -936,7 +928,7 @@ fn ask_shows_the_queue_and_can_clear_it() {
         form.key(&named(Named::Enter)),
         FormResult::ClearQueue(k.clone())
     );
-    let empty: Vec<String> = Form::ask(k, None, vec![], 0)
+    let empty: Vec<String> = Form::ask(k, vec![], 0)
         .panel()
         .cells
         .iter()
@@ -968,7 +960,7 @@ fn send_text_feeds_the_message_and_says_so() {
     };
     let k = key("ph", "w");
     assert_eq!(
-        forms::send_text(&k, Some("%3"), "hi\nthere", LOCAL, &feed),
+        forms::send_text(&k, "%3", "hi\nthere", LOCAL, &feed),
         Ok("sent to w".to_string())
     );
     let (argv, input) = fed.borrow()[0].clone();
@@ -978,9 +970,17 @@ fn send_text_feeds_the_message_and_says_so() {
         anyhow::bail!("no server running on /tmp/x")
     };
     assert_eq!(
-        forms::send_text(&k, None, "x", LOCAL, &failing),
+        forms::send_text(&k, "%3", "x", LOCAL, &failing),
         Err("couldn't send to w: no server running on /tmp/x".to_string())
     );
+    // Never the session's active pane (`=w:`): after Claude exits that is a shell.
+    for pane in ["", "=w:", "w", "%"] {
+        assert!(
+            forms::send_text(&k, pane, "x", LOCAL, &feed).is_err(),
+            "{pane:?}"
+        );
+    }
+    assert_eq!(fed.borrow().len(), 1, "nothing typed without Claude's pane");
 }
 
 #[test]
@@ -989,6 +989,14 @@ fn claude_sessions_get_send_in_their_menu() {
     plain.pane = None;
     assert!(!forms::is_claude(&plain));
     assert_eq!(forms::menu_items(Some(&plain)), MENU.to_vec());
+    // A session id alone, or a pane on a row that is no longer Claude's, is not enough: a
+    // message needs Claude's own pane.
+    let mut id_only = plain.clone();
+    id_only.session_id = Some("2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e".to_string());
+    assert!(!forms::is_claude(&id_only));
+    let mut shell = info("w", Status::Idle, None);
+    shell.tool = Tool::Other;
+    assert!(!forms::is_claude(&shell));
     let claude = info("w", Status::Idle, None);
     assert!(forms::is_claude(&claude));
     assert_eq!(

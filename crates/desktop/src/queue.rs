@@ -12,12 +12,49 @@
 //! been renamed meanwhile (the id follows it) or killed or cleared (the id is forgotten, and
 //! the answer then takes nothing from the queue).
 
+//!
+//! A message is typed only into Claude's own pane (`claude_pane`), as the listing has it at the
+//! moment it goes: never into the session's active pane (`=NAME:`). When Claude has exited, the
+//! session is the shell it left, which would run the text as a command; the message stays
+//! queued (`Turn::Gone`) and the user is told.
+
 use std::collections::{HashMap, VecDeque};
 
-use client_core::{SessionKey, Status};
+use client_core::tmux::valid_pane;
+use client_core::{KITTY, SessionInfo, SessionKey, Status, Tool};
 
 /// One send that `due` or `start` began; `sent` takes its answer.
 pub type SendId = u64;
+
+/// What to do with a session's queue now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Turn {
+    /// Nothing goes now.
+    Wait,
+    /// Type `text` into Claude's `pane`; the answer goes to `sent` with `id`.
+    Send {
+        id: SendId,
+        text: String,
+        pane: String,
+    },
+    /// It would go now, but the session is no longer Claude's (or Claude's pane is not known):
+    /// nothing is typed anywhere, and this many messages stay queued.
+    Gone(usize),
+}
+
+/// Claude's own pane of the session, the only place a message is typed into: while the listing
+/// has it as a Claude session in tmux with a valid pane id. `None` otherwise — a row that turned
+/// into the shell Claude left (`Tool::Other`, no pane), or one the listing names Claude's by its
+/// pane's command alone.
+pub fn claude_pane(info: Option<&SessionInfo>) -> Option<&str> {
+    let info = info.filter(|info| info.tool == Tool::Claude && info.key.host != KITTY)?;
+    info.pane.as_deref().filter(|pane| valid_pane(pane))
+}
+
+/// What the status line says for `Turn::Gone`.
+pub fn gone_note(name: &str, kept: usize) -> String {
+    format!("Claude is gone from {name}; {kept} kept")
+}
 
 #[derive(Debug, Default)]
 pub struct Queue {
@@ -64,11 +101,65 @@ impl Queue {
         before: Option<Status>,
         after: Option<Status>,
     ) -> Option<(SendId, String)> {
-        let ended = Queue::busy(before) && matches!(after, Some(Status::Idle | Status::Unseen));
-        if !ended {
+        if !Queue::ended(before, after) {
             return None;
         }
         self.start(key)
+    }
+
+    /// A session's turn ended: it was busy and is idle or done now.
+    fn ended(before: Option<Status>, after: Option<Status>) -> bool {
+        Queue::busy(before) && matches!(after, Some(Status::Idle | Status::Unseen))
+    }
+
+    /// `due`, for the session whose Claude pane is `pane` as the listing has it now
+    /// (`claude_pane`): the head to send, or `Gone` when the turn ended but there is no Claude
+    /// to send it to — then nothing is started and the queue is kept.
+    pub fn turn_ended(
+        &mut self,
+        key: &SessionKey,
+        before: Option<Status>,
+        after: Option<Status>,
+        pane: Option<&str>,
+    ) -> Turn {
+        if !Queue::ended(before, after) || self.count(key) == 0 || self.sending.contains_key(key) {
+            return Turn::Wait;
+        }
+        let Some(pane) = pane else {
+            return Turn::Gone(self.count(key));
+        };
+        self.send(key, pane)
+    }
+
+    /// The Ask form's message for the session, in `status`, whose Claude pane is `pane` now:
+    /// queued, and sent at once when it `goes_now`. `Gone` when there is no Claude to send it
+    /// to: it is kept all the same.
+    pub fn submit(
+        &mut self,
+        key: &SessionKey,
+        status: Option<Status>,
+        pane: Option<&str>,
+        text: String,
+    ) -> Turn {
+        let now = self.goes_now(key, status);
+        let waiting = self.add(key, text);
+        match (pane, now) {
+            (None, _) => Turn::Gone(waiting),
+            (Some(pane), true) => self.send(key, pane),
+            (Some(_), false) => Turn::Wait,
+        }
+    }
+
+    /// `start`, as a `Turn` for Claude's `pane`.
+    fn send(&mut self, key: &SessionKey, pane: &str) -> Turn {
+        match self.start(key) {
+            Some((id, text)) => Turn::Send {
+                id,
+                text,
+                pane: pane.to_string(),
+            },
+            None => Turn::Wait,
+        }
     }
 
     /// The session's oldest message, to send now, unless one is on its way already.

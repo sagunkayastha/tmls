@@ -89,10 +89,10 @@ pub enum FormResult {
     Pending,
     Cancelled,
     Submit(Request),
-    /// Send `text` to the session now, or queue it while it is busy (the app decides).
+    /// Send `text` to the session now, or queue it while it is busy (the app decides, and
+    /// sends it only to Claude's pane as the listing has it then).
     Ask {
         key: SessionKey,
-        pane: Option<String>,
         text: String,
     },
     /// Drop the session's queued messages.
@@ -182,7 +182,6 @@ pub enum Form {
     /// A message for a Claude session: a field, the saved prompts, how many already wait.
     Ask {
         key: SessionKey,
-        pane: Option<String>,
         field: TextField,
         saved: Vec<String>,
         /// The saved prompt ↑ / ↓ last put into the field.
@@ -693,10 +692,9 @@ impl Form {
     }
 
     /// The message form for a session; `queued` messages wait for it already.
-    pub fn ask(key: SessionKey, pane: Option<String>, saved: Vec<String>, queued: usize) -> Form {
+    pub fn ask(key: SessionKey, saved: Vec<String>, queued: usize) -> Form {
         Form::Ask {
             key,
-            pane,
             field: TextField::new(),
             saved,
             pick: None,
@@ -796,11 +794,7 @@ impl Form {
                 yes: *focus != Stop::No,
             }),
             Form::Ask {
-                key,
-                pane,
-                field,
-                error,
-                ..
+                key, field, error, ..
             } => {
                 let text = field.text().trim().to_string();
                 if text.is_empty() {
@@ -809,7 +803,6 @@ impl Form {
                 }
                 FormResult::Ask {
                     key: key.clone(),
-                    pane: pane.clone(),
                     text,
                 }
             }
@@ -1389,10 +1382,10 @@ pub fn menu_items(info: Option<&SessionInfo>) -> Vec<MenuItem> {
     items
 }
 
-/// A Claude session in tmux: its status file named it (session id or pane). Messages go only
-/// to those.
+/// A Claude session in tmux whose own pane is known (`queue::claude_pane`). Messages go only
+/// to those, and only into that pane.
 pub fn is_claude(info: &SessionInfo) -> bool {
-    info.key.host != KITTY && (info.session_id.is_some() || info.pane.is_some())
+    crate::queue::claude_pane(Some(info)).is_some()
 }
 
 /// tmls's saved prompts (`~/.config/tmls/prompts`: one per line, `#` comments), or the default.
@@ -1416,15 +1409,23 @@ pub fn run_tmux_with(argv: &[String], input: &[u8]) -> anyhow::Result<String> {
     tmux::run_with_stdin(argv, input, REQUEST_TIMEOUT)
 }
 
-/// Types `text` into Claude's pane of the session and presses Enter; says so.
+/// Types `text` into Claude's pane of the session (`%N`) and presses Enter; says so. Anything
+/// but a pane id is refused: the text never goes to the session's active pane, which may be a
+/// shell.
 pub fn send_text(
     key: &SessionKey,
-    pane: Option<&str>,
+    pane: &str,
     text: &str,
     local_name: &str,
     feed: InputRunner,
 ) -> Result<String, String> {
-    let argv = tmux::send_text_argv(key, pane, &tmux::buffer_name(), local_name);
+    if !tmux::valid_pane(pane) {
+        return Err(format!(
+            "couldn't send to {}: Claude's pane is not known",
+            key.name
+        ));
+    }
+    let argv = tmux::send_text_argv(key, Some(pane), &tmux::buffer_name(), local_name);
     feed(&argv, text.as_bytes())
         .map(|_| format!("sent to {}", key.name))
         .map_err(|e| format!("couldn't send to {}: {}", key.name, first_line(&e)))

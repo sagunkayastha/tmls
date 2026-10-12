@@ -1311,6 +1311,38 @@ if wait_for 12 pane_has_line "$ASK" "tmls-queued-$NONCE"; then
 else
   fail "when its turn ends the queued message is sent" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
 fi
+# Claude exits while a message waits for it: the session is a plain shell again, and a message
+# typed there would run as a command. It stays in the queue and the app says why.
+fake_claude "$ASK" "$ASK_SID" busy
+sleep 6
+keys s
+keys "echo tmls-gone-\$(echo RAN)-$NONCE"
+key_enter
+sleep 2
+check "a message for the busy session waits in the queue again" \
+  bash -c '! tmux capture-pane -p -t "=$0:" | grep -qF -- "$1"' "$ASK" "tmls-gone-"
+# Its process ends: the listing drops the status file of a dead process (kill -0), so the row is
+# the shell left behind, busy until 30 s without output, then idle.
+kill "${FAKE_PIDS[$ASK_SID]}" 2>/dev/null
+wait "${FAKE_PIDS[$ASK_SID]}" 2>/dev/null
+unset "FAKE_PIDS[$ASK_SID]"
+gone_said() { grep -qF -- "tmls-rs: Claude is gone from $ASK; 1 kept" "$OUT/app.stderr"; }
+if wait_for 60 gone_said; then
+  pass "Claude gone, its turn over: the app says so and keeps the message"
+else
+  fail "Claude gone, its turn over: the app says so and keeps the message" "stderr: $(tail -3 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 1
+if pane_text "$ASK" | grep -qF -- "tmls-gone-"; then
+  fail "a queued message is never typed into the shell Claude left" "pane: $(pane_text "$ASK" | grep -v '^$' | tail -3 | tr '\n' '|')"
+else
+  pass "a queued message is never typed into the shell Claude left"
+fi
+check "screenshot 39-claude-gone (the row keeps 1✉)" shot 39-claude-gone
+# Claude again in $ASK (a new process), for the rename below; the cursor back on its row.
+fake_claude "$ASK" "$ASK_SID" idle
+sleep 6
+check "the list's cursor finds $ASK again" select_row "$ASK"
 
 # --- a session renamed outside the app keeps its tab (F8) ---------------------------------------------
 key_enter
