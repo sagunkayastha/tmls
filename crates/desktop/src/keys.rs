@@ -6,7 +6,8 @@
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the
-//!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
+//!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts,
+//!   y — answer the cursor's session's permission prompt (Yes / No / Cancel)
 //! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
 //!   click beside it closes it
 //! - Alt+Shift+N — the next session that waits for the user
@@ -249,6 +250,8 @@ pub enum ListKey {
     Alerts,
     /// The keys and mouse actions (`?`).
     Help,
+    /// Approve the permission prompt of the session under the cursor.
+    Approve,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -273,6 +276,7 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('c') if !ev.repeat => Some(ListKey::New),
         Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
         Key::Char('a') if !ev.repeat => Some(ListKey::Alerts),
+        Key::Char('y') if !ev.repeat => Some(ListKey::Approve),
         _ => None,
     }
 }
@@ -360,7 +364,7 @@ pub fn keys_at(focus: Focus, focus_before: Focus, modal: bool) -> Focus {
 /// session's tab takes them.
 pub fn list_keeps_keys(request: &Request, keys_were: Focus) -> bool {
     match request {
-        Request::New(_) => false,
+        Request::New(_) | Request::Answer { .. } => false,
         Request::Rename(..) | Request::Kill(_) => keys_were == Focus::Sidebar,
     }
 }
@@ -419,6 +423,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("m", "the session's menu"),
             ("a", "alerts"),
             ("?", "this help"),
+            ("y", "approve a permission prompt"),
             ("click", "attach; on + a new session"),
             ("right-click", "the session's menu"),
             ("middle-click", "pin or unpin"),
@@ -452,6 +457,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Enter", "the focused button"),
             ("Esc", "cancel"),
             ("↑ / ↓", "choose"),
+            ("n", "No, in an approval"),
             ("Ctrl+Shift+V", "paste into the field"),
         ],
     ),

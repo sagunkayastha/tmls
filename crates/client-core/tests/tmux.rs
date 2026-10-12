@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use client_core::listing::SessionKey;
 use client_core::tmux::{
-    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv, new_session_argv,
-    rename_argv, run, run_with_stdin, running_commands_argv, valid_session_name,
+    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, capture_argv, derived_name_argv, kill_argv,
+    new_session_argv, rename_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, valid_session_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -361,4 +361,18 @@ fn run_does_not_wait_for_a_stderr_held_open_after_success() {
     let argv = v(&["sh", "-c", "cat >/dev/null; sleep 3 </dev/null >/dev/null & echo ok"]);
     assert_eq!(run_with_stdin(&argv, b"x", Duration::from_secs(5)).unwrap(), "ok\n");
     assert!(started.elapsed() < Duration::from_millis(300), "returned after {:?}", started.elapsed());
+}
+
+#[test]
+fn capture_and_send_keys_target_claudes_pane_else_the_session() {
+    let k = key(LOCAL, "w");
+    assert_eq!(capture_argv(&k, Some("%7"), LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "%7"]));
+    assert_eq!(capture_argv(&k, None, LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "=w:"]));
+    // Not a pane id: it never goes into a command.
+    assert_eq!(capture_argv(&k, Some("%7; reboot"), LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "=w:"]));
+    assert_eq!(send_keys_argv(&k, Some("%7"), "Escape", LOCAL), v(&["tmux", "send-keys", "-t", "%7", "Escape"]));
+    let capture = remote(&capture_argv(&key("ph", "a b"), None, LOCAL), &SSH);
+    assert_eq!(words(&capture), v(&["capture-pane", "-p", "-t", "=a b:"]));
+    let send = remote(&send_keys_argv(&key("ph", "it's"), Some("%3"), "1", LOCAL), &SSH);
+    assert_eq!(words(&send), v(&["send-keys", "-t", "%3", "1"]));
 }

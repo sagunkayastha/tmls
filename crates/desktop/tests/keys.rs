@@ -632,7 +632,7 @@ fn chords(group: &str) -> Vec<&'static str> {
 #[test]
 fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     let list = chords("List");
-    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', '?'] {
+    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'y', '?'] {
         let mods = if c == '?' { SHIFT } else { NONE };
         assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
         assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
@@ -680,4 +680,11 @@ fn help_text_is_the_same_table() {
             );
         }
     }
+}
+
+#[test]
+fn y_in_the_list_approves() {
+    assert_eq!(list_key(&ch('y', NONE)), Some(ListKey::Approve));
+    assert_eq!(list_key(&repeat(&ch('y', NONE))), None);
+    assert_eq!(list_key(&ch('Y', SHIFT)), None);
 }

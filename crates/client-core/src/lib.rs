@@ -1,6 +1,8 @@
 //! tmls-rs desktop v0, the part with no UI: which hosts to show, what tmux sessions each has
 //! and what they are doing, the tmux commands that act on them, and the user's tmls configuration.
+//! `approve` reads Claude's permission dialog off a pane's capture.
 
+pub mod approve;
 pub mod config;
 pub mod files;
 pub mod listing;

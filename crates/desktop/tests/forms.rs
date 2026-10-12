@@ -4,11 +4,11 @@
 
 use std::cell::RefCell;
 
-use client_core::SessionKey;
 use client_core::tmux::{
     self, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv,
     new_session_argv, rename_argv, running_commands_argv, valid_session_name,
 };
+use client_core::{SessionInfo, SessionKey, Status, Tool};
 use desktop::forms::{
     self, Form, FormResult, Look, MENU, MenuItem, MenuResult, Panel, Request, RowMenu, Stop,
 };
@@ -677,4 +677,171 @@ fn the_new_session_request_is_sized_by_the_caller() {
     asked.size = Some((132, 43));
     let argv = tmux::new_session_argv(&asked, LOCAL);
     assert!(argv.last().unwrap().contains("-x 132 -y 43"), "{argv:?}");
+}
+
+const DIALOG: &str = include_str!("../../client-core/tests/data/approve-dialog.txt");
+
+/// A listed Claude session (`pane` from its status file).
+fn info(name: &str, status: Status, reason: Option<&str>) -> SessionInfo {
+    SessionInfo {
+        key: key(LOCAL, name),
+        status,
+        reason: reason.map(str::to_string),
+        tool: Tool::Claude,
+        title: None,
+        context_pct: None,
+        attached: 0,
+        last_output_age_s: None,
+        pid: None,
+        session_id: None,
+        pane: Some("%3".to_string()),
+        activity: None,
+    }
+}
+
+#[test]
+fn answer_sends_the_key_only_while_the_same_dialog_is_up() {
+    let calls = RefCell::new(Vec::new());
+    let screen = RefCell::new(DIALOG.to_string());
+    let run = |argv: &[String]| -> anyhow::Result<String> {
+        calls.borrow_mut().push(argv.to_vec());
+        Ok(screen.borrow().clone())
+    };
+    let k = key(LOCAL, "w");
+    let shown = forms::approval(&k, Some("%7"), LOCAL, &run).unwrap();
+    assert_eq!(
+        shown,
+        ["Bash command", "Create empty marker file", "touch /tmp/x"]
+    );
+    assert_eq!(
+        forms::answer(&k, Some("%7"), &shown, true, LOCAL, &run),
+        Ok("approved w".to_string())
+    );
+    assert_eq!(
+        calls.borrow().last(),
+        Some(&tmux::send_keys_argv(&k, Some("%7"), "1", LOCAL))
+    );
+    assert_eq!(
+        forms::answer(&k, Some("%7"), &shown, false, LOCAL, &run),
+        Ok("declined w".to_string())
+    );
+    assert_eq!(
+        calls.borrow().last(),
+        Some(&tmux::send_keys_argv(&k, Some("%7"), "Escape", LOCAL))
+    );
+    // Claude moved on — another dialog, or none: nothing is sent.
+    for now in [
+        DIALOG.replace("touch /tmp/x", "rm -rf /tmp/y"),
+        "❯ \n".to_string(),
+    ] {
+        *screen.borrow_mut() = now;
+        calls.borrow_mut().clear();
+        assert_eq!(
+            forms::answer(&k, Some("%7"), &shown, true, LOCAL, &run),
+            Err("w isn't asking that any more".to_string())
+        );
+        assert_eq!(
+            *calls.borrow(),
+            [tmux::capture_argv(&k, Some("%7"), LOCAL)],
+            "only the capture ran"
+        );
+    }
+    // Nothing asks: the form never opens.
+    assert_eq!(
+        forms::approval(&k, None, LOCAL, &run),
+        Err("w isn't asking anything".to_string())
+    );
+    let down = |_: &[String]| -> anyhow::Result<String> {
+        anyhow::bail!("ssh: connect to host ph: timed out")
+    };
+    assert_eq!(
+        forms::approval(&k, None, LOCAL, &down),
+        Err("couldn't read w: ssh: connect to host ph: timed out".to_string())
+    );
+}
+
+#[test]
+fn the_approve_form_answers_yes_on_enter_no_on_n_and_cancels_on_esc() {
+    let k = key(LOCAL, "w");
+    let dialog: Vec<String> = ["Bash command", "touch /tmp/x"]
+        .map(str::to_string)
+        .to_vec();
+    let answer = |yes: bool| {
+        FormResult::Submit(Request::Answer {
+            key: k.clone(),
+            pane: Some("%3".to_string()),
+            shown: dialog.clone(),
+            yes,
+        })
+    };
+    let form = || Form::approve(k.clone(), Some("%3".to_string()), dialog.clone());
+    assert_eq!(form().focus(), Stop::Ok);
+    assert_eq!(form().key(&named(Named::Enter)), answer(true));
+    assert_eq!(
+        form().key(&event(Key::Char('n'), Mods::default())),
+        answer(false)
+    );
+    assert_eq!(form().key(&named(Named::Escape)), FormResult::Cancelled);
+    // A held Enter answers nothing: it may be the one that opened the form.
+    let mut held = named(Named::Enter);
+    held.repeat = true;
+    assert_eq!(form().key(&held), FormResult::Pending);
+    // Tab: Yes, No, Cancel.
+    let mut f = form();
+    f.key(&named(Named::Tab));
+    assert_eq!(f.focus(), Stop::No);
+    assert_eq!(f.key(&named(Named::Enter)), answer(false));
+    // The panel shows the dialog and the three buttons.
+    let texts: Vec<String> = form()
+        .panel()
+        .cells
+        .iter()
+        .map(|cell| cell.text.clone())
+        .collect();
+    for want in [
+        "here · w asks",
+        "Bash command",
+        "touch /tmp/x",
+        " Yes ",
+        " No ",
+        " Cancel ",
+    ] {
+        assert!(texts.iter().any(|text| text == want), "{want}: {texts:?}");
+    }
+}
+
+#[test]
+fn menu_items_offer_approve_only_while_claude_asks() {
+    assert_eq!(forms::menu_items(None), MENU.to_vec());
+    assert_eq!(
+        forms::menu_items(Some(&info("w", Status::Idle, None))),
+        MENU.to_vec()
+    );
+    assert_eq!(
+        forms::menu_items(Some(&info("w", Status::Waiting, Some("input needed")))),
+        MENU.to_vec()
+    );
+    let asks = info("w", Status::Waiting, Some("permission prompt"));
+    assert_eq!(
+        forms::menu_items(Some(&asks)),
+        [
+            MenuItem::Approve,
+            MenuItem::Rename,
+            MenuItem::Kill,
+            MenuItem::OpenTerminal,
+            MenuItem::CopyAttach
+        ]
+    );
+    let mut menu = RowMenu::with(asks.key.clone(), forms::menu_items(Some(&asks)));
+    assert!(
+        menu.panel()
+            .cells
+            .iter()
+            .any(|cell| cell.text == " Approve…")
+    );
+    assert_eq!(
+        menu.key(&named(Named::Enter)),
+        MenuResult::Pick(MenuItem::Approve)
+    );
+    assert_eq!(RowMenu::new(key(LOCAL, "w")).items(), MENU);
 }

@@ -142,6 +142,8 @@ pub enum UserEvent {
     /// The images of a session were listed, or not; the number is the request's
     /// (`Running::lists`).
     Listed(u64, SessionKey, Result<Opened, String>),
+    /// The permission dialog read off a session's pane (its key and pane), or why not.
+    Approval(SessionKey, Option<String>, Result<Vec<String>, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -222,6 +224,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Viewed(click, result) => running.viewed(click, result),
             UserEvent::Listed(load, key, result) => running.listed(load, key, result),
+            UserEvent::Approval(key, pane, result) => running.approval(key, pane, result),
         }
     }
 
@@ -1052,6 +1055,10 @@ impl Running {
         match result {
             PanelResult::Pending => {}
             PanelResult::Closed => self.close_modal(),
+            PanelResult::Approve(key) => {
+                self.close_modal();
+                self.approve(&key);
+            }
             PanelResult::Jump(key) => {
                 self.close_modal();
                 let listed = self.sidebar.status(&key).is_some();
@@ -1077,6 +1084,10 @@ impl Running {
         match result {
             MenuResult::Pending => {}
             MenuResult::Closed => self.close_modal(),
+            MenuResult::Pick(MenuItem::Approve) => {
+                self.close_modal();
+                self.approve(&key);
+            }
             MenuResult::Pick(MenuItem::Rename) => {
                 self.modal = Some((Modal::Form(Form::rename(key)), None));
             }
@@ -1108,6 +1119,54 @@ impl Running {
             }
         }
         self.invalidate();
+    }
+
+    /// `y` in the list or the alerts, or the menu's Approve…: the session's pane is read on a
+    /// thread; the dialog comes back as `UserEvent::Approval`.
+    fn approve(&mut self, key: &SessionKey) {
+        let listed = self
+            .sidebar
+            .info(key)
+            .map(|info| (forms::asks_permission(info), info.pane.clone()));
+        let Some((asks, pane)) = listed else {
+            return self.say(Err(format!("{} is not listed any more", key.name)));
+        };
+        if key.host == KITTY {
+            return self.say(Err(format!(
+                "{} runs outside tmux: answer it in its window",
+                key.name
+            )));
+        }
+        if !asks {
+            return self.say(Err(format!("{} isn't asking anything", key.name)));
+        }
+        let (proxy, local, key) = (self.proxy.clone(), self.cfg.local_name.clone(), key.clone());
+        std::thread::spawn(move || {
+            let result = forms::approval(&key, pane.as_deref(), &local, &forms::run_tmux);
+            let _ = proxy.send_event(UserEvent::Approval(key, pane, result));
+        });
+    }
+
+    /// The dialog came: the form opens, unless another form or menu was opened meanwhile.
+    fn approval(
+        &mut self,
+        key: SessionKey,
+        pane: Option<String>,
+        result: Result<Vec<String>, String>,
+    ) {
+        match result {
+            Err(why) => self.say(Err(why)),
+            Ok(_) if self.modal.is_some() => {
+                self.say(Ok(format!("{} asks: close this, then y again", key.name)))
+            }
+            Ok(dialog) => self.open_modal(Modal::Form(Form::approve(key, pane, dialog)), None),
+        }
+    }
+
+    /// The menu of a session row, with the entries its state allows.
+    fn row_menu(&self, key: SessionKey) -> RowMenu {
+        let items = forms::menu_items(self.sidebar.info(&key));
+        RowMenu::with(key, items)
     }
 
     fn form_result(&mut self, result: FormResult) {
@@ -1213,6 +1272,7 @@ impl Running {
                     self.sidebar.select_key(&key);
                 }
             }
+            Request::Answer { .. } => {}
         }
         if list_keeps_keys {
             // Asked from the list: the tab that came to the front does not take the keys.
@@ -1744,7 +1804,13 @@ impl Running {
                 // A session outside tmux has no menu: nothing in it applies.
                 let selected = self.sidebar.selected().filter(|key| key.host != KITTY);
                 if let Some(key) = selected.cloned() {
-                    self.open_modal(Modal::Menu(RowMenu::new(key)), None);
+                    let menu = self.row_menu(key);
+                    self.open_modal(Modal::Menu(menu), None);
+                }
+            }
+            ListKey::Approve => {
+                if let Some(key) = self.sidebar.selected().cloned() {
+                    self.approve(&key);
                 }
             }
         }
@@ -1759,7 +1825,8 @@ impl Running {
             sidebar::Action::Menu(key) => {
                 let (x, y) = self.pointer;
                 let at = (x.max(0.0) as u32, y.max(0.0) as u32);
-                self.open_modal(Modal::Menu(RowMenu::new(key)), Some(at));
+                let menu = self.row_menu(key);
+                self.open_modal(Modal::Menu(menu), Some(at));
             }
         }
     }

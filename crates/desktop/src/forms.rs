@@ -1,6 +1,7 @@
-//! The new-session form, the rename field, the kill confirm and a session's menu: what their
-//! keys and clicks do, what they look like in cells, and the commands they end in. No window
-//! and no drawing here; `draw` paints a `Panel`, `app` runs a `Request` on a worker thread.
+//! The new-session form, the rename field, the kill confirm, the approval and a session's
+//! menu: what their keys and clicks do, what they look like in cells, and the commands they
+//! end in. No window and no drawing here; `draw` paints a `Panel`, `app` runs a `Request` on a
+//! worker thread.
 //!
 //! **Forms** (tmls `create_form.py`, `manage.py`) are modal: while one is open every key is
 //! its own (`keys::Route::Form`) and reaches no session.
@@ -16,11 +17,15 @@
 //! - *Kill*: asks first, and says what runs in the session. The focus starts on Cancel:
 //!   Enter there kills nothing. Kill takes Tab (or an arrow) and then Enter, or a click on
 //!   the Kill button. A held Enter never confirms.
+//! - *Approve*: Claude's permission dialog as read off the session's pane, then Yes, No and
+//!   Cancel; the focus starts on Yes. Enter answers the focused button, `n` answers No. The
+//!   answer (`1` or Escape) is sent only if a fresh capture still shows the same dialog.
 //!
 //! Esc cancels every form. Tab into a field selects its text (as Textual's inputs do).
 //!
-//! **The menu** of a session row (`RowMenu`): Rename, Kill…, Open in new terminal, Copy attach
-//! command. Arrows or j / k move, Enter picks, any other key or a click beside it closes it.
+//! **The menu** of a session row (`RowMenu`): Approve… while Claude asks for permission, then
+//! Rename, Kill…, Open in new terminal, Copy attach command (`menu_items`). Arrows or j / k
+//! move, Enter picks, any other key or a click beside it closes it.
 //!
 //! **Panels.** `Form::panel` and `RowMenu::panel` give the text on a grid of cells, each piece
 //! cut to its columns; `click` takes a position in those cells (fractions allowed), relative
@@ -33,8 +38,8 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use client_core::SessionKey;
 use client_core::tmux::{self, NewSession, Start};
+use client_core::{KITTY, SessionInfo, SessionKey, Status, approve};
 use s2_core::{Key, KeyEvent, Named};
 use s2_wgpu::gfx::grid::clusters;
 use s2_wgpu::ui::draw::fit;
@@ -64,6 +69,13 @@ pub enum Request {
     New(NewSession),
     Rename(SessionKey, String),
     Kill(SessionKey),
+    /// Yes (`1`) or No (Escape) to the dialog `shown`, if the pane still shows it.
+    Answer {
+        key: SessionKey,
+        pane: Option<String>,
+        shown: Vec<String>,
+        yes: bool,
+    },
 }
 
 /// What a key or a click did to a form.
@@ -85,6 +97,8 @@ pub enum Stop {
     Start,
     Ok,
     Cancel,
+    /// The approval's No button.
+    No,
 }
 
 const NEW_STOPS: [Stop; 6] = [
@@ -97,6 +111,9 @@ const NEW_STOPS: [Stop; 6] = [
 ];
 const RENAME_STOPS: [Stop; 3] = [Stop::Name, Stop::Ok, Stop::Cancel];
 const KILL_STOPS: [Stop; 2] = [Stop::Cancel, Stop::Ok];
+const APPROVE_STOPS: [Stop; 3] = [Stop::Ok, Stop::No, Stop::Cancel];
+/// Width of the approval form, in cells: room for a command line.
+const APPROVE_COLS: usize = 76;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewForm {
@@ -132,6 +149,13 @@ pub enum Form {
         key: SessionKey,
         /// What runs in the session besides shells; empty until the host has said.
         running: Vec<String>,
+        focus: Stop,
+    },
+    /// Claude asks for permission: its dialog, Yes / No / Cancel (tmls `approve.py`).
+    Approve {
+        key: SessionKey,
+        pane: Option<String>,
+        dialog: Vec<String>,
         focus: Stop,
     },
 }
@@ -512,6 +536,7 @@ impl NewForm {
                     self.focus = other_button(self.focus);
                 }
             }
+            Stop::No => {}
         }
     }
 
@@ -599,11 +624,23 @@ impl Form {
         }
     }
 
+    /// The question of Claude's permission dialog, as captured. The focus is on Yes.
+    pub fn approve(key: SessionKey, pane: Option<String>, dialog: Vec<String>) -> Form {
+        Form::Approve {
+            key,
+            pane,
+            dialog,
+            focus: Stop::Ok,
+        }
+    }
+
     /// Where the keyboard focus is.
     pub fn focus(&self) -> Stop {
         match self {
             Form::New(new) => new.focus,
-            Form::Rename { focus, .. } | Form::ConfirmKill { focus, .. } => *focus,
+            Form::Rename { focus, .. }
+            | Form::ConfirmKill { focus, .. }
+            | Form::Approve { focus, .. } => *focus,
         }
     }
 
@@ -612,7 +649,7 @@ impl Form {
         match self {
             Form::New(new) => new.error.as_deref(),
             Form::Rename { error, .. } => error.as_deref(),
-            Form::ConfirmKill { .. } => None,
+            Form::ConfirmKill { .. } | Form::Approve { .. } => None,
         }
     }
 
@@ -630,6 +667,7 @@ impl Form {
             Form::New(_) => &NEW_STOPS,
             Form::Rename { .. } => &RENAME_STOPS,
             Form::ConfirmKill { .. } => &KILL_STOPS,
+            Form::Approve { .. } => &APPROVE_STOPS,
         }
     }
 
@@ -642,7 +680,7 @@ impl Form {
                     field.select_all();
                 }
             }
-            Form::ConfirmKill { focus, .. } => *focus = stop,
+            Form::ConfirmKill { focus, .. } | Form::Approve { focus, .. } => *focus = stop,
         }
     }
 
@@ -664,6 +702,17 @@ impl Form {
                 FormResult::Submit(Request::Rename(key.clone(), name))
             }
             Form::ConfirmKill { key, .. } => FormResult::Submit(Request::Kill(key.clone())),
+            Form::Approve {
+                key,
+                pane,
+                dialog,
+                focus,
+            } => FormResult::Submit(Request::Answer {
+                key: key.clone(),
+                pane: pane.clone(),
+                shown: dialog.clone(),
+                yes: *focus != Stop::No,
+            }),
         }
     }
 
@@ -681,7 +730,7 @@ impl Form {
             return FormResult::Pending;
         }
         let chord = ev.mods.ctrl || ev.mods.alt || ev.mods.logo;
-        let on_button = matches!(self.focus(), Stop::Ok | Stop::Cancel);
+        let on_button = matches!(self.focus(), Stop::Ok | Stop::Cancel | Stop::No);
         match ev.key {
             Key::Named(Named::Escape) => return FormResult::Cancelled,
             Key::Named(Named::Tab) if !chord => {
@@ -699,6 +748,7 @@ impl Form {
             Key::Char(' ') if !chord && on_button => return self.activate(),
             _ => {}
         }
+        let mut decline = false;
         match self {
             Form::New(new) => new.other_key(ev),
             Form::Rename {
@@ -712,11 +762,22 @@ impl Form {
                     *error = None;
                 }
             }
+            Form::Approve { focus, .. } => {
+                if ev.key == Key::Char('n') && !chord && !ev.repeat {
+                    *focus = Stop::No;
+                    decline = true;
+                } else if let Some(forward) = arrow(ev) {
+                    *focus = step(&APPROVE_STOPS, *focus, forward);
+                }
+            }
             Form::Rename { focus, .. } | Form::ConfirmKill { focus, .. } => {
                 if arrow(ev).is_some() {
                     *focus = other_button(*focus);
                 }
             }
+        }
+        if decline {
+            return self.submit();
         }
         FormResult::Pending
     }
@@ -754,6 +815,10 @@ impl Form {
             (Target::Stop(Stop::Cancel), _) => return FormResult::Cancelled,
             (Target::Stop(Stop::Ok), form) => {
                 form.focus_on(Stop::Ok);
+                return form.submit();
+            }
+            (Target::Stop(Stop::No), form) => {
+                form.focus_on(Stop::No);
                 return form.submit();
             }
             (Target::Stop(Stop::Host), Form::New(new)) => {
@@ -822,6 +887,50 @@ impl Form {
                 p.lines = 8;
                 p
             }
+            Form::Approve {
+                key, dialog, focus, ..
+            } => {
+                let inner = APPROVE_COLS - 2 * PAD;
+                let mut p = Panel::new(APPROVE_COLS);
+                p.put(
+                    0,
+                    PAD,
+                    inner,
+                    &format!("{} · {} asks", key.host, key.name),
+                    Look::Title,
+                );
+                let shown = approve::shown(dialog);
+                for (n, line) in shown.iter().enumerate() {
+                    let look = if n == 0 { Look::Label } else { Look::Text };
+                    p.put(2 + n, PAD, inner, line, look);
+                }
+                let hint = 2 + shown.len() + 1;
+                p.put(
+                    hint,
+                    PAD,
+                    inner,
+                    "Enter: Yes · n: No · Esc: Cancel",
+                    Look::Dim,
+                );
+                let buttons = hint + 1;
+                // Right to left: Cancel at the end, No, then Yes.
+                let mut col = APPROVE_COLS - PAD;
+                for (stop, label) in [
+                    (Stop::Cancel, " Cancel "),
+                    (Stop::No, " No "),
+                    (Stop::Ok, " Yes "),
+                ] {
+                    col -= label.len();
+                    let look = Look::Button {
+                        focused: *focus == stop,
+                        danger: false,
+                    };
+                    p.put(buttons, col, label.len(), label, look).target = Some(Target::Stop(stop));
+                    col -= 1;
+                }
+                p.lines = buttons + 2;
+                p
+            }
         }
     }
 }
@@ -829,6 +938,8 @@ impl Form {
 /// An entry of a session's menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuItem {
+    /// Answer the session's permission prompt; listed only while it asks.
+    Approve,
     Rename,
     Kill,
     OpenTerminal,
@@ -846,6 +957,7 @@ pub const MENU: [MenuItem; 4] = [
 impl MenuItem {
     pub fn label(self) -> &'static str {
         match self {
+            MenuItem::Approve => "Approve…",
             MenuItem::Rename => "Rename",
             // It asks first.
             MenuItem::Kill => "Kill…",
@@ -867,6 +979,8 @@ pub enum MenuResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowMenu {
     pub key: SessionKey,
+    /// The entries, top to bottom.
+    items: Vec<MenuItem>,
     /// The row the arrows or the pointer are on.
     hovered: Option<usize>,
 }
@@ -876,8 +990,22 @@ impl RowMenu {
     pub fn new(key: SessionKey) -> RowMenu {
         RowMenu {
             key,
+            items: MENU.to_vec(),
             hovered: Some(0),
         }
+    }
+
+    /// The menu with these entries (`menu_items`), its first one marked.
+    pub fn with(key: SessionKey, items: Vec<MenuItem>) -> RowMenu {
+        RowMenu {
+            key,
+            items,
+            hovered: Some(0),
+        }
+    }
+
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
     }
 
     pub fn key(&mut self, ev: &KeyEvent) -> MenuResult {
@@ -891,14 +1019,14 @@ impl RowMenu {
             Key::Named(Named::Enter) => MenuKey::Activate,
             _ => MenuKey::Close,
         };
-        let n = MENU.len();
+        let n = self.items.len();
         match key {
             MenuKey::Down => self.hovered = Some(self.hovered.map_or(0, |i| (i + 1) % n)),
             MenuKey::Up => self.hovered = Some(self.hovered.map_or(n - 1, |i| (i + n - 1) % n)),
             MenuKey::Activate => {
                 return self
                     .hovered
-                    .map_or(MenuResult::Pending, |i| MenuResult::Pick(MENU[i]));
+                    .map_or(MenuResult::Pending, |i| MenuResult::Pick(self.items[i]));
             }
             MenuKey::Close => return MenuResult::Closed,
         }
@@ -926,7 +1054,7 @@ impl RowMenu {
     /// A click at `(x, y)` cells from the panel's corner: picks a row, closes beside the menu.
     pub fn click(&mut self, x: f32, y: f32) -> MenuResult {
         match self.item_at(x, y) {
-            Some(index) => MenuResult::Pick(MENU[index]),
+            Some(index) => MenuResult::Pick(self.items[index]),
             None if self.panel().contains(x, y) => MenuResult::Pending,
             None => MenuResult::Closed,
         }
@@ -936,7 +1064,7 @@ impl RowMenu {
     pub fn panel(&self) -> Panel {
         let mut p = Panel::new(MENU_COLS);
         p.put(0, 1, MENU_COLS - 2, &self.key.name, Look::Title);
-        for (index, item) in MENU.iter().enumerate() {
+        for (index, item) in self.items.iter().enumerate() {
             let look = Look::Item {
                 hovered: self.hovered == Some(index),
                 danger: *item == MenuItem::Kill,
@@ -944,7 +1072,7 @@ impl RowMenu {
             let text = format!(" {}", item.label());
             p.put(index + 1, 0, MENU_COLS, &text, look).target = Some(Target::Item(index));
         }
-        p.lines = MENU.len() + 1;
+        p.lines = self.items.len() + 1;
         p
     }
 }
@@ -967,12 +1095,28 @@ pub fn request_argv(request: &Request, local_name: &str) -> Vec<String> {
         Request::New(new) => tmux::new_session_argv(new, local_name),
         Request::Rename(key, name) => tmux::rename_argv(key, name, local_name),
         Request::Kill(key) => tmux::kill_argv(key, local_name),
+        Request::Answer { key, pane, yes, .. } => tmux::send_keys_argv(
+            key,
+            pane.as_deref(),
+            if *yes {
+                approve::YES_KEY
+            } else {
+                approve::NO_KEY
+            },
+            local_name,
+        ),
     }
 }
 
 /// Does what `request` asks and says, in one line for the status line, what happened.
 pub fn perform(request: &Request, local_name: &str, run: Runner) -> Result<String, String> {
     let (done, failed) = match request {
+        Request::Answer {
+            key,
+            pane,
+            shown,
+            yes,
+        } => return answer(key, pane.as_deref(), shown, *yes, local_name, run),
         Request::New(new) => (
             format!("created {} on {}", new.name, new.host),
             format!("couldn't create {} on {}", new.name, new.host),
@@ -988,11 +1132,7 @@ pub fn perform(request: &Request, local_name: &str, run: Runner) -> Result<Strin
     };
     match run(&request_argv(request, local_name)) {
         Ok(_) => Ok(done),
-        Err(e) => {
-            let why = format!("{e:#}");
-            let why = why.lines().map(str::trim).find(|line| !line.is_empty());
-            Err(format!("{failed}: {}", why.unwrap_or("it failed")))
-        }
+        Err(e) => Err(format!("{failed}: {}", first_line(&e))),
     }
 }
 
@@ -1017,6 +1157,75 @@ pub fn running_commands(key: &SessionKey, local_name: &str, run: Runner) -> Vec<
     commands.sort();
     commands.dedup();
     commands
+}
+
+/// What Claude's status file says while it waits for a permission answer.
+pub const PERMISSION_PROMPT: &str = "permission prompt";
+
+/// The session waits on a permission prompt that can be answered from here (it runs in tmux).
+pub fn asks_permission(info: &SessionInfo) -> bool {
+    info.status == Status::Waiting
+        && info.reason.as_deref() == Some(PERMISSION_PROMPT)
+        && info.key.host != KITTY
+}
+
+/// The entries of a session's menu: `Approve…` first while it asks, then the usual ones.
+pub fn menu_items(info: Option<&SessionInfo>) -> Vec<MenuItem> {
+    let mut items = Vec::with_capacity(MENU.len() + 2);
+    if info.is_some_and(asks_permission) {
+        items.push(MenuItem::Approve);
+    }
+    items.extend(MENU);
+    items
+}
+
+/// The first line of what a command said, for the status line.
+pub fn first_line(e: &anyhow::Error) -> String {
+    let all = format!("{e:#}");
+    all.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("it failed")
+        .to_string()
+}
+
+/// The permission dialog up in the session's pane now; why not, for the status line.
+pub fn approval(
+    key: &SessionKey,
+    pane: Option<&str>,
+    local_name: &str,
+    run: Runner,
+) -> Result<Vec<String>, String> {
+    let screen = run(&tmux::capture_argv(key, pane, local_name))
+        .map_err(|e| format!("couldn't read {}: {}", key.name, first_line(&e)))?;
+    approve::request(&screen).ok_or_else(|| format!("{} isn't asking anything", key.name))
+}
+
+/// Yes or No to the dialog `shown` — only if a fresh capture still shows it (D4).
+pub fn answer(
+    key: &SessionKey,
+    pane: Option<&str>,
+    shown: &[String],
+    yes: bool,
+    local_name: &str,
+    run: Runner,
+) -> Result<String, String> {
+    let screen = run(&tmux::capture_argv(key, pane, local_name))
+        .map_err(|e| format!("couldn't read {}: {}", key.name, first_line(&e)))?;
+    if !approve::request(&screen).is_some_and(|now| approve::same(&now, shown)) {
+        return Err(format!("{} isn't asking that any more", key.name));
+    }
+    let keys = if yes {
+        approve::YES_KEY
+    } else {
+        approve::NO_KEY
+    };
+    run(&tmux::send_keys_argv(key, pane, keys, local_name))
+        .map_err(|e| format!("couldn't answer {}: {}", key.name, first_line(&e)))?;
+    Ok(match yes {
+        true => format!("approved {}", key.name),
+        false => format!("declined {}", key.name),
+    })
 }
 
 /// The command that opens `attach` in a new terminal window (tmls `launch_window`):

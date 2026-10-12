@@ -268,6 +268,35 @@ pub fn running_commands_argv(key: &SessionKey, local_name: &str) -> Vec<String> 
     }
 }
 
+/// What a command for Claude's pane targets: the pane (`%7`) when the listing has a valid one,
+/// else the session's current pane (`=NAME:`).
+pub fn pane_target(key: &SessionKey, pane: Option<&str>) -> String {
+    match pane.filter(|pane| valid_pane(pane)) {
+        Some(pane) => pane.to_string(),
+        None => format!("={}:", key.name),
+    }
+}
+
+/// Prints what the pane shows now (tmls `approve._capture_script`).
+pub fn capture_argv(key: &SessionKey, pane: Option<&str>, local_name: &str) -> Vec<String> {
+    let target = pane_target(key, pane);
+    if key.host == local_name {
+        strings(&["tmux", "capture-pane", "-p", "-t", &target])
+    } else {
+        ssh(&key.host, format!("tmux capture-pane -p -t {}", quote(&target)))
+    }
+}
+
+/// Presses `keys` (a tmux key name: `1`, `Escape`, `Enter`) in the pane.
+pub fn send_keys_argv(key: &SessionKey, pane: Option<&str>, keys: &str, local_name: &str) -> Vec<String> {
+    let target = pane_target(key, pane);
+    if key.host == local_name {
+        strings(&["tmux", "send-keys", "-t", &target, keys])
+    } else {
+        ssh(&key.host, format!("tmux send-keys -t {} {}", quote(&target), quote(keys)))
+    }
+}
+
 /// tmls's name for a session in `folder` when git knows nothing: the folder's own name.
 pub fn folder_name(folder: &str) -> &str {
     if folder.trim_matches(['~', '/']).is_empty() {

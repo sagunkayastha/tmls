@@ -329,6 +329,14 @@ impl Sidebar {
         })
     }
 
+    /// The session as the list shows it, marks included; `None` when it is not listed.
+    pub fn info(&self, key: &SessionKey) -> Option<&SessionInfo> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Session(info) if info.key == *key => Some(info),
+            _ => None,
+        })
+    }
+
     /// Claude's process, for a listed session outside tmux.
     pub fn pid(&self, key: &SessionKey) -> Option<u32> {
         self.rows.iter().find_map(|row| match row {

@@ -18,6 +18,10 @@ ODD="tmlsrs-test-a b'c"
 NEW='tmlsrs-test-new'
 RENAMED='tmlsrs-test-renamed'
 BYE='tmlsrs-test-bye'
+APPROVE='tmlsrs-test-0approve'
+APPROVE_SID='1b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+# The stand-ins for Claude processes, by session id: their status files are named after them.
+declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
 
 # The container must not be the user's machine: this script starts and stops a tmux server.
@@ -135,6 +139,8 @@ cleanup() {
   tmux kill-session -t "=$BYE" 2>/dev/null
   # The stand-in for a Claude process (the images' list), if it still runs.
   [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
+  tmux kill-session -t "=$APPROVE" 2>/dev/null
+  for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
 }
@@ -1143,6 +1149,51 @@ if [ -n "${SMOKE_CLIP_TEST:-}" ] && [ -x "$SMOKE_CLIP_TEST" ]; then
   fi
 else
   fail "$CLIP_WL" "no test binary (SMOKE_CLIP_TEST=${SMOKE_CLIP_TEST:-})"
+fi
+
+# fake_claude NAME SID STATUS [WAITING_FOR] — (re)writes the status file of a Claude with session
+# id SID that runs in NAME's pane and is STATUS. The file is named after a sleep of this script's
+# (the listing skips files of dead processes); statusUpdatedAt is now.
+fake_claude() {
+  local name=$1 sid=$2 status=$3 waiting=${4:-} pid ids
+  pid=${FAKE_PIDS[$sid]:-}
+  if [ -z "$pid" ]; then
+    sleep 900 &
+    pid=$!
+    FAKE_PIDS[$sid]=$pid
+  fi
+  ids=$(tmux display -p -t "=$name:" '#{window_id}.#{pane_id}')
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"kind":"interactive","sessionId":"%s","status":"%s","waitingFor":"%s","statusUpdatedAt":%s,"tmux":"%s:%s","cwd":"/work"}\n' \
+    "$pid" "$sid" "$status" "$waiting" "$(date +%s%3N)" "$name" "$ids" >"$HOME/.claude/sessions/$pid.json"
+}
+# top_of_list  — the list's cursor to its first session (pins are empty here).
+top_of_list() { keys -k k -k k -k k -k k -k k -k k -k k -k k; }
+
+# --- approvals from the list (F5) ----------------------------------------------------------------
+# A stand-in for Claude asking: the dialog of client-core's fixture, then one key read and shown.
+# $APPROVE sorts first ('0' < 'a'), so it is the list's first session.
+cp /work/crates/client-core/tests/data/approve-dialog.txt "$SCRATCH/dialog.txt"
+cat >"$SCRATCH/dialog.sh" <<'EOF'
+clear
+cat "$1"
+IFS= read -rsn1 k
+printf 'GOT[%s]\n' "$k"
+sleep 600
+EOF
+tmux new-session -d -s "$APPROVE" -x 100 -y 40 "bash '$SCRATCH/dialog.sh' '$SCRATCH/dialog.txt'"
+fake_claude "$APPROVE" "$APPROVE_SID" waiting "permission prompt"
+sleep 6
+key_focus_list
+top_of_list
+keys y
+check "screenshot 36-approve (the dialog, Yes / No / Cancel)" shot 36-approve
+key_enter
+if wait_for 8 pane_has_line "$APPROVE" "GOT[1]"; then
+  pass "y on a row that asks, then Enter, presses 1 in its pane"
+else
+  fail "y on a row that asks, then Enter, presses 1 in its pane" \
+    "pane: $(pane_text "$APPROVE" | grep -v '^$' | tail -3 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
 fi
 
 # --- quit ---------------------------------------------------------------------------------------
