@@ -275,7 +275,16 @@ impl Sidebar {
     /// `Seen::apply`, then `apply`: marks what finished unwatched (◆) and shows the listing.
     /// `front` is the session of the tab in front: the user watched that one finish, so it
     /// gets no mark. Snapshots must come here in the order the poller delivers them.
+    ///
+    /// Claude sessions outside tmux are this machine's only: every host's listing has its
+    /// own, all under the host `KITTY`, so another host's are dropped before `seen` could
+    /// take them for this machine's of the same name (one's work ending the other's: a false
+    /// ◆). This machine's listing is then the one that says which of them are gone.
     pub fn deliver(&mut self, seen: &mut Seen, mut snap: HostSnapshot, front: Option<&SessionKey>) {
+        let local = snap.host == self.local_name;
+        if !local {
+            snap.sessions.retain(|info| info.key.host != KITTY);
+        }
         seen.apply(&mut snap);
         if let Some(front) = front.filter(|front| front.host == snap.host) {
             seen.opened(front);
@@ -285,7 +294,10 @@ impl Sidebar {
                 }
             }
         }
-        seen.forget_missing(&snap);
+        match local {
+            true => seen.forget_missing_local(&snap),
+            false => seen.forget_missing(&snap),
+        }
         self.apply(snap);
     }
 

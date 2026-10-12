@@ -57,7 +57,7 @@ pub enum Start {
 }
 
 /// `word` as one single-quoted shell word.
-fn quote(word: &str) -> String {
+pub(crate) fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
@@ -76,19 +76,19 @@ fn shlex_join<S: AsRef<str>>(words: &[S]) -> String {
     words.iter().map(|w| shlex_quote(w.as_ref())).collect::<Vec<_>>().join(" ")
 }
 
-fn strings(words: &[&str]) -> Vec<String> {
+pub(crate) fn strings(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
 /// `command` run by `host`'s shell without ever prompting (as the listing does).
-fn ssh(host: &str, command: String) -> Vec<String> {
+pub(crate) fn ssh(host: &str, command: String) -> Vec<String> {
     let mut argv = strings(&["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host]);
     argv.push(command);
     argv
 }
 
 /// `script` run by sh, here or on `host`.
-fn script_argv(host: &str, script: String, local_name: &str) -> Vec<String> {
+pub(crate) fn script_argv(host: &str, script: String, local_name: &str) -> Vec<String> {
     if host == local_name { vec!["sh".to_string(), "-c".to_string(), script] } else { ssh(host, script) }
 }
 
@@ -116,7 +116,7 @@ pub fn attach_text(key: &SessionKey, local_name: &str) -> String {
 }
 
 /// `folder` as a shell word. `~` must stay outside the quotes to mean the host's home.
-fn folder_word(folder: &str) -> String {
+pub(crate) fn folder_word(folder: &str) -> String {
     match folder {
         "" | "~" | "~/" => "\"$HOME\"".to_string(),
         _ => match folder.strip_prefix("~/") {
@@ -280,9 +280,14 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Output {
 impl Output {
     /// Everything read by the time the pipe closes, or by `deadline` when something the command
     /// started still holds it open (an ssh connection master, a background job).
-    fn text(&self, deadline: Instant) -> String {
+    fn bytes(&self, deadline: Instant) -> Vec<u8> {
         let _ = self.ended.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-        String::from_utf8_lossy(&self.bytes.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
+        std::mem::take(&mut *self.bytes.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// The same as text; bytes that are not UTF-8 show as U+FFFD.
+    fn text(&self, deadline: Instant) -> String {
+        String::from_utf8_lossy(&self.bytes(deadline)).into_owned()
     }
 }
 
@@ -292,6 +297,12 @@ impl Output {
 /// everything it started, and is an error too. The command reads nothing: its stdin is
 /// /dev/null.
 pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
+    run_bytes(argv, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// [`run`], with what the command printed as the bytes they are: for the contents of a file,
+/// which need not be text.
+pub fn run_bytes(argv: &[String], timeout: Duration) -> anyhow::Result<Vec<u8>> {
     let (program, args) = argv.split_first().context("empty command")?;
     let mut child = Command::new(program)
         .args(args)
@@ -317,10 +328,11 @@ pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
         std::thread::sleep(TICK);
     };
     let grace = Instant::now() + OUTPUT_GRACE;
-    let (stdout, stderr) = (stdout.text(grace), stderr.text(grace));
+    let (stdout, stderr) = (stdout.bytes(grace), stderr.text(grace));
     if status.success() {
         return Ok(stdout);
     }
+    let stdout = String::from_utf8_lossy(&stdout);
     let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
     if said.is_empty() {
         bail!("{program} failed ({status})");

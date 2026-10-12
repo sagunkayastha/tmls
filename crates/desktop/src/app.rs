@@ -27,6 +27,25 @@
 //! gives (`UserEvent::Derived`) and what runs in a session about to be killed
 //! (`UserEvent::Running`) come the same way.
 //!
+//! File path: a Ctrl+click on a path in the terminal (`mouse::Effect::File`) runs
+//! `viewer::open_link` on a thread of its own, which asks the session's host where the file
+//! is and reads it → `UserEvent::Viewed` → text or a picture opens the panel beside the terminal
+//! (`viewer::SidePanel`; the layout is made again and the tabs get the narrower grid, as on a
+//! window resize), anything else goes to `xdg-open`. Only the answer to the newest click
+//! counts. The panel's `Open in app` comes the same way (`viewer::open_in_app`).
+//!
+//! The images a session made: Alt+Shift+F or `Files` in the tab bar opens the panel on the list
+//! of the front tab's session (`show_made`) — at once, saying that the host is asked — and
+//! `viewer::made_while` runs on a thread like a file's click, so a list that takes long or never
+//! comes holds nothing up, and its time limit ends in the status line. Lists have a counter of
+//! their own (`Running::lists`) and come back as `UserEvent::Listed`: only the newest request's
+//! answer counts, a click on a file never takes a list's answer away, nor a list a click's, and
+//! the answer goes to the list wherever it is by then (`SidePanel::list_of`).
+//! The list is asked for again by `Refresh`, when another tab comes to the front, and when a
+//! listing says the session's turn ended (`snapshot`; that only starts the thread). A row
+//! opens its picture the way a click in the terminal does, and that panel keeps the list to go
+//! back to. A tab whose session is not Claude's runs no command.
+//!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
 //! builds quads, submits and presents. Tabs in the back wake the loop too (that is how a tab
@@ -45,7 +64,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use client_core::{Config, HostSnapshot, KITTY, Poller, Seen, SessionKey, default_color};
+use client_core::{Config, HostSnapshot, KITTY, Poller, Seen, SessionKey, Status, default_color};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -66,13 +85,16 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
-use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
+use crate::keys::{self, Focus, Global, ListKey, PanelKey, RepeatGate, Route};
 use crate::kitty;
-use crate::links;
+use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
+use crate::picture::PictureRenderer;
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
-use crate::theme::{SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
+use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
+use crate::uistate::{self, UiState};
+use crate::viewer::{self, MadeBody, MadeState, Opened, SideLook, SidePanel};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -114,6 +136,11 @@ pub enum UserEvent {
     Running(SessionKey, Vec<String>),
     /// Something done off the window's thread ended: a line for the status line, or why not.
     Said(Result<String, String>),
+    /// A clicked file was found and read, or not; the number is the click's (`Running::views`).
+    Viewed(u64, Result<Opened, String>),
+    /// The images of a session were listed, or not; the number is the request's
+    /// (`Running::lists`).
+    Listed(u64, SessionKey, Result<Opened, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -190,6 +217,8 @@ impl ApplicationHandler<UserEvent> for App {
                     running.invalidate();
                 }
             }
+            UserEvent::Viewed(click, result) => running.viewed(click, result),
+            UserEvent::Listed(load, key, result) => running.listed(load, key, result),
         }
     }
 
@@ -304,6 +333,9 @@ struct Running {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     renderer: Renderer,
+    /// The picture of the file panel, while it shows one: its texture, and the pass that
+    /// draws it after the renderer's. Not used at all for a frame without one.
+    picture: PictureRenderer,
     atlas: Atlas,
     theme: Theme,
     /// Where everything is, for the current size, scale and font size.
@@ -372,10 +404,31 @@ struct Running {
     quit: bool,
     /// The list's right edge is being dragged.
     dragging_separator: bool,
+    /// The file panel's divider is being dragged: how far right of the divider's left edge
+    /// the pointer was when the button went down (the handle is wider than the line).
+    dragging_divider: Option<f32>,
+    /// The file panel's width in columns, once its divider was dragged (now or in an earlier
+    /// run); until then a panel opens with `draw::default_panel_cols`.
+    panel_cols: Option<usize>,
+    /// The dragged widths as they are in `ui_path`, and where that is (`uistate`).
+    ui: UiState,
+    ui_path: Option<PathBuf>,
     /// The pointer is drawn as the resize arrows.
     resize_cursor: bool,
     /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
     sketchpad: Option<String>,
+    /// The file panel beside the terminal, while one is open.
+    side: Option<SidePanel>,
+    /// Counts the clicks on files: the answer to the latest is the only one taken.
+    views: Arc<AtomicU64>,
+    /// Counts the requests for the list of a session's images, apart from the clicks: the
+    /// answer to the latest is the only one taken, and neither kind overtakes the other.
+    lists: Arc<AtomicU64>,
+    /// The click that opens a picture from the list of a session's images: its panel keeps
+    /// the list to go back to.
+    back_for: Option<u64>,
+    /// Where copies of other hosts' files go to be opened here.
+    view_cache: Option<PathBuf>,
 }
 
 impl Running {
@@ -438,7 +491,16 @@ impl Running {
         config.desired_maximum_frame_latency = 1;
         surface.configure(&gpu.device, &config);
 
-        let theme = Theme::default();
+        // The widths dragged in an earlier run. The layout keeps them within the window.
+        let ui_path = uistate::path(
+            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+        );
+        let ui = ui_path.as_deref().map(uistate::load).unwrap_or_default();
+        let mut theme = Theme::default();
+        if let Some(cols) = ui.sidebar_cols {
+            theme.sidebar_cols = cols.max(SIDEBAR_MIN_COLS);
+        }
         let mut atlas = Atlas::new(theme.font.clone(), window.scale_factor() as f32);
         atlas.set_max_height(gpu.device.limits().max_texture_dimension_2d);
         let layout = draw::layout(
@@ -448,6 +510,7 @@ impl Running {
             &theme,
         );
         let renderer = Renderer::new(&gpu.device, config.format);
+        let picture = PictureRenderer::new(&gpu.device, config.format);
 
         let log = match &args.bench {
             Some(dir) => {
@@ -495,6 +558,7 @@ impl Running {
             config,
             gpu,
             renderer,
+            picture,
             atlas,
             theme,
             layout,
@@ -531,8 +595,20 @@ impl Running {
             retry_at: None,
             quit: false,
             dragging_separator: false,
+            dragging_divider: None,
+            panel_cols: ui.panel_cols,
+            ui,
+            ui_path,
             resize_cursor: false,
             sketchpad: Config::sketchpad(config_dir),
+            side: None,
+            views: Arc::new(AtomicU64::new(0)),
+            lists: Arc::new(AtomicU64::new(0)),
+            back_for: None,
+            view_cache: viewer::cache_dir(
+                std::env::var_os("XDG_CACHE_HOME").as_deref(),
+                std::env::var_os("HOME").as_deref(),
+            ),
         })
     }
 
@@ -581,16 +657,80 @@ impl Running {
         }
     }
 
-    /// Window size, scale factor, font size or the list's width changed: lays the window out
-    /// again and tells the tabs how many cells fit now.
-    fn relayout(&mut self) {
-        self.layout = draw::layout(
+    /// The file panel's divider follows the pointer, a whole column at a time; the layout
+    /// keeps `PANEL_MIN_COLS` columns on both sides of it. The terminals get their new size at
+    /// once.
+    fn drag_divider(&mut self, x: f32, offset: f32) {
+        if self.side.is_none() || self.layout.side.w <= 0.0 {
+            return;
+        }
+        let asked = self.layout.divider_cols(x, offset);
+        // As many of them as the layout gives.
+        let cols = self.layout_for(Some(asked)).side_cols;
+        if cols != 0 && cols != self.layout.side_cols {
+            self.panel_cols = Some(cols);
+            self.relayout();
+        }
+    }
+
+    /// A drag of the list's edge or of the panel's divider ended: the widths that were
+    /// dragged, now or before, are written to `~/.config/tmls-rs/ui` if the drag changed one
+    /// (a click on a handle does not). A file that cannot be written shows in the status line.
+    fn save_widths(&mut self) {
+        let list = self.theme.sidebar_cols;
+        let dragged = UiState {
+            sidebar_cols: match list == self.ui.sidebar_cols.unwrap_or(SIDEBAR_COLS) {
+                true => self.ui.sidebar_cols,
+                false => Some(list),
+            },
+            panel_cols: self.panel_cols,
+        };
+        if dragged == self.ui {
+            return;
+        }
+        let Some(path) = self.ui_path.clone() else {
+            return;
+        };
+        let saved = uistate::save(&path, &dragged)
+            .with_context(|| format!("the widths were not saved: {}", path.display()));
+        // Saved: nothing to say, and what the status line says of something else stays.
+        match saved {
+            Ok(()) => self.ui = dragged,
+            Err(_) => self.report(saved),
+        }
+    }
+
+    /// The layout of the window as it is, with a file panel of `side` columns or none.
+    fn layout_for(&self, side: Option<usize>) -> Layout {
+        draw::layout_with(
             (self.config.width, self.config.height),
             self.atlas.scale(),
             &self.atlas.metrics(),
             &self.theme,
-        );
+            side,
+        )
+    }
+
+    /// Window size, scale factor, font size, the list's width or the panel's changed, or the
+    /// file panel opened or closed: lays the window out again and tells the tabs how many
+    /// cells fit now.
+    fn relayout(&mut self) {
+        // A panel whose divider was never dragged has half the columns, whatever the window.
+        let side = self.side.is_some().then(|| {
+            self.panel_cols.unwrap_or_else(|| {
+                draw::default_panel_cols(
+                    (self.config.width, self.config.height),
+                    self.atlas.scale(),
+                    &self.atlas.metrics(),
+                    &self.theme,
+                )
+            })
+        });
+        self.layout = self.layout_for(side);
         self.tabs.resize_all(self.layout.grid);
+        // A window made too narrow for the panel: the keys do not stay with a list that is
+        // not drawn.
+        self.settle_panel_focus();
         self.invalidate();
     }
 
@@ -599,6 +739,12 @@ impl Running {
     fn snapshot(&mut self, snapshot: HostSnapshot) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         let (host, online) = (snapshot.host.clone(), snapshot.online);
+        // The session whose images the panel lists, and what it was doing until now.
+        let images = self.side.as_ref().and_then(SidePanel::made_body);
+        let images = images.map(|body| (body.key.clone(), body.state()));
+        let was = images
+            .as_ref()
+            .and_then(|(key, _)| self.sidebar.status(key));
         self.sidebar.deliver(&mut self.seen, snapshot, front);
         // The host's sessions as the list has them now, marks included.
         let listed = self.sidebar.rows().iter().filter_map(|row| match row {
@@ -619,7 +765,38 @@ impl Running {
             self.sidebar.select_key(key);
             self.select_when_listed = None;
         }
+        if let Some((key, state)) = images {
+            self.relist_made(&key, state, was);
+        }
         self.invalidate();
+    }
+
+    /// After a listing: the panel's list of the images of the session `key` is asked for
+    /// again if the session's turn just ended (it `was` something else and is done or idle
+    /// now: what it made is there), or if the tab had no Claude session and has one now (or
+    /// the other way round). A click on a file that waits for its answer is not in the way:
+    /// lists are counted apart. Only starts the thread: nothing here waits for a host.
+    fn relist_made(&mut self, key: &SessionKey, state: MadeState, was: Option<Status>) {
+        let front = self.tabs.active().map(|index| self.tabs.key(index));
+        if front != Some(key) {
+            return;
+        }
+        let now = self.sidebar.status(key);
+        let ended = now != was && matches!(now, Some(Status::Unseen | Status::Idle));
+        let has_claude = self.session_id(key).is_some();
+        // (A session that is not listed, its host being away, has not stopped being Claude's.)
+        let changed = now.is_some() && has_claude != (state != MadeState::NoClaude);
+        if (ended && has_claude) || changed {
+            self.show_made();
+        }
+    }
+
+    /// Claude's id of the session `key`, as its host last listed it.
+    fn session_id(&self, key: &SessionKey) -> Option<String> {
+        self.sidebar.rows().iter().find_map(|row| match row {
+            sidebar::Row::Session(info) if info.key == *key => info.session_id.clone(),
+            _ => None,
+        })
     }
 
     /// What `chrome` draws besides the session list, from the state as it is now.
@@ -665,6 +842,11 @@ impl Running {
             panel,
             sketch: self.sketchpad.is_some(),
             unread: self.alerts.unread(),
+            side: self.side.as_ref().map(|side| {
+                let l = &self.layout;
+                side.view(l.side_lines, l.side_cols, l.side_body)
+            }),
+            side_focused: self.focus == Focus::Panel,
         }
     }
 
@@ -679,6 +861,10 @@ impl Running {
         );
         if pressed && self.note.take().is_some() {
             self.invalidate();
+        }
+        // The panel has no use for a copy or a paste: they are the terminal's, with the keys.
+        if self.focus == Focus::Panel && matches!(action, Action::Copy | Action::Paste) {
+            self.leave_panel();
         }
         let ev = match action {
             Action::Send(ev) => ev,
@@ -697,6 +883,11 @@ impl Running {
             }
             Action::Ignore => return After::Stay,
         };
+        // A key the panel does not bind is the terminal's: the keys go back there, and this
+        // one with them, so nothing typed is lost.
+        if self.focus == Focus::Panel && keys::leaves_panel(&ev) {
+            self.leave_panel();
+        }
         if let Some(text) = keys::copy_instead(&ev, self.focus, &mut self.gate, &mut self.tabs) {
             self.set_clipboard(text);
             self.invalidate();
@@ -715,6 +906,11 @@ impl Running {
             Route::Form => {
                 if let Some(ev) = ev {
                     self.form_key(&ev);
+                }
+            }
+            Route::Panel => {
+                if let Some(key) = ev.as_ref().and_then(keys::panel_key) {
+                    self.panel_key(key);
                 }
             }
             Route::Terminal | Route::Drop => {}
@@ -736,8 +932,10 @@ impl Running {
         if self.modal.take().is_none() {
             return;
         }
+        let panel = self.panel_takes_keys();
         let back = match self.focus_before {
-            Focus::Terminal if !self.tabs.is_empty() => Focus::Terminal,
+            Focus::Panel if panel => Focus::Panel,
+            Focus::Terminal | Focus::Panel if !self.tabs.is_empty() => Focus::Terminal,
             _ => Focus::Sidebar,
         };
         self.set_focus(back);
@@ -964,6 +1162,347 @@ impl Running {
         self.invalidate();
     }
 
+    /// A Ctrl+click on a file path in the front tab: its host is asked for the file on a
+    /// thread; the answer comes back as `UserEvent::Viewed`.
+    fn open_file(&mut self, link: FileLink) {
+        let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
+            return;
+        };
+        self.say(Ok(format!("opening {} on {} …", link.path, key.host)));
+        self.view(move |local, cache, wanted| {
+            viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
+        });
+    }
+
+    /// Alt+Shift+F, or a click on `Files`: closes the panel if it is open, else opens it on
+    /// the list of the images the front tab's session made.
+    fn toggle_files(&mut self) {
+        match self.side {
+            Some(_) => self.close_side(),
+            None => self.show_made(),
+        }
+    }
+
+    /// Puts the list of the images the front tab's session made in the panel and asks the
+    /// session's host for it on a thread; the answer comes back as `UserEvent::Listed`, and
+    /// counts only if no list was asked for since. The panel shows at once: a list of that
+    /// session that is there stays until the new one comes, else it says that the host is
+    /// asked. A session that is not Claude's has no transcript to read: the panel says so
+    /// and no command runs.
+    fn show_made(&mut self) {
+        let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
+            return self.say(Ok("no session open: no images to list".to_string()));
+        };
+        let id = self.session_id(&key);
+        let listed = self.side.as_ref().and_then(SidePanel::made_body);
+        let kept = id.is_some()
+            && listed.is_some_and(|body| body.key == key && body.state() == MadeState::Listed);
+        if !kept {
+            let body = match id {
+                Some(_) => MadeBody::loading(key.clone()),
+                None => MadeBody::no_claude(key.clone()),
+            };
+            // Whatever the panel showed, it shows no picture now: its texture is freed.
+            self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+            if !self.show_side(SidePanel::made(body)) {
+                self.lists.fetch_add(1, Ordering::SeqCst);
+                return self.say(Ok(viewer::TOO_NARROW.to_string()));
+            }
+        }
+        // The request's number: an answer to an older one is to a list this one took the
+        // place of, also when nothing is asked now.
+        let load = self.lists.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(id) = id {
+            let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+            let lists = self.lists.clone();
+            std::thread::spawn(move || {
+                let wanted = || lists.load(Ordering::SeqCst) == load;
+                let result = viewer::made_while(&key, &id, &local, &viewer::run, &wanted);
+                let _ = proxy.send_event(UserEvent::Listed(load, key, result));
+            });
+        }
+        self.invalidate();
+    }
+
+    /// The answer to the request for a session's images: it goes to that session's list,
+    /// which the panel shows or keeps behind a picture opened from it. A host that did not
+    /// answer (its time limit, a dead link) is said in the list and, with the reason, in the
+    /// status line. An answer to a request that is not the latest is dropped; one whose list
+    /// is gone (a file took the panel) has nowhere to go.
+    fn listed(&mut self, load: u64, key: SessionKey, result: Result<Opened, String>) {
+        if load != self.lists.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(list) = self.side.as_mut().and_then(|side| side.list_of(&key)) else {
+            return;
+        };
+        let problem = match result {
+            Ok(Opened::Made { files, .. }) => {
+                list.set_files(files);
+                None
+            }
+            // `viewer::made_while` gives nothing else.
+            Ok(_) => None,
+            Err(problem) => {
+                list.failed();
+                Some(problem)
+            }
+        };
+        if let Some(problem) = problem {
+            crate::errln(format_args!("tmls-rs: {problem}"));
+            self.say(Ok(problem));
+        }
+        self.invalidate();
+    }
+
+    /// A row of the list, clicked or under the cursor at Enter: its picture opens as one
+    /// clicked in the terminal does, in a panel that keeps the list to go back to.
+    fn open_made(&mut self, path: String) {
+        let listed = self.side.as_ref().and_then(SidePanel::made_body);
+        let Some(key) = listed.map(|body| body.key.clone()) else {
+            return;
+        };
+        self.say(Ok(format!("opening {path} on {} …", key.host)));
+        let link = FileLink { path, line: None };
+        let click = self.view(move |local, cache, wanted| {
+            viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
+        });
+        self.back_for = Some(click);
+    }
+
+    /// `‹`, Backspace or Esc at a picture opened from the list: the list is back as it was,
+    /// and is asked for again (for the tab in front now, if that changed). With no tab left
+    /// there is no session to list: the panel closes.
+    fn side_back(&mut self) {
+        if self.tabs.active().is_none() {
+            return self.close_side();
+        }
+        let Some(body) = self.side.as_mut().and_then(|side| side.back.take()) else {
+            return;
+        };
+        self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+        self.side = Some(SidePanel::made(body));
+        self.show_made();
+    }
+
+    /// A key for the panel while it has the keys.
+    fn panel_key(&mut self, key: PanelKey) {
+        let lines = self.layout.side_lines;
+        let from_list = self.side.as_ref().is_some_and(|side| side.back.is_some());
+        let list = self.side.as_mut().and_then(SidePanel::made_body_mut);
+        match (key, list) {
+            (PanelKey::Up, Some(list)) => {
+                if list.move_by(-1, lines) {
+                    self.invalidate();
+                }
+            }
+            (PanelKey::Down, Some(list)) => {
+                if list.move_by(1, lines) {
+                    self.invalidate();
+                }
+            }
+            (PanelKey::Open, Some(list)) => {
+                if let Some(path) = list.selected().map(|file| file.path.clone()) {
+                    self.open_made(path);
+                }
+            }
+            (PanelKey::Back, None) if from_list => self.side_back(),
+            // From the list, back to the terminal.
+            (PanelKey::Back, _) => self.leave_panel(),
+            (PanelKey::Up | PanelKey::Down | PanelKey::Open, None) => {}
+        }
+    }
+
+    /// The keys leave the panel: to the terminal, or to the list with no tab open.
+    fn leave_panel(&mut self) {
+        let to = match self.tabs.is_empty() {
+            true => Focus::Sidebar,
+            false => Focus::Terminal,
+        };
+        self.set_focus(to);
+    }
+
+    /// Whether the panel can have the keys: what it shows takes some, and the layout has a
+    /// panel (a window too narrow for one draws none, though it is still open).
+    fn panel_takes_keys(&self) -> bool {
+        self.side.as_ref().is_some_and(SidePanel::takes_keys) && self.layout.side.w > 0.0
+    }
+
+    /// After the panel changed or closed, or the window was laid out again: if it had the
+    /// keys and what it shows now takes none (a file from the terminal, nothing) or it is not
+    /// drawn any more, they go back to the terminal (`keys::focus_after_panel`).
+    fn settle_panel_focus(&mut self) {
+        if self.modal.is_some() {
+            // `close_modal` finds the panel has no keys to give back.
+            return;
+        }
+        let takes = self.side.as_ref().is_some_and(SidePanel::takes_keys);
+        let drawn = self.layout.side.w > 0.0;
+        let to = keys::focus_after_panel(self.focus, takes, drawn, !self.tabs.is_empty());
+        if to != self.focus {
+            self.set_focus(to);
+        }
+    }
+
+    /// What the panel's header has now, for `Layout::hit_with`.
+    fn side_look(&self) -> SideLook {
+        self.side.as_ref().map(SidePanel::look).unwrap_or_default()
+    }
+
+    /// What is under the pointer.
+    fn hit(&self) -> Hit {
+        let (x, y) = self.pointer;
+        self.layout
+            .hit_with(x, y, self.tabs.len(), self.side_look())
+    }
+
+    /// `Open in app` in the panel's header: the panel's file goes to the desktop's app.
+    fn open_side_in_app(&mut self) {
+        let Some((host, path)) = self
+            .side
+            .as_ref()
+            .map(|side| (side.host.clone(), side.path.clone()))
+        else {
+            return;
+        };
+        self.say(Ok(format!("opening {path} in its app …")));
+        self.view(move |local, cache, _| {
+            viewer::open_in_app(&host, &path, local, cache, &viewer::run)
+        });
+    }
+
+    /// Runs `work` (this machine's name, the cache directory, whether its answer is still
+    /// waited for) on a thread of its own and delivers what it gives as the answer to a new
+    /// click. Work that a newer click overtook can stop early: its answer is dropped anyway.
+    /// Work that panics answers as a broken picture. Returns the click's number.
+    fn view(
+        &mut self,
+        work: impl FnOnce(&str, Option<&std::path::Path>, &dyn Fn() -> bool) -> Result<Opened, String>
+        + Send
+        + 'static,
+    ) -> u64 {
+        let click = self.views.fetch_add(1, Ordering::SeqCst) + 1;
+        self.back_for = None;
+        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+        let (cache, views) = (self.view_cache.clone(), self.views.clone());
+        std::thread::spawn(move || {
+            let wanted = || views.load(Ordering::SeqCst) == click;
+            let result = viewer::guarded(|| work(&local, cache.as_deref(), &wanted));
+            let _ = proxy.send_event(UserEvent::Viewed(click, result));
+        });
+        click
+    }
+
+    /// No answer is waited for any more, to a click or for a list: one still on its way is
+    /// dropped when it comes.
+    fn cancel_view(&mut self) {
+        self.views.fetch_add(1, Ordering::SeqCst);
+        self.lists.fetch_add(1, Ordering::SeqCst);
+        self.back_for = None;
+    }
+
+    /// Puts `panel` in the file panel, in place of what it showed, and lays the window out
+    /// for it. Returns whether the window has room for one: beside `PANEL_MIN_COLS` columns of
+    /// terminal there may be none, and then none is kept (the layout is the one without).
+    fn show_side(&mut self, panel: SidePanel) -> bool {
+        let was_open = self.side.is_some();
+        self.side = Some(panel);
+        if !was_open {
+            self.relayout();
+        }
+        if self.layout.side.w <= 0.0 {
+            self.side = None;
+        }
+        self.settle_panel_focus();
+        self.side.is_some()
+    }
+
+    /// The answer to a click on a file: text or a picture opens in the panel (in place of
+    /// what it showed) if the window has room for one, anything else is started in the
+    /// desktop's app. An answer to a click that is not the latest is dropped (tmls: a newer
+    /// click cancels the load). What went wrong shows in the status line until the next key.
+    fn viewed(&mut self, click: u64, result: Result<Opened, String>) {
+        if click != self.views.load(Ordering::SeqCst) {
+            return;
+        }
+        let from_list = self.back_for.take() == Some(click);
+        match result {
+            Ok(Opened::Text(document)) => {
+                let said = match &document.line {
+                    Some(line) => format!("opened {} at line {line}", document.path),
+                    None => format!("opened {}", document.path),
+                };
+                // Whatever the panel showed, it shows no picture now: its texture is freed.
+                self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+                // No room: the click is answered. A note like the other answers here, gone
+                // with the next key: nothing is broken.
+                if !self.show_side(SidePanel::text(&document, &self.cfg.local_name)) {
+                    return self.say(Ok(viewer::TOO_NARROW.to_string()));
+                }
+                let lines = self.layout.side_lines;
+                if let Some(side) = &mut self.side {
+                    side.reveal(lines);
+                }
+                self.say(Ok(said));
+            }
+            Ok(Opened::Image {
+                host,
+                path,
+                file,
+                picture,
+            }) => {
+                let size = (picture.width, picture.height);
+                let mut panel = SidePanel::image(&host, &path, size, file, &self.cfg.local_name);
+                // Opened from the list that is still there: the way back to it.
+                let list = self.side.as_ref().and_then(SidePanel::made_body);
+                panel.back = list.filter(|_| from_list).cloned();
+                let said = match self.show_side(panel) {
+                    // Uploaded once, in place of the picture before. The pixels are not kept
+                    // here: `picture` is dropped when this arm ends.
+                    true => {
+                        match self
+                            .picture
+                            .set(&self.gpu.device, &self.gpu.queue, Some(&picture))
+                        {
+                            true => format!("opened {path}"),
+                            false => {
+                                self.close_side();
+                                format!("{path}: too large a picture for this GPU")
+                            }
+                        }
+                    }
+                    false => {
+                        self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+                        viewer::TOO_NARROW.to_string()
+                    }
+                };
+                self.say(Ok(said));
+            }
+            Ok(Opened::Outside { target, said }) => {
+                let said = links::open_path(&target).map(|()| said);
+                self.say(Ok(said.unwrap_or_else(|problem| problem)));
+            }
+            // A list is not a click's answer: it comes as `UserEvent::Listed`.
+            Ok(Opened::Made { .. }) => {}
+            Err(problem) => {
+                crate::errln(format_args!("tmls-rs: {problem}"));
+                self.say(Ok(problem));
+            }
+        }
+    }
+
+    /// Closes the file panel: the terminal has its full width again.
+    fn close_side(&mut self) {
+        // An answer still on its way would open it again.
+        self.cancel_view();
+        // A picture's texture is freed.
+        self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+        if self.side.take().is_some() {
+            self.relayout();
+        }
+        self.settle_panel_focus();
+    }
+
     /// Copies the command that attaches `key`.
     fn copy_attach(&mut self, key: &SessionKey) {
         if key.host == KITTY {
@@ -1053,6 +1592,8 @@ impl Running {
                     self.close_tab(active);
                 }
             }
+            Global::ClosePanel => self.close_side(),
+            Global::ToggleFiles => self.toggle_files(),
             Global::NextWaiting => self.next_waiting(),
             Global::ZoomIn => self.zoom(ZoomDir::In),
             Global::ZoomOut => self.zoom(ZoomDir::Out),
@@ -1287,10 +1828,18 @@ impl Running {
             }
             None => self.window.set_title(TITLE),
         }
+        let no_tab = front.is_none();
         if self.modal.is_some() {
             self.focus_before = Focus::Terminal;
         } else if !self.tabs.is_empty() {
             self.set_focus(Focus::Terminal);
+        }
+        // The panel's list is of the session in front: of this one now.
+        if self.side.as_ref().is_some_and(|s| s.made_body().is_some()) {
+            match no_tab {
+                true => self.close_side(),
+                false => self.show_made(),
+            }
         }
         self.invalidate();
     }
@@ -1399,6 +1948,7 @@ impl Running {
                     let said = links::open(&url).map(|()| format!("opened {url}"));
                     self.say(said);
                 }
+                Some(Effect::File(link)) => self.open_file(link),
                 None => {}
             }
         }
@@ -1439,7 +1989,12 @@ impl Running {
         if self.dragging_separator {
             self.drag_separator(x);
         }
-        let resize = self.dragging_separator || (self.modal.is_none() && hit == Hit::Separator);
+        if let Some(offset) = self.dragging_divider {
+            self.drag_divider(x, offset);
+        }
+        let dragging = self.dragging_separator || self.dragging_divider.is_some();
+        let on_handle = matches!(hit, Hit::Separator | Hit::SideDivider);
+        let resize = dragging || (self.modal.is_none() && on_handle);
         if resize != self.resize_cursor {
             self.resize_cursor = resize;
             self.window.set_cursor(match resize {
@@ -1447,7 +2002,7 @@ impl Running {
                 false => CursorIcon::Default,
             });
         }
-        if self.dragging_separator {
+        if dragging {
             return;
         }
         let over_terminal = self.modal.is_none() && hit == Hit::Terminal;
@@ -1470,8 +2025,9 @@ impl Running {
             _ => None,
         };
         if state == ElementState::Released {
-            if std::mem::take(&mut self.dragging_separator) {
-                return;
+            let separator = std::mem::take(&mut self.dragging_separator);
+            if separator || self.dragging_divider.take().is_some() {
+                return self.save_widths();
             }
             if let Some(button) = terminal_button {
                 let acts = self
@@ -1484,7 +2040,7 @@ impl Running {
         if self.modal.is_some() {
             return self.modal_click(button);
         }
-        let hit = self.layout.hit(x, y, self.tabs.len());
+        let hit = self.hit();
         if let Hit::List { line, col } = hit {
             return self.list_click(button, line, col);
         }
@@ -1504,12 +2060,47 @@ impl Running {
         }
         match hit {
             Hit::Separator => self.dragging_separator = true,
+            Hit::SideDivider => self.dragging_divider = Some(x - self.layout.side.x),
             Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);
                 self.tab_changed();
             }
             Hit::TabClose(index) => self.close_tab(index),
+            Hit::Files => self.toggle_files(),
+            Hit::SideClose => self.close_side(),
+            Hit::SideOpen => {
+                self.focus_panel();
+                self.open_side_in_app();
+            }
+            Hit::SideRefresh => {
+                self.focus_panel();
+                self.show_made();
+            }
+            Hit::SideBack => {
+                self.focus_panel();
+                self.side_back();
+            }
+            // A picture: between fitted and its own size. A row of the list: its picture.
+            // Text has nothing to click.
+            Hit::Side => {
+                self.focus_panel();
+                let body = self.layout.side_body;
+                if !body.contains(x, y) {
+                    return;
+                }
+                let lines = self.layout.side_lines;
+                let line = ((y - body.y) / self.layout.cell.1.max(1.0)).floor() as usize;
+                if let Some(list) = self.side.as_mut().and_then(SidePanel::made_body_mut) {
+                    let path = list.click(line, lines).map(|file| file.path.clone());
+                    self.invalidate();
+                    if let Some(path) = path {
+                        self.open_made(path);
+                    }
+                } else if self.side.as_mut().is_some_and(SidePanel::click) {
+                    self.invalidate();
+                }
+            }
             Hit::List { .. }
             | Hit::Sidebar
             | Hit::TabBar
@@ -1519,16 +2110,23 @@ impl Running {
         }
     }
 
+    /// A click on the panel gives it the keys, if what it shows takes any.
+    fn focus_panel(&mut self) {
+        let takes = self.panel_takes_keys();
+        if takes && self.focus != Focus::Panel {
+            self.set_focus(Focus::Panel);
+        }
+    }
+
     /// The wheel scrolls what the pointer is over: the front tab (its program's history or the
-    /// scrollback here, `mouse::Pointer::wheel`), or the session list.
+    /// scrollback here, `mouse::Pointer::wheel`), the file panel, or the session list.
     fn wheel(&mut self, delta: &MouseScrollDelta) {
         let cell_height = self.atlas.metrics().height;
         let rows = input::wheel_rows(delta, cell_height, &mut self.wheel_carry);
-        let (x, y) = self.pointer;
         if self.modal.is_some() {
             return;
         }
-        match self.layout.hit(x, y, self.tabs.len()) {
+        match self.hit() {
             Hit::Terminal => {
                 // To the program if it takes the mouse (tmux scrolls its history), else the
                 // viewport moves; the frame at the new position comes back through the waker.
@@ -1541,6 +2139,28 @@ impl Running {
             Hit::List { .. } | Hit::Button(_) | Hit::Sidebar if rows != 0 => {
                 self.sidebar.scroll(rows);
                 self.invalidate();
+            }
+            Hit::Side
+            | Hit::SideDivider
+            | Hit::SideOpen
+            | Hit::SideRefresh
+            | Hit::SideBack
+            | Hit::SideClose => {
+                let (lines, body) = (self.layout.side_lines, self.layout.side_body);
+                // A picture at its own size moves by as many pixels as text by lines, and
+                // sideways with Shift; text moves by lines.
+                let pixels = rows as f32 * cell_height;
+                let by = match self.mods.shift_key() {
+                    true => (pixels, 0.0),
+                    false => (0.0, pixels),
+                };
+                if self
+                    .side
+                    .as_mut()
+                    .is_some_and(|side| side.scroll(rows, lines) || side.pan(by, body))
+                {
+                    self.invalidate();
+                }
             }
             _ => {}
         }
@@ -1639,6 +2259,26 @@ impl Running {
             });
         self.renderer
             .draw(&mut encoder, &view, self.theme.terminal.bg);
+        // A picture in the file panel: a second pass over the first one's body, where
+        // `place` puts it in the body as it is for this frame. Without one, nothing.
+        if let Some(image) = self.side.as_ref().and_then(SidePanel::image_body) {
+            let body = self.layout.side_body;
+            let (dest, source) = viewer::place(image.size, body, image.actual, image.scroll);
+            // The pass draws over everything, a form or a menu too: not while one is on it.
+            let covered = self.view.panel.as_ref().is_some_and(|(panel, at)| {
+                let over = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let line = self.layout.separator.w.max(1.0);
+                over.x - line < dest.right()
+                    && dest.x < over.right() + line
+                    && over.y - line < dest.bottom()
+                    && dest.y < over.bottom() + line
+            });
+            if !covered {
+                let viewport = (self.config.width, self.config.height);
+                self.picture
+                    .draw(&mut encoder, &view, viewport, dest, source, body);
+            }
+        }
         drop(view);
 
         self.write_meta(false);

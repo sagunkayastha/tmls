@@ -108,6 +108,10 @@ pub struct SessionInfo {
     pub last_output_age_s: Option<u64>,
     /// Claude's process, for a session outside tmux ([`KITTY`]); `None` for a tmux session.
     pub pid: Option<u32>,
+    /// Claude's id of the conversation, which names its transcript
+    /// (`~/.claude/projects/*/ID.jsonl`); `None` for a session that is not Claude's, and for an
+    /// id that is not one ([`crate::files::valid_session_id`]): it becomes part of a command.
+    pub session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +185,8 @@ struct Claude {
     interactive: bool,
     /// The last part of its working directory: its name when it has none.
     folder: Option<String>,
+    /// `sessionId`, if it is one.
+    id: Option<String>,
 }
 
 impl Claude {
@@ -205,6 +211,7 @@ impl Claude {
             pid: file.get("pid").and_then(Value::as_u64).and_then(|pid| u32::try_from(pid).ok()),
             interactive: file.get("kind").and_then(Value::as_str) == Some("interactive"),
             folder: text("cwd").and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()).map(str::to_string)),
+            id: text("sessionId").filter(|id| crate::files::valid_session_id(id)),
         })
     }
 
@@ -385,6 +392,7 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
                 attached: w.attached,
                 last_output_age_s: Some(age),
                 pid: None,
+                session_id: claude.and_then(|c| c.id.clone()),
             }
         })
         .collect();
@@ -413,6 +421,7 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
             attached: 0,
             last_output_age_s: None,
             pid: Some(pid),
+            session_id: file.id.clone(),
         });
     }
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }

@@ -1,6 +1,6 @@
 //! The ◆ mark: a session that finished since the user last looked at it.
 
-use client_core::listing::{HostSnapshot, SessionInfo, SessionKey, Status, Tool};
+use client_core::listing::{HostSnapshot, KITTY, SessionInfo, SessionKey, Status, Tool};
 use client_core::seen::Seen;
 
 fn key(host: &str, name: &str) -> SessionKey {
@@ -21,6 +21,7 @@ fn snap(host: &str, sessions: &[(&str, Status)]) -> HostSnapshot {
             attached: 0,
             last_output_age_s: Some(0),
             pid: None,
+            session_id: None,
         })
         .collect();
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }
@@ -184,4 +185,55 @@ fn applying_a_snapshot_twice_keeps_the_mark() {
     assert_eq!(statuses(&kept), [Idle, Idle]);
     seen.apply(&mut kept);
     assert_eq!(statuses(&kept), [Idle, Idle]);
+}
+
+/// This machine's listing: its tmux sessions, then its Claude sessions outside tmux.
+fn here(tmux: &[(&str, Status)], outside: &[(&str, Status)]) -> HostSnapshot {
+    let mut snapshot = snap("laptop", tmux);
+    snapshot.sessions.extend(snap(KITTY, outside).sessions);
+    snapshot
+}
+
+/// The marks after `seen` has looked at this machine's listing.
+fn marks_here(seen: &mut Seen, tmux: &[(&str, Status)], outside: &[(&str, Status)]) -> Vec<Status> {
+    let mut snapshot = here(tmux, outside);
+    seen.apply(&mut snapshot);
+    seen.forget_missing_local(&snapshot);
+    snapshot.sessions.iter().map(|s| s.status).collect()
+}
+
+#[test]
+fn a_session_outside_tmux_that_is_gone_is_forgotten() {
+    let mut seen = Seen::new();
+    assert_eq!(marks_here(&mut seen, &[("job", Idle)], &[("notes", Running)]), [Idle, Running]);
+    // it ends while it runs; one of that name that comes later did not finish anything
+    assert_eq!(marks_here(&mut seen, &[("job", Idle)], &[]), [Idle]);
+    assert_eq!(marks_here(&mut seen, &[("job", Idle)], &[("notes", Idle)]), [Idle, Idle]);
+
+    // its mark goes with it too
+    marks_here(&mut seen, &[], &[("notes", Running)]);
+    assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Unseen]);
+    assert_eq!(marks_here(&mut seen, &[], &[]), []);
+    assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Idle]);
+
+    // a tmux session of this machine is forgotten as before, and one outside is not a tmux one
+    marks_here(&mut seen, &[("job", Running)], &[("job", Idle)]);
+    assert_eq!(marks_here(&mut seen, &[("job", Idle)], &[("job", Idle)]), [Unseen, Idle]);
+    assert_eq!(marks_here(&mut seen, &[], &[("job", Idle)]), [Idle]);
+    assert_eq!(marks_here(&mut seen, &[("job", Idle)], &[("job", Idle)]), [Idle, Idle]);
+}
+
+#[test]
+fn another_hosts_listing_forgets_no_session_outside_tmux() {
+    let mut seen = Seen::new();
+    marks_here(&mut seen, &[], &[("notes", Running)]);
+    assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Unseen]);
+    // ph lists none of them: they are this machine's
+    assert_eq!(marks(&mut seen, "ph", &[("job", Idle)]), [Idle]);
+    assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Unseen]);
+    // this machine offline: likely still there
+    let mut down = offline("laptop");
+    seen.apply(&mut down);
+    seen.forget_missing_local(&down);
+    assert_eq!(marks_here(&mut seen, &[], &[("notes", Idle)]), [Unseen]);
 }

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""A mouse for the headless compositor: one click, or the wheel, at X Y (output pixels).
+"""A mouse for the headless compositor: one click, the wheel, or a drag (output pixels).
 
     vptr.py X Y [BUTTON]        BUTTON: left (default), middle, right
     vptr.py X Y wheel-up [N]    N notches of the wheel (default 1); also wheel-down
+    vptr.py drag X1 Y X2        the left button goes down at X1 Y, the pointer moves along
+                                the row in three steps, and the button comes up at X2 Y
 
 Speaks the Wayland wire protocol itself (no library in the image has it): binds
 zwlr_virtual_pointer_manager_v1, makes a pointer, moves it, presses and releases.
@@ -75,11 +77,18 @@ class Conn:
 
 
 def main():
-    x, y = int(sys.argv[1]), int(sys.argv[2])
-    action = sys.argv[3] if len(sys.argv) > 3 else "left"
+    drag_to = None
+    if len(sys.argv) > 1 and sys.argv[1] == "drag":
+        if len(sys.argv) != 5:
+            raise SystemExit("vptr: drag takes X1 Y X2")
+        x, y, drag_to = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+        action = "left"
+    else:
+        x, y = int(sys.argv[1]), int(sys.argv[2])
+        action = sys.argv[3] if len(sys.argv) > 3 else "left"
     if action not in BUTTONS and action not in WHEELS:
         raise SystemExit("vptr: unknown action %r" % action)
-    notches = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    notches = int(sys.argv[4]) if drag_to is None and len(sys.argv) > 4 else 1
     conn = Conn()
     registry = conn.new_id()
     conn.send(message(1, 1, struct.pack("=I", registry)))  # wl_display.get_registry
@@ -130,6 +139,13 @@ def main():
             conn.send(message(pointer, 2, struct.pack("=III", now(), BUTTONS[action], state)))
             frame()
             time.sleep(0.08)
+            if state == 1 and drag_to is not None:
+                # Three motions with the button held; the last is where it comes up.
+                for step in (1, 2, 3):
+                    at = x + (drag_to - x) * step // 3
+                    conn.send(message(pointer, 1, struct.pack("=IIIII", now(), at, y, *EXTENT)))
+                    frame()
+                    time.sleep(0.1)
     time.sleep(0.2)
 
 

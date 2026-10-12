@@ -4,8 +4,8 @@ use client_core::SessionKey;
 use client_core::tmux::{NewSession, Start};
 use desktop::forms::Request;
 use desktop::keys::{
-    Focus, Global, ListKey, RepeatGate, Route, focus_after_close, global, keys_at, list_keeps_keys,
-    list_key, route,
+    Focus, Global, ListKey, PanelKey, RepeatGate, Route, focus_after_close, focus_after_panel,
+    global, keys_at, leaves_panel, list_keeps_keys, list_key, panel_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -396,4 +396,216 @@ fn a_rename_or_kill_asked_from_the_list_leaves_the_keys_in_the_list() {
             assert!(!list_keeps_keys(request, in_terminal), "{request:?}");
         }
     }
+}
+
+#[test]
+fn alt_shift_x_closes_the_file_panel_from_the_terminal_and_the_list() {
+    for ev in [ch('X', ALT_SHIFT), ch('x', ALT_SHIFT)] {
+        assert_eq!(global(&ev, Focus::Terminal), Some(Global::ClosePanel));
+        assert_eq!(global(&ev, Focus::Sidebar), Some(Global::ClosePanel));
+        assert_eq!(global(&ev, Focus::Form), None, "a form keeps its keys");
+        // Bound: it is not typed into the session, and holding it does it once.
+        assert_eq!(
+            route(&ev, Focus::Terminal, Some(TabState::Live)),
+            Route::Global(Global::ClosePanel)
+        );
+        assert_eq!(
+            route(&repeat(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+        assert_eq!(
+            route(&release(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+    }
+    // Alone, x is the session's.
+    let plain = ch('x', Mods::default());
+    assert_eq!(
+        route(&plain, Focus::Terminal, Some(TabState::Live)),
+        Route::Terminal
+    );
+}
+
+#[test]
+fn alt_shift_f_opens_and_closes_the_files_panel() {
+    for ev in [ch('F', ALT_SHIFT), ch('f', ALT_SHIFT)] {
+        for focus in [Focus::Terminal, Focus::Sidebar, Focus::Panel] {
+            assert_eq!(global(&ev, focus), Some(Global::ToggleFiles), "{focus:?}");
+        }
+        assert_eq!(global(&ev, Focus::Form), None, "a form keeps its keys");
+        // Bound: it is not typed into the session, and holding it does it once.
+        assert_eq!(
+            route(&ev, Focus::Terminal, Some(TabState::Live)),
+            Route::Global(Global::ToggleFiles)
+        );
+        assert_eq!(
+            route(&repeat(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+        assert_eq!(
+            route(&release(&ev), Focus::Terminal, Some(TabState::Live)),
+            Route::Drop
+        );
+    }
+    // Alone, or with one of the two, f is the session's.
+    for mods in [NONE, SHIFT, ALT, CTRL] {
+        assert_eq!(
+            route(&ch('f', mods), Focus::Terminal, Some(TabState::Live)),
+            Route::Terminal,
+            "{mods:?}"
+        );
+    }
+}
+
+#[test]
+fn with_the_keys_in_the_panel_no_key_reaches_a_session() {
+    for tab in [Some(TabState::Live), Some(ENDED), None] {
+        for ev in [
+            ch('j', NONE),
+            ch('x', NONE),
+            ch('c', CTRL),
+            named(Named::Enter, NONE),
+            named(Named::Escape, NONE),
+            named(Named::Backspace, NONE),
+            named(Named::Tab, NONE),
+        ] {
+            assert_eq!(route(&ev, Focus::Panel, tab), Route::Panel, "{ev:?}");
+            assert_eq!(route(&release(&ev), Focus::Panel, tab), Route::Panel);
+        }
+        // The window's own bindings work from there.
+        assert_eq!(
+            route(&ch('q', CTRL), Focus::Panel, tab),
+            Route::Global(Global::Quit)
+        );
+        assert_eq!(
+            route(&ch('x', ALT_SHIFT), Focus::Panel, tab),
+            Route::Global(Global::ClosePanel)
+        );
+        assert_eq!(
+            route(&named(Named::Up, ALT_SHIFT), Focus::Panel, tab),
+            Route::Global(Global::FocusSidebar)
+        );
+    }
+}
+
+#[test]
+fn the_panels_keys_move_open_and_go_back() {
+    for (ev, key) in [
+        (named(Named::Up, NONE), PanelKey::Up),
+        (ch('k', NONE), PanelKey::Up),
+        (named(Named::Down, NONE), PanelKey::Down),
+        (ch('j', NONE), PanelKey::Down),
+        (named(Named::Enter, NONE), PanelKey::Open),
+        (named(Named::Backspace, NONE), PanelKey::Back),
+        (named(Named::Escape, NONE), PanelKey::Back),
+    ] {
+        assert_eq!(panel_key(&ev), Some(key), "{ev:?}");
+        assert_eq!(panel_key(&release(&ev)), None, "{ev:?} released");
+        // Held, the cursor keeps moving; nothing is opened or left twice.
+        let moves = matches!(key, PanelKey::Up | PanelKey::Down);
+        assert_eq!(panel_key(&repeat(&ev)), moves.then_some(key), "{ev:?} held");
+    }
+    for ev in [
+        ch('x', NONE),
+        ch('j', SHIFT),
+        ch('j', CTRL),
+        named(Named::Enter, SHIFT),
+        named(Named::Escape, ALT),
+        named(Named::Tab, NONE),
+    ] {
+        assert_eq!(panel_key(&ev), None, "{ev:?}");
+    }
+}
+
+#[test]
+fn a_key_the_panel_does_not_bind_takes_the_keys_back_to_the_terminal() {
+    // Typed text, Tab, Ctrl+C, a capital, a chord: none of them is the panel's, none may vanish.
+    for ev in [
+        ch('x', NONE),
+        ch('l', NONE),
+        ch(' ', NONE),
+        ch('J', SHIFT),
+        ch('j', ALT),
+        ch('c', CTRL),
+        ch('d', CTRL),
+        named(Named::Tab, NONE),
+        named(Named::Enter, SHIFT),
+        named(Named::Escape, ALT),
+        named(Named::Left, NONE),
+        named(Named::Up, SHIFT),
+    ] {
+        assert_eq!(panel_key(&ev), None, "{ev:?}");
+        assert!(leaves_panel(&ev), "{ev:?}");
+        // Its release and its repeats come after the keys moved: they move nothing again.
+        assert!(!leaves_panel(&release(&ev)), "{ev:?} released");
+        assert!(!leaves_panel(&repeat(&ev)), "{ev:?} held");
+    }
+    // The panel's own keys stay, pressed, held or released: Enter held opens once and types
+    // no line into the session behind.
+    for ev in [
+        ch('j', NONE),
+        ch('k', NONE),
+        named(Named::Up, NONE),
+        named(Named::Down, NONE),
+        named(Named::Enter, NONE),
+        named(Named::Backspace, NONE),
+        named(Named::Escape, NONE),
+    ] {
+        for ev in [ev.clone(), repeat(&ev), release(&ev)] {
+            assert!(!leaves_panel(&ev), "{ev:?}");
+        }
+    }
+    // The window's own bindings are done where the keys are.
+    for ev in [
+        ch('f', ALT_SHIFT),
+        ch('x', ALT_SHIFT),
+        ch('w', ALT_SHIFT),
+        named(Named::Right, ALT_SHIFT),
+        ch('q', CTRL),
+        ch('=', CTRL),
+    ] {
+        assert!(!leaves_panel(&ev), "{ev:?}");
+        assert!(!leaves_panel(&repeat(&ev)), "{ev:?} held");
+    }
+}
+
+#[test]
+fn a_panel_that_is_not_drawn_does_not_keep_the_keys() {
+    // The panel's list has the keys and the window is made so narrow that the layout has no
+    // panel any more: `j` would move a cursor nobody sees. The terminal gets them.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, false, true),
+        Focus::Terminal
+    );
+    // No tab: the list of sessions.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, false, false),
+        Focus::Sidebar
+    );
+    // It is drawn and takes keys: nothing moves.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, true, true),
+        Focus::Panel
+    );
+    // Drawn, but what it shows now takes none (a file from the terminal, nothing).
+    assert_eq!(
+        focus_after_panel(Focus::Panel, false, true, true),
+        Focus::Terminal
+    );
+    // Whoever else has the keys keeps them, whatever becomes of the panel.
+    for focus in [Focus::Terminal, Focus::Sidebar, Focus::Form] {
+        for (takes, drawn, tabs) in [
+            (false, false, true),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(focus_after_panel(focus, takes, drawn, tabs), focus);
+        }
+    }
+    // And the key that follows goes to the session.
+    let focus = focus_after_panel(Focus::Panel, true, false, true);
+    assert_eq!(
+        route(&ch('j', NONE), focus, Some(TabState::Live)),
+        Route::Terminal
+    );
 }

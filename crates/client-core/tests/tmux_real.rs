@@ -15,6 +15,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use client_core::files::{Kind, locate_argv, parse_located};
 use client_core::listing::SessionKey;
 use client_core::tmux::{
     NewSession, Start, attach_argv, kill_argv, new_session_argv, rename_argv, run, valid_session_name,
@@ -275,4 +276,29 @@ fn attach_argv_attaches() {
     assert!(screen.text.contains("[detached"), "tmux did not say it detached: {:?}", screen.text);
     assert_eq!(show(&name, "#{session_attached}"), "0");
     assert_eq!(sessions(), only(&name), "detaching leaves the session running");
+}
+
+#[test]
+fn a_relative_path_is_found_in_the_panes_directory() {
+    let (_alone, dir) = private_server();
+    let mut created = Created(Vec::new());
+    let name = created.name("tmlsrs-test-a b'c files");
+    let folder = dir.join("files here");
+    std::fs::create_dir_all(folder.join("src")).expect("the session's folder");
+    std::fs::write(folder.join("src/-odd name.rs"), "fn main() {}\n").expect("the file");
+    go(&new_session_argv(&shell_in(&folder, &name), LOCAL)).expect("creating the session");
+    assert_on_private_socket(&name, dir);
+    wait_until("the pane's directory", || show(&name, "#{pane_current_path}").ends_with("files here"));
+
+    let out = go(&locate_argv(&key(&name), "src/-odd name.rs", LOCAL)).expect("locating");
+    let located = parse_located(&out).expect("kind, size and path");
+    assert_eq!(located.kind, Kind::File);
+    assert_eq!(located.size, 13);
+    assert_eq!(Path::new(&located.path), folder.join("src/-odd name.rs").as_path());
+
+    let missing = go(&locate_argv(&key(&name), "src/nope.rs", LOCAL)).expect_err("nothing there");
+    assert_eq!(format!("{missing:#}"), "not found");
+    // A session that does not exist names no directory: tmux's error, not a file at the root.
+    let nowhere = go(&locate_argv(&key("tmlsrs-test-not there"), "etc/passwd", LOCAL));
+    assert!(nowhere.is_err());
 }

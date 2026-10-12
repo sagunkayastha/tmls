@@ -7,6 +7,10 @@
 #   SMOKE_OUT        where screenshots and logs go (default /data/scratch/tmls-rs-v0/e2e)
 #   SMOKE_NO_BUILD   set to 1 to use target-docker/release/tmls-rs as it is
 #   SMOKE_TIMEOUT    seconds the whole run may take in the container (default 480)
+#   SMOKE_SCALE      the headless output's scale (default 1). The checks' pixel positions and
+#                    sizes are for scale 1: at another scale run with SMOKE_ONLY=measure
+#   SMOKE_ONLY       `measure`: start, attach, open the text panel, take `measure-panel.png`
+#                    (for tooling/smoke/rows.py) and stop
 #
 # The repo is mounted read-only; the container has no network; HOME, the tmux socket and the
 # Wayland socket live on a tmpfs inside the container, so nothing of the host's is seen.
@@ -29,5 +33,6 @@ exec docker run --rm --network none --hostname smoke \
   -v "$OUT":/out \
   --tmpfs /scratch:mode=1777 \
   -e SMOKE_OUT=/out -e SMOKE_SCRATCH=/scratch -e SMOKE_OUTSIDE="${SMOKE_OUTSIDE:-}" \
+  -e SMOKE_SCALE="${SMOKE_SCALE:-1}" -e SMOKE_ONLY="${SMOKE_ONLY:-}" \
   -w /work \
   "$IMAGE" timeout --kill-after=10 "${SMOKE_TIMEOUT:-480}" bash /work/tooling/smoke/e2e.sh

@@ -59,6 +59,10 @@ pub const LEGEND: [(Status, &str); 5] = [
 /// up (tmls line 90).
 pub const SIDEBAR_MIN_COLS: usize = 20;
 
+/// The narrowest the file panel can be dragged to, and the fewest columns it leaves the
+/// terminal: a window that cannot give both this many has no panel.
+pub const PANEL_MIN_COLS: usize = 20;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     /// Columns of the session list: `SIDEBAR_COLS` until its right edge is dragged. Never

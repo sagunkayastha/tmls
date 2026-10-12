@@ -6,10 +6,14 @@
 //! - `keys`  — the window's own key bindings and which keys go to the terminal, the list, a form.
 //! - `forms` — the new-session form, rename, the kill confirm and a session's menu.
 //! - `mouse` — the mouse over the terminal: to the program in the tab, or a selection of our own.
-//! - `links` — the URL under a cell, and opening it.
+//! - `links` — the URL or the file path under a cell, and opening one.
 //! - `kitty` — bringing the kitty window of a Claude session outside tmux to the front.
+//! - `viewer` — a clicked file: found and read on the session's host, shown in the panel
+//!   beside the terminal or given to the desktop's app.
+//! - `picture` — a picture in that panel on the GPU: its texture and the pass that draws it.
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
+//! - `uistate` — the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
 //! - `draw`  — the layout of the window and everything but the terminal's cells as quads.
 //! - `app`   — the winit event loop and the wgpu surface: wiring only.
 //!
@@ -24,9 +28,12 @@ pub mod keys;
 pub mod kitty;
 pub mod links;
 pub mod mouse;
+pub mod picture;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme;
+pub mod uistate;
+pub mod viewer;
 
 /// Writes one line to stderr. Unlike `eprintln!` it cannot panic: the terminal the app was
 /// started from (`tmls-rs &`) may be closed, and a line nobody reads must not end the app.

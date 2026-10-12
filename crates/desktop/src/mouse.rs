@@ -11,7 +11,8 @@
 //! Modifiers, the same with and without reports:
 //! - **Ctrl or Shift + left drag** always selects here, and the selection is copied when the
 //!   button is released (so does a plain drag when the program takes no reports);
-//! - **Ctrl + left click** (no movement) opens the link under the pointer;
+//! - **Ctrl + left click** (no movement) opens the link under the pointer: a URL in the
+//!   browser, a file path in the file panel or the desktop's app (`links`, `viewer`);
 //! - **Shift + wheel** scrolls the viewport here.
 //!
 //! None of these reach the program. `Pointer` decides (`Act`), `perform` does it to a
@@ -23,7 +24,7 @@ use s2_wgpu::input::WHEEL_LINES;
 use s2_wgpu::select::CellPos;
 use s2_wgpu::session::Session;
 
-use crate::links;
+use crate::links::{self, FileLink, Link};
 
 /// No more wheel reports than this for one wheel event (a touchpad fling).
 const MAX_NOTCHES: i32 = 20;
@@ -233,6 +234,8 @@ pub enum Effect {
     Copy(String),
     /// This link is opened (`links::open`).
     Open(String),
+    /// This file of the session's host is opened (`viewer::open_link`).
+    File(FileLink),
 }
 
 /// Does one `Act` to the session of the tab in front.
@@ -256,7 +259,10 @@ pub fn perform(act: Act, session: &mut Session) -> Option<Effect> {
         }
         Act::SelectClear => redraw(session.select_clear()),
         Act::Copy => session.selected_text().map(Effect::Copy),
-        Act::OpenLink(at) => links::in_frame(session.frame()?, at).map(Effect::Open),
+        Act::OpenLink(at) => match links::link_in_frame(session.frame()?, at)? {
+            Link::Url(url) => Some(Effect::Open(url)),
+            Link::File(file) => Some(Effect::File(file)),
+        },
         Act::Scroll(rows) => {
             session.scroll(rows);
             None

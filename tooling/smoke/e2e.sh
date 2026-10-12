@@ -133,6 +133,8 @@ cleanup() {
   tmux kill-session -t "=$NEW" 2>/dev/null
   tmux kill-session -t "=$RENAMED" 2>/dev/null
   tmux kill-session -t "=$BYE" 2>/dev/null
+  # The stand-in for a Claude process (the images' list), if it still runs.
+  [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
 }
@@ -141,8 +143,17 @@ trap cleanup EXIT
 echo "== tmls-rs e2e: $(date -u +%FT%TZ)  bin $(sha256sum "$BIN" 2>/dev/null | cut -c1-12)  nonce $NONCE"
 
 # --- compositor -------------------------------------------------------------------------------
-cat >"$SCRATCH/sway.conf" <<'EOF'
-output HEADLESS-1 resolution 1280x800 scale 1
+# SMOKE_SCALE: the output's scale (default 1). The output keeps its 1280x800 logical pixels —
+# its mode is that times the scale — so vptr.py's positions (it sends them as parts of 1280x800)
+# mean the same places at any scale, and a screenshot is the scale times as large.
+SCALE=${SMOKE_SCALE:-1}
+MODE=$(python3 -c 'import sys; s = float(sys.argv[1]); print("%dx%d" % (round(1280 * s), round(800 * s)))' "$SCALE") || {
+  echo "e2e.sh: SMOKE_SCALE=$SCALE is no number" >&2
+  exit 2
+}
+echo "== output: mode $MODE, scale $SCALE"
+cat >"$SCRATCH/sway.conf" <<EOF
+output HEADLESS-1 resolution $MODE scale $SCALE
 default_border none
 default_floating_border none
 focus_follows_mouse no
@@ -204,6 +215,37 @@ check "the app reports its adapter on stderr" grep -q 'tmls-rs: adapter' "$OUT/a
 sleep 2
 check "screenshot 01-start (list, nothing open)" shot 01-start
 check "the window is drawn (not one flat colour)" picture_drawn
+
+# --- SMOKE_ONLY=measure: the text panel beside a full terminal, one screenshot, and out -----------
+# For tooling/smoke/rows.py, at any SMOKE_SCALE: the first session attached and its pane filled
+# with a path, the panel opened on that file by Ctrl+click, `measure-panel.png` taken. None of
+# the checks further down run (their pixel checks are for scale 1).
+if [ "${SMOKE_ONLY:-}" = measure ]; then
+  keys -k Return
+  wait_for 8 bash -c 'tmux list-clients -F "#{session_name}" | grep -qxF -- "$0"' "$ODD" &&
+    pass "Enter attaches \"$ODD\"" || fail "Enter attaches \"$ODD\""
+  VIEWED="$HOME/viewme.txt"
+  seq -f 'line %g of the viewed file' 1 200 >"$VIEWED"
+  tmux send-keys -t "=$ODD:" "clear; for i in \$(seq 1 120); do echo $VIEWED; done" Enter
+  sleep 1.5
+  COLS_BEFORE=$(tmux display -p -t "=$ODD:" '#{window_width}')
+  check "screenshot measure-terminal" shot measure-terminal
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  timeout 10 python3 /work/tooling/smoke/vptr.py 300 300 2>>"$OUT/vptr.log"
+  if wait_for 8 bash -c '[ "$(tmux display -p -t "=$0:" "#{window_width}")" -lt "$1" ]' "$ODD" "$COLS_BEFORE"; then
+    pass "Ctrl+click on the path opens the panel ($COLS_BEFORE -> $(tmux display -p -t "=$ODD:" '#{window_width}') columns)"
+  else
+    fail "Ctrl+click on the path opens the panel" "columns $COLS_BEFORE"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot measure-panel" shot measure-panel
+  grep -E 'tmls-rs: (adapter|scale)' "$OUT/app.stderr" | sed 's/^/    /'
+  echo "== $FAILED of $N checks failed (SMOKE_ONLY=measure, scale $SCALE)"
+  [ "$FAILED" -eq 0 ]
+  exit
+fi
 START_PICTURE=$(picture)
 
 # --- with no tab open: pin, zoom, unpin ---------------------------------------------------------
@@ -388,15 +430,16 @@ if click 300 11; then
     fail "a click on the × of the second tab closes it; the session lives on" "clients: $(attached | tr '\n' '|')"
   fi
   check "screenshot 11-closed-by-click" shot 11-closed-by-click
-  # The list: line 0 is the host's header, line 1 "$ODD", line 2 $ONE.
-  click 100 11
+  # The list: line 0 is the host's header, line 1 "$ODD", line 2 $ONE. Its lines are the
+  # terminal's rows: 17 px each from y 23, under a band as high as the tab bar.
+  click 100 31
   sleep 0.5
   if [ "$(attached | wc -l)" -eq 1 ]; then
     pass "a click on the host's header attaches nothing"
   else
     fail "a click on the host's header attaches nothing" "clients: $(attached | tr '\n' '|')"
   fi
-  click 100 45
+  click 100 65
   if wait_for 8 attached_to "$ONE"; then
     pass "a click on the list's third line attaches $ONE"
   else
@@ -433,6 +476,298 @@ if click 300 11; then
   tmux set -g mouse off
   sleep 0.5
   check_typed "after the wheel typing still arrives" "$ONE" wheeled
+
+  # --- the file panel: Ctrl+click on a path in the terminal ---------------------------------------
+  # The pane is filled with the path, so the click lands on it whatever the row. Ctrl is held by
+  # a wtype of its own for as long as the click takes.
+  VIEWED="$HOME/viewme.txt"
+  seq -f 'line %g of the viewed file' 1 60 >"$VIEWED"
+  pane_cols() { tmux display -p -t "=$ONE:" '#{window_width}' 2>/dev/null; }
+  narrower_than() { [ "$(pane_cols)" -lt "$1" ]; }
+  as_wide_as() { [ "$(pane_cols)" -eq "$1" ]; }
+  tmux send-keys -t "=$ONE:" "clear; for i in \$(seq 1 40); do echo $VIEWED; done" Enter
+  wait_for 5 pane_has_line "$ONE" "$VIEWED"
+  COLS_BEFORE=$(pane_cols)
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  click 300 300
+  if wait_for 8 narrower_than "$COLS_BEFORE"; then
+    pass "Ctrl+click on a file's path opens the panel: the pane is narrower ($COLS_BEFORE -> $(pane_cols) columns)"
+  else
+    fail "Ctrl+click on a file's path opens the panel: the pane is narrower" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot 12b-file-panel" shot 12b-file-panel
+  click 1100 400 wheel-down 3
+  check "screenshot 12c-file-panel-scrolled" shot 12c-file-panel-scrolled
+  # The divider. Right of the list (28 cells and its line: 225 px) are 1055 px; the panel opens
+  # with what fits in half of them, the line, 4 px of padding and 65 columns: 525 px, so the
+  # divider is the pixel column 755. Dragged 200 px to the right it leaves the panel 40 columns
+  # (1280 - 955 - 5 = 320 px) and the terminal 25 more; the width is saved when the button
+  # comes up. Nothing was saved before: the panel opened with the default.
+  UI="$HOME/.config/tmls-rs/ui"
+  wider_than() { [ "$(pane_cols)" -gt "$1" ]; }
+  ui_has() { grep -qxF -- "$1" "$UI" 2>/dev/null; }
+  check "before a drag there is no ~/.config/tmls-rs/ui" test ! -e "$UI"
+  COLS_PANEL=$(pane_cols)
+  click drag 755 400 955
+  if wait_for 8 wider_than "$COLS_PANEL"; then
+    pass "dragging the panel's divider to the right widens the pane ($COLS_PANEL -> $(pane_cols) columns)"
+  else
+    fail "dragging the panel's divider to the right widens the pane" "columns $COLS_PANEL -> $(pane_cols)"
+  fi
+  if wait_for 3 ui_has "panel_cols=40"; then
+    pass "after the drag ~/.config/tmls-rs/ui holds panel_cols=40"
+  else
+    fail "after the drag ~/.config/tmls-rs/ui holds panel_cols=40" "ui: $(tr '\n' '|' <"$UI" 2>&1)"
+  fi
+  check "screenshot 12d-divider-dragged" shot 12d-divider-dragged
+  COLS_DRAGGED=$(pane_cols)
+  # Back to the left, past what the terminal can give: it keeps its 20 columns.
+  click drag 955 400 240
+  if wait_for 8 as_wide_as 20; then
+    pass "dragged far to the left the divider stops where the terminal has 20 columns"
+  else
+    fail "dragged far to the left the divider stops where the terminal has 20 columns" "columns $COLS_DRAGGED -> $(pane_cols)"
+  fi
+  check "screenshot 12e-divider-far-left" shot 12e-divider-far-left
+  # And from there (the divider is the pixel column 395 now) to where it was dragged first.
+  # Then a press on the handle's outermost pixel (it is 4 px either side of the divider) and
+  # a pixel's move: the divider keeps its distance from the pointer, so no column changes.
+  click drag 395 400 955
+  click drag 951 400 950
+  if wait_for 8 as_wide_as "$COLS_DRAGGED" && wait_for 3 ui_has "panel_cols=40"; then
+    pass "dragged back, and pressed on the handle's edge, the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40"
+  else
+    fail "dragged back, and pressed on the handle's edge, the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40" \
+      "columns $(pane_cols); ui: $(tr '\n' '|' <"$UI" 2>&1)"
+  fi
+  # --- a picture in the panel ---------------------------------------------------------------------
+  # 400x300 pixels of one orange, written with python's zlib. The panel is open with its text
+  # and 40 columns: the divider is the pixel column 955, as dragged above, so the panel's text
+  # and the picture have the 320 pixel columns from 960 (1280 - 955 - 5 = 320). The picture is
+  # wider than that: fitted it is 320x240, 80 % of its size.
+  ORANGE="$HOME/orange.png"
+  python3 - "$ORANGE" <<'PY'
+import struct, sys, zlib
+w, h = 400, 300
+def chunk(kind, data):
+    body = kind + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+rows = (b"\x00" + bytes((0xFF, 0x88, 0x00)) * w) * h
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY
+  # orange  — of the pixels on the screen that are exactly #FF8800: how many are in the panel's
+  # pixel columns (from 960), the box around those (WxH+X+Y), and how many are left of them.
+  orange() {
+    timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import sys
+d = sys.stdin.buffer.read()
+# P6\nW H\n255\n then RGB triples
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+row = b"\xff\x88\x00" * w
+inside = outside = 0
+xs, ys = [], []
+for y in range(h):
+    line = px[3 * w * y:3 * w * (y + 1)]
+    if b"\xff\x88\x00" not in line:
+        continue
+    hit = [x for x in range(w) if line[3 * x:3 * x + 3] == b"\xff\x88\x00"]
+    here = [x for x in hit if x >= 960]
+    outside += len(hit) - len(here)
+    if here:
+        inside += len(here)
+        xs += [here[0], here[-1]]
+        ys.append(y)
+box = "%dx%d+%d+%d" % (max(xs) - min(xs) + 1, ys[-1] - ys[0] + 1, min(xs), ys[0]) if xs else "none"
+print(inside, box, outside)
+' 2>/dev/null || echo "0 none 0"
+    return 0
+  }
+  orange_at_least() { [ "$(orange | cut -d' ' -f1)" -ge "$1" ]; }
+  orange_is() { case "$(orange)" in $1) return 0 ;; *) return 1 ;; esac; }
+  tmux send-keys -t "=$ONE:" "clear; for i in \$(seq 1 40); do echo $ORANGE; done" Enter
+  wait_for 5 pane_has_line "$ONE" "$ORANGE"
+  check "before the click on the picture's path no pixel of the screen is its orange" orange_is "0 none 0"
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  click 300 300
+  if wait_for 8 orange_at_least 10000; then
+    pass "Ctrl+click on a picture's path shows it in the panel: $(orange | cut -d' ' -f1) pixels of its orange right of the divider"
+  else
+    fail "Ctrl+click on a picture's path shows it in the panel" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot 12f-image-panel" shot 12f-image-panel
+  # Fitted: as wide as the panel's 320 pixels, its shape kept, nothing of it outside the panel.
+  if orange_is "76800 320x240+960+* 0"; then
+    pass "the picture is fitted into the panel with its shape kept: $(orange | cut -d' ' -f2)"
+  else
+    fail "the picture is fitted into the panel with its shape kept (320x240 from x=960)" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "with the picture open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
+  # A click on it: its own size, one texel a pixel. 320 of its 400 columns fit, all 300 rows.
+  click 1100 400
+  if wait_for 5 orange_is "96000 320x300+960+* 0"; then
+    pass "a click on the picture shows it at its own size: $(orange | cut -d' ' -f2)"
+  else
+    fail "a click on the picture shows it at its own size (320x300 from x=960)" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "screenshot 12g-image-actual" shot 12g-image-actual
+  # And a click again fits it.
+  click 1100 400
+  if wait_for 5 orange_is "76800 320x240+960+* 0"; then
+    pass "a click again fits the picture"
+  else
+    fail "a click again fits the picture" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  keys -M alt -M shift -k x -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "Alt+Shift+X closes the panel: the pane has its $COLS_BEFORE columns again"
+  else
+    fail "Alt+Shift+X closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  check "with the panel closed nothing of the picture is left on the screen" orange_is "0 none 0"
+  tmux send-keys -t "=$ONE:" 'clear' Enter
+  sleep 0.5
+  check_typed "after the panel typing still arrives" "$ONE" viewed
+
+  # --- the images a session made: Alt+Shift+F and `Files` ----------------------------------------
+  # $ONE is in front and no Claude session yet: the panel opens (with the 40 columns dragged
+  # above, so the pane has its $COLS_DRAGGED) and says so; no command runs for it.
+  keys -M alt -M shift -k f -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_DRAGGED"; then
+    pass "Alt+Shift+F opens the panel without a file: the pane is narrower ($COLS_BEFORE -> $(pane_cols) columns)"
+  else
+    fail "Alt+Shift+F opens the panel without a file: the pane is narrower" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  check "screenshot 12j-made-no-claude (no Claude session in this tab)" shot 12j-made-no-claude
+  # panel_picture  — a hash of the panel's pixel columns only (from 960): not of tmux's clock in
+  # the pane, nor of the session's mark in the list and on its tab, which change by themselves.
+  panel_picture() {
+    timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+crop = hashlib.sha256()
+for y in range(h):
+    crop.update(px[3 * (w * y + 960):3 * w * (y + 1)])
+print(crop.hexdigest()[:16])
+' 2>/dev/null || echo none
+  }
+  NO_CLAUDE_PICTURE=$(panel_picture)
+  # Now $ONE is a Claude session for the listing: a status file named after a live process (a
+  # sleep of this script's; the listing skips the file once that is gone) that names $ONE's
+  # pane and a session id, and that id's transcript, which names the orange picture and one
+  # that does not exist. The next listing (every 5 s) tells the app, which then asks for the
+  # list by itself: the panel is open on this tab.
+  SID='0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+  sleep 900 &
+  FAKE_CLAUDE=$!
+  mkdir -p "$HOME/.claude/sessions" "$HOME/.claude/projects/-work"
+  printf '{"type":"assistant","message":"saved %s and %s"}\n' "$ORANGE" "$HOME/missing.png" \
+    >"$HOME/.claude/projects/-work/$SID.jsonl"
+  printf '{"pid":%s,"sessionId":"%s","status":"idle","statusUpdatedAt":1,"tmux":"%s:@0.%%0","cwd":"/work"}\n' \
+    "$FAKE_CLAUDE" "$SID" "$ONE" >"$HOME/.claude/sessions/$FAKE_CLAUDE.json"
+  listed_now() {
+    local now
+    now=$(panel_picture)
+    [ "$now" != none ] && [ "$NO_CLAUDE_PICTURE" != none ] && [ "$now" != "$NO_CLAUDE_PICTURE" ]
+  }
+  if wait_for 15 listed_now; then
+    pass "once the listing has $ONE as a Claude session the panel lists its images by itself (the panel's pixels changed)"
+  else
+    fail "once the listing has $ONE as a Claude session the panel lists its images by itself" "the panel's pixels are as without a Claude session"
+  fi
+  check "screenshot 12h-made-list" shot 12h-made-list
+  check "the list shows no picture yet: no pixel of the screen is the orange" orange_is "0 none 0"
+  check "with the list open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
+  # The panel's header is in the tab bar's band (y 0-22), so the list's rows are the terminal's:
+  # the first is y 23-39.
+  # Clicked until the picture shows or 20 s passed: a click that came before the row was there
+  # (on the one line a panel without a list has) does nothing, and the next one is the row's.
+  # Never a click once the picture shows: that one would be the picture's.
+  row_opens() {
+    local deadline=$((SECONDS + 20))
+    until orange_at_least 10000; do
+      [ "$SECONDS" -ge "$deadline" ] && return 1
+      click 1100 31
+      wait_for 4 orange_at_least 10000 && return 0
+    done
+  }
+  if row_opens && wait_for 5 orange_is "76800 320x240+960+* 0"; then
+    pass "a click on the list's first row shows the picture the transcript names, fitted: $(orange | cut -d' ' -f2)"
+  else
+    fail "a click on the list's first row shows the picture the transcript names" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "screenshot 12i-made-image" shot 12i-made-image
+  # `‹` is the header's first column (x 960-967) and the cell after it.
+  click 964 11
+  if wait_for 5 orange_is "0 none 0"; then
+    pass "a click on the ‹ of the picture's header leads back to the list"
+  else
+    fail "a click on the ‹ of the picture's header leads back to the list" "orange pixels: $(orange)"
+  fi
+  # The click gave the panel the keys: Enter opens the row under the cursor (and is no line in
+  # the session behind), Backspace leads back.
+  sleep 0.5
+  PROMPTS=$(pane_text "$ONE" | grep -c .)
+  key_enter
+  if wait_for 8 orange_at_least 10000; then
+    pass "Enter in the list opens the picture under the cursor"
+  else
+    fail "Enter in the list opens the picture under the cursor" "orange pixels: $(orange)"
+  fi
+  keys -k BackSpace
+  if wait_for 5 orange_is "0 none 0"; then
+    pass "Backspace at the picture leads back to the list"
+  else
+    fail "Backspace at the picture leads back to the list" "orange pixels: $(orange)"
+  fi
+  if [ "$(pane_text "$ONE" | grep -c .)" -eq "$PROMPTS" ]; then
+    pass "Enter and Backspace in the panel reach no session (the pane has its $PROMPTS lines)"
+  else
+    fail "Enter and Backspace in the panel reach no session" "lines in the pane: $PROMPTS -> $(pane_text "$ONE" | grep -c .)"
+  fi
+  # Any other key is the terminal's: typed with the list focused, a line arrives whole (its
+  # first letter takes the keys back and is sent too).
+  check_typed "what is typed with the list focused goes to the terminal, first letter and all" "$ONE" inlist
+  # A click on the list gives it the keys again, and Esc there hands them back without a trace.
+  click 1100 300
+  keys -k Escape
+  check_typed "after a click on the list and Esc the keys are the terminal's" "$ONE" afterlist
+  keys -M alt -M shift -k f -m shift -m alt
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "Alt+Shift+F again closes the panel: the pane has its $COLS_BEFORE columns again"
+  else
+    fail "Alt+Shift+F again closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
+  fi
+  # `Files` is the tab bar's last seven columns: x 1224-1279 with no panel, and left of the
+  # panel's divider (the pixel column 955, as dragged above) with one: x 899-954.
+  click 1250 11
+  if wait_for 8 as_wide_as "$COLS_DRAGGED"; then
+    pass "a click on Files at the tab bar's right end opens the panel"
+  else
+    fail "a click on Files at the tab bar's right end opens the panel" "columns $(pane_cols)"
+  fi
+  click 925 11
+  if wait_for 8 as_wide_as "$COLS_BEFORE"; then
+    pass "a click on Files again closes it"
+  else
+    fail "a click on Files again closes it" "columns $(pane_cols)"
+  fi
+  # $ONE is no Claude session any more for what follows.
+  kill "$FAKE_CLAUDE" 2>/dev/null
+  wait "$FAKE_CLAUDE" 2>/dev/null
+  check_typed "after the list typing still arrives" "$ONE" listed
 else
   fail "the headless seat takes a pointer (vptr.py)" "$(tail -2 "$OUT/vptr.log" | tr '\n' ' ')"
   # The later checks need $ONE in front.
@@ -657,7 +992,7 @@ sleep 7
 NOTIFIED=$(notified)
 # Right-click on "$ODD" (the list's second line): its menu at the pointer. Esc closes it.
 PLAIN=$(picture)
-click 100 28 right
+click 100 48 right
 check "screenshot 29-menu-by-mouse" shot 29-menu-by-mouse
 if [ "$(picture)" != "$PLAIN" ]; then
   pass "a right-click on a session opens its menu (the picture changed)"
@@ -667,7 +1002,7 @@ fi
 keys -k Escape
 check_typed "Esc closes the menu: the keys are the terminal's again" "$ODD" aftermenu
 # A click on the `+` of the host's header opens the form; the session is made from it.
-click 212 11
+click 212 31
 keys -k Tab -k Tab
 keys "$BYE"
 keys -k Tab -k Up

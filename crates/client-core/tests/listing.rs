@@ -403,3 +403,49 @@ fn claude_outside_tmux_is_listed_under_kitty() {
     assert_eq!(outside[0].reason.as_deref(), Some("permission prompt"));
     assert!(outside.iter().all(|s| s.title.is_none() && s.attached == 0 && s.last_output_age_s.is_none()));
 }
+
+/// A listing of one tmux session `work` whose Claude status file is `file`.
+fn with_status_file(file: &str) -> HostSnapshot {
+    parse_listing("nas", &format!("100\nwork:1:0:90\ntool work:claude\n---\n{file}\n"))
+}
+
+#[test]
+fn a_status_files_session_id_is_kept_only_when_it_is_one() {
+    let id = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let snap = with_status_file(&format!(r#"{{"pid":7,"sessionId":"{id}","status":"idle","tmux":"work:@1.%1"}}"#));
+    assert_eq!(session(&snap, "work").session_id.as_deref(), Some(id));
+    assert_eq!(session(&snap, "work").tool, Tool::Claude);
+
+    // Anything else is not spliced into a command later: it is not kept at all.
+    for bad in [
+        "$(reboot)",
+        "",
+        "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4",   // 35
+        "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e0", // 37
+        "0B5C1D2E-3F4A-4B6C-8D7E-9F0A1B2C3D4E",
+        "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4*",
+        "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d/e",
+        "0b5c1d2e 3f4a 4b6c 8d7e 9f0a1b2c3d4e",
+        "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4é",
+    ] {
+        let snap = with_status_file(&format!(r#"{{"pid":7,"sessionId":"{bad}","status":"idle","tmux":"work:@1.%1"}}"#));
+        assert_eq!(session(&snap, "work").session_id, None, "{bad:?}");
+        assert_eq!(session(&snap, "work").tool, Tool::Claude, "the file still counts: {bad:?}");
+    }
+    // Not a string, or not there.
+    let snap = with_status_file(r#"{"pid":7,"sessionId":12,"status":"idle","tmux":"work:@1.%1"}"#);
+    assert_eq!(session(&snap, "work").session_id, None);
+    let snap = with_status_file(r#"{"pid":7,"status":"idle","tmux":"work:@1.%1"}"#);
+    assert_eq!(session(&snap, "work").session_id, None);
+    // A session that is not Claude has none.
+    let snap = parse_listing("nas", "100\nwork:1:0:90\n---\n");
+    assert_eq!(session(&snap, "work").session_id, None);
+}
+
+#[test]
+fn a_claude_outside_tmux_keeps_its_session_id_too() {
+    let id = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let file = format!(r#"{{"pid":7,"kind":"interactive","sessionId":"{id}","status":"idle","cwd":"/w/notes"}}"#);
+    let snap = parse_listing("nas", &format!("100\n---\n{file}\n"));
+    assert_eq!(session(&snap, "notes").session_id.as_deref(), Some(id));
+}

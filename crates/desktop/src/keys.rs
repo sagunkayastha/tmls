@@ -9,6 +9,16 @@
 //!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
+//! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here a file's
+//!   panel never has the keys, so Esc stays the terminal's)
+//! - Alt+Shift+F — open the panel on the list of the images the front tab's Claude session
+//!   made, or close the panel
+//! - in that list (`panel_key`): j / k or the arrows move, Enter opens the picture, Backspace or
+//!   Esc lead from the picture back to the list, and from the list back to the terminal. The
+//!   keyboard reaches the list only after a click on the panel: opening it with Alt+Shift+F or
+//!   `Files` leaves the keys where they were. And only for those keys: any other key pressed
+//!   there (a letter, Tab, Ctrl+C, a chord) is the terminal's — it takes the keys back and is
+//!   sent to the session like any key (`leaves_panel`), so nothing typed is lost
 //! - Ctrl+Q — quit; Ctrl+= / Ctrl++ and Ctrl+− — font size (repeat while held)
 //! - Enter on a tab whose session ended — reattach (`route`, which knows the tab's state)
 //!
@@ -35,6 +45,9 @@ pub enum Focus {
     Terminal,
     Sidebar,
     Form,
+    /// The panel beside the terminal, while it shows the list of a session's images or a
+    /// picture opened from it (`viewer::SidePanel::takes_keys`).
+    Panel,
 }
 
 /// What a bound key asks the window to do.
@@ -45,6 +58,11 @@ pub enum Global {
     FocusSidebar,
     FocusTerminal,
     CloseTab,
+    /// Closes the file panel beside the terminal.
+    ClosePanel,
+    /// Opens the panel on the list of the images the front tab's session made, or closes
+    /// the panel if it is open.
+    ToggleFiles,
     NextWaiting,
     Quit,
     ZoomIn,
@@ -112,6 +130,8 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Named(Named::Up) => Some(Global::FocusSidebar),
             Key::Char(c) if c.eq_ignore_ascii_case(&'n') => Some(Global::NextWaiting),
             Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'f') => Some(Global::ToggleFiles),
             _ => None,
         };
     }
@@ -138,6 +158,8 @@ pub enum Route {
     Sidebar,
     /// To the open form.
     Form,
+    /// To the panel beside the terminal (`panel_key`).
+    Panel,
     /// Nowhere: the release or a repeat of a bound key, or a key for a tab that has no live
     /// session.
     Drop,
@@ -151,6 +173,7 @@ pub fn route(ev: &KeyEvent, focus: Focus, tab: Option<TabState>) -> Route {
     match (focus, tab) {
         (Focus::Sidebar, _) => Route::Sidebar,
         (Focus::Form, _) => Route::Form,
+        (Focus::Panel, _) => Route::Panel,
         (Focus::Terminal, Some(TabState::Live)) => Route::Terminal,
         (Focus::Terminal, Some(TabState::Ended { .. })) => {
             let enter = ev.key == Key::Named(Named::Enter) && ev.mods == NONE;
@@ -242,6 +265,50 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
     }
 }
 
+/// A key of the panel beside the terminal while it has the keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelKey {
+    Up,
+    Down,
+    /// Shows the picture under the list's cursor.
+    Open,
+    /// From a picture back to the list it was opened from; from the list back to the
+    /// terminal.
+    Back,
+}
+
+/// What a key routed to the panel (`Route::Panel`) does there; `None` for every other key.
+pub fn panel_key(ev: &KeyEvent) -> Option<PanelKey> {
+    if !ev.pressed || ev.mods != NONE {
+        return None;
+    }
+    match ev.key {
+        Key::Named(Named::Up) | Key::Char('k') => Some(PanelKey::Up),
+        Key::Named(Named::Down) | Key::Char('j') => Some(PanelKey::Down),
+        Key::Named(Named::Enter) if !ev.repeat => Some(PanelKey::Open),
+        Key::Named(Named::Backspace | Named::Escape) if !ev.repeat => Some(PanelKey::Back),
+        _ => None,
+    }
+}
+
+/// Whether the panel has a use for this key, pressed, held or released.
+fn panel_binds(ev: &KeyEvent) -> bool {
+    let key = matches!(
+        ev.key,
+        Key::Named(Named::Up | Named::Down | Named::Enter | Named::Backspace | Named::Escape)
+            | Key::Char('j' | 'k')
+    );
+    key && ev.mods == NONE
+}
+
+/// Whether a key that arrives while the panel has the keys (`Focus::Panel`) takes them back to
+/// the terminal, where it is then sent: the fresh press of a key that is neither the panel's
+/// (`panel_binds`) nor one of the window's own bindings. Its repeats and its release follow
+/// it there by themselves; those of a key the panel did take move nothing.
+pub fn leaves_panel(ev: &KeyEvent) -> bool {
+    ev.pressed && !ev.repeat && !panel_binds(ev) && binding(ev, Focus::Panel).is_none()
+}
+
 /// What has the keys after a tab was closed. With no tab left it is the list. When another
 /// tab came to the front it is that tab's terminal. Otherwise (a tab in the back was closed)
 /// nothing moves: `j` in the list must not start to type into the session in front.
@@ -250,6 +317,21 @@ pub fn focus_after_close(focus: Focus, front_changed: bool, no_tabs: bool) -> Fo
         (true, _) => Focus::Sidebar,
         (false, true) => Focus::Terminal,
         (false, false) => focus,
+    }
+}
+
+/// What has the keys after the panel changed, closed or was laid out again. The panel keeps
+/// them only while what it shows takes keys (`takes_keys`: the list of images, a picture
+/// opened from it) and the layout has a panel at all (`drawn`: a window too narrow for one
+/// has none, though the panel is still open). Else they go to the terminal, or with no tab
+/// (`tabs`) to the list of sessions: `j` must not move a cursor that is not drawn. Whoever
+/// else has them keeps them.
+pub fn focus_after_panel(focus: Focus, takes_keys: bool, drawn: bool, tabs: bool) -> Focus {
+    match focus {
+        Focus::Panel if takes_keys && drawn => Focus::Panel,
+        Focus::Panel if tabs => Focus::Terminal,
+        Focus::Panel => Focus::Sidebar,
+        other => other,
     }
 }
 
