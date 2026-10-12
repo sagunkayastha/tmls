@@ -21,6 +21,8 @@ winit = "0.30"
 wgpu = "30"
 pollster = "1"
 anyhow = "1"
+# setsid() for the detached launch (`launch`); std has no stable setsid. Already in the tree via client-core.
+libc = "0.2"
 # Reads tmls's notifications.json (the version client-core uses).
 serde_json = "1"
 # Same features as s2-wgpu: no image support, data-control for wlroots/KDE Wayland.

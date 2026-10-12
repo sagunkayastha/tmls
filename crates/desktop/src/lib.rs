@@ -8,6 +8,7 @@
 //! - `forms` — the new-session form, rename, the kill confirm and a session's menu.
 //! - `mouse` — the mouse over the terminal: to the program in the tab, or a selection of our own.
 //! - `links` — the URL or the file path under a cell, and opening one.
+//! - `launch` — leaving the shell at once: `tmls-rs` starts itself again, detached.
 //! - `kitty` — bringing the kitty window of a Claude session outside tmux to the front.
 //! - `viewer` — a clicked file: found and read on the session's host, shown in the panel
 //!   beside the terminal or given to the desktop's app.
@@ -28,6 +29,7 @@ pub mod draw;
 pub mod forms;
 pub mod keys;
 pub mod kitty;
+pub mod launch;
 pub mod links;
 pub mod mouse;
 pub mod picture;
