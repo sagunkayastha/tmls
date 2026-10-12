@@ -2,7 +2,63 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-11 (day + eve) — tmls gaps closed in the list, right panel built (text, images, divider, session images), reviewed, merged to main; waiting on the user's real-window test ⚠️
+
+The user's test of v0 turned into a day of fixes and one planned feature. Two branches, both merged `--no-ff` into
+local `main` at **`d235ee3`** (not pushed): `fix/pin-ring` (7 commits) and on top of it `feat/viewer-panel`.
+**Start here: `docs/REVIEW-TEST.md`** (check sheet) and `docs/reviews/2026-10-review.md` (findings, speed table, rulings).
+
+- **`fix/pin-ring` (the user's findings from the morning test):** Alt+Shift+←/→ walk the pinned (★) sessions (`f74d1dd`);
+  red `✕` quit button (`f271283`); pin follows a rename, arrows walk all sessions when nothing is pinned, legend shows
+  `★ pinned` + agent letters (`3791219`); `Sketch` button opens the sketchpad hub when `~/.config/tmls/sketchpad` exists
+  (`ba7aa81`); list's right edge draggable (`41e6dd3`); foot buttons level with the terminal's last row, empty strip
+  below for the auto-hide taskbar (`3f34b3e`); this machine's Claude sessions outside tmux listed under
+  `── not in tmux ──`, click raises their kitty window (`c47231c`, `crates/desktop/src/kitty.rs`).
+- **`feat/viewer-panel`, plan `docs/superpowers/plans/2026-10-11-tmls-rs-review-and-right-panel.md`** (run by one Fable
+  main agent with Opus implementers and reviewers, as the user asked; I checked and built):
+  - Ctrl+click on a path: text opens in a panel beside the terminal, anything else in the native app (`77828c3`; the
+    stopped agent's parked work on `wip/viewer-panel`, merged and finished).
+  - Divider draggable, both sides ≥ 20 columns; panel and list widths saved in `~/.config/tmls-rs/ui` (`2171e85`, `e0a9cb7`).
+  - Images (png jpg gif webp bmp) in the panel, fit ↔ 100 % on click; crate `image` 0.25; second wgpu pass only while a
+    picture shows; decode bounded and cancelled when stale (`7f6b085`, `d2afb79`). Peak RSS on a 7071² PNG 697 → 244 MB.
+  - Session's images: `Alt+Shift+F` or `Files` in the tab bar lists every image path in the session's Claude transcript
+    that still exists, newest first, cap 500 (`448826a`, `4d9a5d5`). From the PC for real: 6 images in 0.03 s locally,
+    80 images in 0.21 s from archbox over ssh.
+  - One row grid: list, panel and status rows on the terminal's rows (`1f7eff6`; before −3 / +6 / +4 px at scale 1).
+    Tools: `tooling/smoke/rows.py`, `SMOKE_SCALE`, `SMOKE_ONLY=measure`.
+  - Whole-branch code review: 0 critical, 3 important, fixed (`cd002c0`, `3ee99a6`, `18827d9`, `9e7bb76`).
+- **Verified by me at the merged tree (= `e98d1ba`):** `desktop` 208 passed (Docker, archbox and PC), `client-core` 89
+  passed, clippy `-D warnings` and `cargo fmt -p desktop --check` clean, headless e2e **156 / 156**
+  (`/data/scratch/tmls-rs-v0/panel2/mine/e2e-1`). PC release binary built 22:24, `ldd` clean.
+- **Speed (headless sway + lavapipe; `tooling/smoke/bench.sh`):** panel closed = no change vs `0103f4b` (p95 11.6 →
+  12.5 ms, 0 idle frames). Panel open: typing p95 28–33 ms and a 4096² image +130 MB — **both fail the plan's marks**.
+  Cause traced to llvmpipe fragment cost of the runtime sRGB `pow` branch in `spikes/s2-wgpu/src/gfx/shader.wgsl`;
+  **unmeasured on the PC's real GPU**.
+- **Not run in a real window by anyone:** everything above except what the user tried by hand (text panel, images,
+  divider on the 21:34 build: "seems to be fine"). Session image list, kitty focus, pin walk, quit, Sketch: untried.
+- **Standing rules from today:** I build on the PC after each verified change, the user only runs the alias `tmls-rs`
+  (PC `~/.bashrc`); tests on the PC are allowed. **Check `game-mode status` as its own command and stop on `on`** — the
+  22:24 build ran while game mode was on because the check and the build were chained in one ssh line.
+- **Removed with the user's yes:** worktree `/data/scratch/tmls-rs-v0/panel2/main-wt`, fake test homes
+  `/data/scratch/tmls-rs-v0/panel2/tmp/made-*`. Nothing else was deleted.
+
+### NEXT
+1. **User's test** of the 22:24 PC build with `docs/REVIEW-TEST.md`. Blocks 2–4.
+2. Typing feel with the panel open on the real GPU; if slower, fix the shader's sRGB branch (shared with the spikes).
+3. Alignment items that need the user's marks on a real screenshot: line through the host name, lone `X Codex` in the
+   legend, button spacing, the two `×` positions, mixed button styles; plus the grid fix's side effects (empty band above
+   the list, blank row above the legend, status text half a row off) and the list header cut at its start.
+4. Copy/paste (`Ctrl+Shift+C` / `V` reported broken): OSC 52 → clipboard, errors into the status line. Two checks asked
+   of the user, unanswered (does Shift+drag select; any `paste failed` line on the launching terminal).
+5. Pick from the additions table in the plan (Part C): link hover, `?` help panel, ssh keepalive, unread mark, list
+   filter, approvals, quick select, image paste, `ag`, `ct`. Native sketch board parked (four design questions).
+6. Needs the user's yes: push `main`; delete branches `fix/pin-ring`, `feat/viewer-panel`, `wip/viewer-panel`,
+   `feat/desktop-v0`; delete scratch (`/data/scratch/tmls-rs-v0/` incl. `panel2/` 682 MB, `/data/scratch/s1/e2e-*`),
+   PC `~/offload/tmls-rs-v0/` and `~/offload/tmls-rs-click/`, untracked `crates/desktop/tests/tabs.rs.new`.
+
 ## 2026-10-11 (overnight) — `tmls-rs` desktop v0 built, reviewed, merged to main; waiting on the user's morning test ✅
+
+*(Its NEXT is superseded by the entry above: the user tested during the day and the findings were worked on there.)*
 
 One night, plan `docs/superpowers/plans/2026-10-11-tmls-rs-desktop-v0.md`, all tasks 0–10 done (02:36 → 05:45 MDT, before
 the 06:30 cutoff). `tmls-rs` = a native wgpu window over **ssh + tmux**: tmls-style sidebar (hosts, marks, Claude title +

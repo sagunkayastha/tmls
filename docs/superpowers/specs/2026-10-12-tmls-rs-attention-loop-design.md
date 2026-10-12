@@ -30,17 +30,21 @@ table is printed by `tmls-rs keys` (new CLI flag) so the docs cannot drift. Esc,
 
 ### F2 — copy / paste that works and talks
 
-Reported broken on the PC (KDE Wayland). The clipboard is `arboard` without its `wayland-data-control` feature, so
-on Wayland it goes through X11 — on a Wayland-only session that fails silently (errors only reach stderr).
+Reported broken on the PC (KDE Wayland); never exercised by the e2e. `arboard` already has `wayland-data-control`
+on, so the cause is not known. Diagnose first, then fix:
 
-- Enable `arboard` feature `wayland-data-control`.
+- Write the e2e check first (below) and see whether it fails under headless sway. Candidate causes, checked in
+  order: the key match (`Ctrl+Shift+C` arrives as logical `C`/`c` with Shift — compare with how `keys.rs` matches),
+  `arboard` erroring on the `wlr-data-control` protocol (KWin and sway both offer it; the error text says),
+  `selected_text()` empty because Shift+drag does not select. Fix what is found; record the cause in the commit.
 - Fallback when arboard errors: `wl-copy` / `wl-paste --no-newline` as child processes (if present on `PATH`).
+  `wl-clipboard` is added to `Dockerfile.smoke`.
 - Every outcome reaches the status line through `App::say`: "copied N chars", "nothing selected", "pasted N chars",
   "clipboard empty", "copy failed: <error>", "paste failed: <error>".
 - Ctrl+C with a selection keeps its current meaning (copy, no interrupt).
 - Test: a unit test for the status texts; the e2e types text into a tab, Shift+drags over it, presses Ctrl+Shift+C,
-  then Ctrl+Shift+V into a second tab and checks the bytes arrived (`wl-copy` is in the smoke image; arboard's
-  Wayland backend is exercised under headless sway).
+  then Ctrl+Shift+V into a second tab and checks the bytes arrived (arboard's Wayland backend is exercised under
+  headless sway; `wl-paste` in the container verifies the clipboard content independently).
 
 ### F3 — ssh keepalive and ControlMaster
 
