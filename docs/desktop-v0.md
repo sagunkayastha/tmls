@@ -57,11 +57,9 @@ stdout and stderr (errors, adapter and focus lines) go to `$XDG_CACHE_HOME/tmls-
 else `~/.cache/tmls-rs/tmls-rs.log`, emptied at each launch, so it holds the last run only.
 
 It stays in the foreground instead, with its output on the terminal, when given
-`--foreground`/`--fg`, with `--bench`, with `TMLS_RS_FOREGROUND=1` in the environment, when the
-first argument is not a flag (a subcommand such as `tmls-rs keys`; this includes `HOST…`, so
-hosts given on the command line keep it in the foreground: put them in the hosts file to
-detach), when the arguments are wrong (the usage is printed), or when
-the log file cannot be opened (the reason is printed).
+`--foreground`/`--fg`, with `--bench`, with `TMLS_RS_FOREGROUND=1` in the environment, for the
+`tmls-rs keys` subcommand, when the arguments are wrong (the usage is printed), or when the log
+file cannot be opened (the reason is printed). `tmls-rs HOST…` detaches like `tmls-rs`.
 
 Hosts are reached with your own ssh setup (keys, `~/.ssh/config`). Listing never asks for a
 password: a host that needs one shows as offline. Attaching runs ssh inside the tab, so a

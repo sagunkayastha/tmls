@@ -13,16 +13,23 @@ pub fn is_foreground_flag(arg: &str) -> bool {
     matches!(arg, "--foreground" | "--fg")
 }
 
+/// The subcommands, which print and exit: they stay in the terminal. Any other first word is a
+/// host (`tmls-rs HOST…`).
+const SUBCOMMANDS: &[&str] = &["keys"];
+
 /// Whether to run in this process rather than detach. `env_fg` is `$TMLS_RS_FOREGROUND`.
 ///
 /// Stays: with `--bench` (the e2e and bench scripts read its stderr), `--foreground`/`--fg`,
-/// `TMLS_RS_FOREGROUND` set to anything but empty or `0`, or a first argument that is not a
-/// flag (a subcommand that prints and exits, such as `tmls-rs keys`).
+/// `TMLS_RS_FOREGROUND` set to anything but empty or `0`, or a subcommand as the first
+/// argument (`tmls-rs keys`).
 pub fn wants_foreground(args: &[String], env_fg: Option<&str>) -> bool {
     if env_fg.is_some_and(|v| !v.is_empty() && v != "0") {
         return true;
     }
-    if args.first().is_some_and(|first| !first.starts_with('-')) {
+    if args
+        .first()
+        .is_some_and(|first| SUBCOMMANDS.contains(&first.as_str()))
+    {
         return true;
     }
     args.iter()

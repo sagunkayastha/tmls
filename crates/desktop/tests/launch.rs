@@ -46,7 +46,13 @@ fn env_one_stays_in_the_foreground() {
 #[test]
 fn a_subcommand_stays_in_the_foreground() {
     assert!(wants_foreground(&args(&["keys"]), None));
-    assert!(wants_foreground(&args(&["somehost"]), None));
+}
+
+#[test]
+fn hosts_detach() {
+    assert!(!wants_foreground(&args(&["ph"]), None));
+    assert!(!wants_foreground(&args(&["archbox", "ph"]), None));
+    assert!(!wants_foreground(&args(&["ph", "keys"]), None));
 }
 
 #[test]
