@@ -10,11 +10,13 @@
 //! Nothing here strips `TMUX` from the environment. A caller that attaches from a process which
 //! itself runs inside tmux has to remove it for the attach child (tmux refuses to nest).
 
+use std::ffi::OsStr;
 use std::io::{ErrorKind, Read};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -80,9 +82,72 @@ pub(crate) fn strings(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
+/// What every ssh tmls-rs starts says first: a probe every 15 s, given up after three
+/// unanswered, so a link that died (a laptop asleep, Wi-Fi gone) ends the command — and an
+/// attached tab shows "ended" — within 45 s instead of hanging.
+const KEEPALIVE: [&str; 4] = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+
+/// The ControlMaster options, once `use_control_master` ran; never set in a process that does
+/// not call it (the tests), whose ssh commands then have the keepalive only.
+static CONTROL: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Where the shared connections' sockets go: `$XDG_RUNTIME_DIR/tmls-rs`, else
+/// `~/.cache/tmls-rs`. `None` when neither is known, or when the socket's path would not fit:
+/// `cm-` and the 40 characters of `%C` after the directory must stay well under a Unix
+/// socket's 108 bytes (ssh adds a suffix while it binds).
+pub fn control_dir(runtime: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    let dir = match (runtime.filter(|r| !r.is_empty()), home.filter(|h| !h.is_empty())) {
+        (Some(runtime), _) => Path::new(runtime).join("tmls-rs"),
+        (None, Some(home)) => Path::new(home).join(".cache/tmls-rs"),
+        (None, None) => return None,
+    };
+    (dir.as_os_str().len() + "/cm-".len() + 40 < 100).then_some(dir)
+}
+
+/// One master connection per host, kept 10 minutes after its last user (tmls does the same).
+pub fn control_options(dir: &Path) -> Vec<String> {
+    vec![
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        "ControlPersist=10m".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}/cm-%C", dir.display()),
+    ]
+}
+
+/// Whether to share connections, from `TMLS_RS_NO_CONTROLMASTER`: off only for `1`.
+pub fn control_wanted(value: Option<&OsStr>) -> bool {
+    value != Some(OsStr::new("1"))
+}
+
+/// Makes `dir` (mode 0700, also when it existed with another mode) and from then on every ssh
+/// this process starts shares one connection per host through it. Call once, at start; a
+/// second call changes nothing.
+pub fn use_control_master(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let _ = CONTROL.set(control_options(dir));
+    Ok(())
+}
+
+/// The start of every ssh argv: `ssh`, the keepalive, the shared connection once switched on,
+/// `flags`, then `host`. The caller adds the remote command.
+pub fn ssh_base(host: &str, flags: &[&str]) -> Vec<String> {
+    let mut argv = vec!["ssh".to_string()];
+    argv.extend(KEEPALIVE.iter().map(|word| word.to_string()));
+    if let Some(control) = CONTROL.get() {
+        argv.extend(control.iter().cloned());
+    }
+    argv.extend(flags.iter().map(|word| word.to_string()));
+    argv.push(host.to_string());
+    argv
+}
+
 /// `command` run by `host`'s shell without ever prompting (as the listing does).
 pub(crate) fn ssh(host: &str, command: String) -> Vec<String> {
-    let mut argv = strings(&["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host]);
+    let mut argv = ssh_base(host, &["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]);
     argv.push(command);
     argv
 }
@@ -100,7 +165,9 @@ pub fn attach_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     if key.host == local_name {
         strings(&["tmux", "-u", "attach", "-t", &target])
     } else {
-        strings(&["ssh", "-t", &key.host, &format!("tmux -u attach -t {}", quote(&target))])
+        let mut argv = ssh_base(&key.host, &["-t"]);
+        argv.push(format!("tmux -u attach -t {}", quote(&target)));
+        argv
     }
 }
 

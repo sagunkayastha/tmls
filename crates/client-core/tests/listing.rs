@@ -318,7 +318,10 @@ fn listing_command_is_sh_here_and_batch_ssh_elsewhere() {
     assert_eq!(argv(listing_command("laptop", "laptop")), ["sh", "-s"]);
     assert_eq!(
         argv(listing_command("nas", "laptop")),
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "nas", "sh", "-s"]
+        [
+            "ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o",
+            "ConnectTimeout=5", "nas", "sh", "-s",
+        ]
     );
 }
 

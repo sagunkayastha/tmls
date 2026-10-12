@@ -17,7 +17,9 @@ const LOCAL: &str = "archbox";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The words ssh puts before the command.
-const SSH: [&str; 6] = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph"];
+const SSH: [&str; 10] = [
+    "ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph",
+];
 
 /// File names a shell would mangle, or take for an option, if a builder forgot to quote.
 const HOSTILE: [&str; 8] =
@@ -41,10 +43,10 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Runs the command a remote host's shell would get, here: `tmux` prints `cwd`, HOME is `home`.
 fn as_remote(argv: &[String], cwd: &Path, home: &Path) -> anyhow::Result<String> {
-    assert_eq!(&argv[..6], &v(&SSH)[..], "everything but the command is fixed");
-    assert_eq!(argv.len(), 7, "the command is one argument");
+    assert_eq!(&argv[..SSH.len()], &v(&SSH)[..], "everything but the command is fixed");
+    assert_eq!(argv.len(), SSH.len() + 1, "the command is one argument");
     let stub = format!("tmux() {{ printf '%s\\n' '{}'; }}\nHOME='{}'\n", cwd.display(), home.display());
-    run(&v(&["sh", "-c", &format!("{stub}{}", argv[6])]), TIMEOUT)
+    run(&v(&["sh", "-c", &format!("{stub}{}", argv[SSH.len()])]), TIMEOUT)
 }
 
 #[test]
@@ -173,11 +175,11 @@ fn an_unreadable_file_and_a_pane_without_a_directory_are_errors() {
     // tmux answers nothing: the path is not looked for at the root.
     let argv = locate_argv(&key("ph", "work"), "etc/passwd", LOCAL);
     let stub = "tmux() { :; }\n";
-    let error = run(&v(&["sh", "-c", &format!("{stub}{}", argv[6])]), TIMEOUT).expect_err("no directory");
+    let error = run(&v(&["sh", "-c", &format!("{stub}{}", argv[SSH.len()])]), TIMEOUT).expect_err("no directory");
     assert_eq!(format!("{error:#}"), "the session has no current directory");
     // tmux fails (no such session): so does the command.
     let stub = "tmux() { echo \"can't find session\" >&2; return 1; }\n";
-    let error = run(&v(&["sh", "-c", &format!("{stub}{}", argv[6])]), TIMEOUT).expect_err("no session");
+    let error = run(&v(&["sh", "-c", &format!("{stub}{}", argv[SSH.len()])]), TIMEOUT).expect_err("no session");
     assert_eq!(format!("{error:#}"), "can't find session");
     assert_eq!(format!("{:#}", as_remote(&argv, &cwd, &home).expect_err("nothing there")), "not found");
     let _ = std::fs::remove_dir_all(&dir);

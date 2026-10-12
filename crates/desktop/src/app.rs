@@ -532,6 +532,28 @@ impl Running {
         if let Some(log) = &log {
             tabs.set_log(log.clone());
         }
+        // One ssh connection per host, kept 10 minutes; TMLS_RS_NO_CONTROLMASTER=1 turns it off
+        // (the keepalive stays). Before the poller: its first listing is the first ssh.
+        if client_core::tmux::control_wanted(
+            std::env::var_os("TMLS_RS_NO_CONTROLMASTER").as_deref(),
+        ) {
+            let dir = client_core::tmux::control_dir(
+                std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                std::env::var_os("HOME").as_deref(),
+            );
+            match dir.map(|dir| client_core::tmux::use_control_master(&dir).map(|()| dir)) {
+                Some(Ok(dir)) => crate::errln(format_args!(
+                    "tmls-rs: ssh shares one connection per host ({})",
+                    dir.display()
+                )),
+                Some(Err(e)) => {
+                    crate::errln(format_args!("tmls-rs: ssh without shared connections: {e}"))
+                }
+                None => crate::errln(format_args!(
+                    "tmls-rs: ssh without shared connections: no place for the sockets"
+                )),
+            }
+        }
         let poller = Poller::start(
             &cfg,
             POLL_PERIOD,

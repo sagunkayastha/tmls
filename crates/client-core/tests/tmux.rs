@@ -18,8 +18,13 @@ const LOCAL: &str = "archbox";
 /// Names a shell would mangle if any builder forgot to quote.
 const HOSTILE: [&str; 7] = ["a b", "it's", "x\"y", "$HOME", "a;rm", "日本", "-lead"];
 
-/// The words ssh puts before the command for everything but attach.
-const SSH: [&str; 6] = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph"];
+/// The words ssh puts before the command for everything but attach (no `use_control_master`
+/// in this test binary: keepalive only).
+const SSH: [&str; 10] = [
+    "ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph",
+];
+/// The same for attach: a terminal, and ssh may ask (no BatchMode).
+const ATTACH: [&str; 7] = ["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-t", "ph"];
 
 /// In place of the real programs: each prints its arguments, one per line. `has-session` says
 /// "no such session", so a new-session script goes on.
@@ -71,11 +76,12 @@ fn attach_argv_local_and_remote() {
         v(&["tmux", "-u", "attach", "-t", "=Agent Thing"]),
         "an argv needs no quoting"
     );
-    assert_eq!(attach_argv(&key("ph", "work"), LOCAL), v(&["ssh", "-t", "ph", "tmux -u attach -t '=work'"]));
-    assert_eq!(
-        attach_argv(&key("ph", "Agent Thing"), LOCAL),
-        v(&["ssh", "-t", "ph", "tmux -u attach -t '=Agent Thing'"])
-    );
+    let mut work = v(&ATTACH);
+    work.push("tmux -u attach -t '=work'".to_string());
+    assert_eq!(attach_argv(&key("ph", "work"), LOCAL), work);
+    let mut agent = v(&ATTACH);
+    agent.push("tmux -u attach -t '=Agent Thing'".to_string());
+    assert_eq!(attach_argv(&key("ph", "Agent Thing"), LOCAL), agent);
 }
 
 #[test]
@@ -212,7 +218,7 @@ fn attach_and_ops_quote_hostile_names() {
         let exact = format!("={name}");
         let other = format!("{name} 2");
 
-        let attach = remote(&attach_argv(&key("ph", name), LOCAL), &["ssh", "-t", "ph"]);
+        let attach = remote(&attach_argv(&key("ph", name), LOCAL), &ATTACH);
         assert_eq!(words(&attach), v(&["-u", "attach", "-t", &exact]), "attach {name:?}");
 
         // the copied text, pasted into a shell: ssh gets the command, the host's shell the name
