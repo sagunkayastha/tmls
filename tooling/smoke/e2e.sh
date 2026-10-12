@@ -20,6 +20,8 @@ RENAMED='tmlsrs-test-renamed'
 BYE='tmlsrs-test-bye'
 APPROVE='tmlsrs-test-0approve'
 APPROVE_SID='1b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+PUSH='tmlsrs-test-2push'
+PUSH_SID='3b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 # The stand-ins for Claude processes, by session id: their status files are named after them.
 declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
@@ -140,6 +142,7 @@ cleanup() {
   # The stand-in for a Claude process (the images' list), if it still runs.
   [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
   tmux kill-session -t "=$APPROVE" 2>/dev/null
+  tmux kill-session -t "=$PUSH" 2>/dev/null
   for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
@@ -1258,6 +1261,64 @@ if grep -nE "panicked|stack backtrace|RUST_BACKTRACE" "$OUT/app.stderr" >/dev/nu
   fail "no panic on stderr" "$(grep -nE 'panicked' -A3 "$OUT/app.stderr" | head -6 | tr '\n' ' ')"
 else
   pass "no panic on stderr"
+fi
+
+# --- push: events.jsonl moves the marks without a poll (F6) ----------------------------------------
+# A second run of the app that lists every 60 s: what changes within seconds came by push.
+PUSH_START_NOTIFIED=$(wc -l <"$NOTIFY_LOG")
+tmux new-session -d -s "$PUSH" -x 100 -y 30
+fake_claude "$PUSH" "$PUSH_SID" idle
+EVENTS="$HOME/.cache/tmls/events.jsonl"
+mkdir -p "$HOME/.cache/tmls" && : >"$EVENTS"
+PUSH_PANE=$(tmux display -p -t "=$PUSH:" '#{pane_id}')
+# push_event EV [MORE_JSON] — one line as tmls's hook writes it, timed now.
+push_event() {
+  printf '{"t":%s,"ev":"%s","sid":"%s","pane":"%s","cwd":"/work"%s}\n' \
+    "$(date +%s.%N)" "$1" "$PUSH_SID" "$PUSH_PANE" "${2:-}" >>"$EVENTS"
+}
+# list_picture — a hash of the list's pixel columns only (0-223).
+list_picture() {
+  timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+crop = hashlib.sha256()
+for y in range(h):
+    crop.update(px[3 * w * y:3 * (w * y + 224)])
+print(crop.hexdigest()[:16])
+' 2>/dev/null || echo none
+}
+# In the foreground (launch.rs): a run without --bench detaches from its terminal otherwise.
+TMLS_RS_FOREGROUND=1 TMLS_RS_POLL_S=60 "$BIN" 2>"$OUT/app2.stderr" &
+APP_PID=$!
+if wait_for 30 window_up; then pass "the second run's window opened (TMLS_RS_POLL_S=60)"; else fail "the second run's window opened (TMLS_RS_POLL_S=60)"; fi
+sleep 3 # its first listing, at start; the next one is a minute away
+push_event PermissionRequest ',"tool":"Bash"'
+if wait_for 4 grep -qxF -- "--|tmls · $(hostname)|? $PUSH · permission prompt|" "$NOTIFY_LOG"; then
+  pass "a PermissionRequest event alerts within seconds, with no poll ('? $PUSH · permission prompt')"
+else
+  fail "a PermissionRequest event alerts within seconds, with no poll" "log: $(tail -n +"$((PUSH_START_NOTIFIED + 1))" "$NOTIFY_LOG" | tr '\n' ' ')"
+fi
+check "screenshot 39-push-waiting" shot 39-push-waiting
+push_event Stop ',"msg":"first reply","bg":0'
+sleep 1.5
+REPLY_BEFORE=$(list_picture)
+push_event Stop ',"msg":"tmls-push-reply-two","bg":0'
+list_changed() { [ "$(list_picture)" != "$REPLY_BEFORE" ]; }
+if [ "$REPLY_BEFORE" != none ] && wait_for 3 list_changed; then
+  pass "a Stop event's reply changes the row's dim line, with no poll"
+else
+  fail "a Stop event's reply changes the row's dim line, with no poll" "the list's pixels did not change"
+fi
+check "screenshot 40-push-reply (the dim line is the reply)" shot 40-push-reply
+key_quit
+wait_for 10 app_gone || kill "$APP_PID" 2>/dev/null
+if grep -nE "panicked|stack backtrace" "$OUT/app2.stderr" >/dev/null; then
+  fail "no panic on the second run's stderr" "$(grep -n 'panicked' -A3 "$OUT/app2.stderr" | head -6 | tr '\n' ' ')"
+else
+  pass "no panic on the second run's stderr"
 fi
 
 echo "--- files under the scratch HOME"

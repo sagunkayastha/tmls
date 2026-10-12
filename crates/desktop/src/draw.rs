@@ -827,6 +827,8 @@ pub struct View {
     pub side_focused: bool,
     /// Sessions with output the user has not looked at (`Seen::unread`).
     pub unread_rows: Vec<SessionKey>,
+    /// Hosts whose events.jsonl is not there (`· poll`).
+    pub polled: Vec<String>,
 }
 
 impl View {
@@ -1004,6 +1006,29 @@ pub fn header_spans(host: &str, online: bool, cols: usize, theme: &Theme) -> Vec
         Span::new(0, 1, name_cols, name).colour(theme.dim_fg).bold(),
         Span::whole(0, offline_col, OFFLINE).colour(theme.dim_fg),
     ]
+}
+
+/// After the name of a host whose `events.jsonl` is not there: status comes by polling only.
+pub const POLL_ONLY: &str = "· poll";
+
+/// `header_spans`, with `· poll` after the name when `polled` (and the host answers).
+pub fn header_spans_with(
+    host: &str,
+    online: bool,
+    polled: bool,
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut spans = header_spans(host, online, cols, theme);
+    if online && polled {
+        let end = cols.saturating_sub(1);
+        let room = end.saturating_sub(1 + 2); // the name's columns in `header_spans`
+        let col = 1 + columns(&host.to_uppercase()).min(room) + 1;
+        if col + columns(POLL_ONLY) < end.saturating_sub(1) {
+            spans.push(Span::whole(0, col, POLL_ONLY).colour(theme.dim_fg));
+        }
+    }
+    spans
 }
 
 /// What the rule above the sessions outside tmux says.
@@ -1319,7 +1344,13 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                     },
                     host_rgb(*color),
                 );
-                for span in header_spans(host, *online, l.list_cols, theme) {
+                for span in header_spans_with(
+                    host,
+                    *online,
+                    view.polled.contains(host),
+                    l.list_cols,
+                    theme,
+                ) {
                     p.span((r.x, r.y), &span);
                 }
             }

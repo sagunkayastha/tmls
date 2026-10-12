@@ -36,6 +36,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         session_id: None,
         pane: None,
         activity: None,
+        last_reply: None,
     }
 }
 

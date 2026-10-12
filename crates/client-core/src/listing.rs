@@ -120,6 +120,9 @@ pub struct SessionInfo {
     /// of its last status change, for any other its newest window output; `None` outside tmux.
     /// What "unread" compares (`seen`).
     pub activity: Option<u64>,
+    /// The first line of Claude's last reply (at most 120 characters), from a pushed `Stop`
+    /// event; a listing never has it (D10).
+    pub last_reply: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -413,6 +416,7 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
                     Some(c) => c.since.max(0) as u64,
                     None => w.activity,
                 }),
+                last_reply: None,
             }
         })
         .collect();
@@ -444,6 +448,7 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
             session_id: file.id.clone(),
             pane: None,
             activity: None,
+            last_reply: None,
         });
     }
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }

@@ -696,6 +696,7 @@ fn info(name: &str, status: Status, reason: Option<&str>) -> SessionInfo {
         session_id: None,
         pane: Some("%3".to_string()),
         activity: None,
+        last_reply: None,
     }
 }
 

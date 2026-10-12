@@ -24,6 +24,7 @@ fn snap(host: &str, sessions: &[(&str, Status)]) -> HostSnapshot {
             session_id: None,
             pane: None,
             activity: None,
+            last_reply: None,
         })
         .collect();
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }

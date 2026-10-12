@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use client_core::listing::{HostSnapshot, Status};
-use client_core::poll::{Poller, SIGN_IN_REQUIRED, list_once};
+use client_core::poll::{Poller, SIGN_IN_REQUIRED, list_once, period_from};
 
 /// The tests look at this process's threads by name, so they run one at a time.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
@@ -486,4 +486,26 @@ fn a_listing_that_differs_only_in_activity_is_not_delivered() {
     next(&rx, Duration::from_secs(5));
     assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "new output alone is no news for the poller");
     drop(poller);
+}
+
+#[test]
+fn force_next_delivers_the_next_listing_even_when_unchanged() {
+    let _one = alone();
+    let (poller, rx) = start(&["a"], Duration::from_millis(100), Duration::from_secs(5), |_| sh("cat >/dev/null; echo 100"));
+    next(&rx, Duration::from_secs(5));
+    assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "an unchanged listing is not delivered");
+    poller.force_next();
+    next(&rx, Duration::from_secs(2));
+    assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "only the next one");
+    drop(poller);
+}
+
+#[test]
+fn the_period_comes_from_tmls_rs_poll_s() {
+    assert_eq!(period_from(None), Duration::from_secs(5));
+    assert_eq!(period_from(Some("60")), Duration::from_secs(60));
+    assert_eq!(period_from(Some(" 2 ")), Duration::from_secs(2));
+    for bad in ["", "0", "-3", "x", "3601", "1.5"] {
+        assert_eq!(period_from(Some(bad)), Duration::from_secs(5), "{bad:?}");
+    }
 }

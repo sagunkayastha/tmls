@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use client_core::config::tmls_slug;
 use client_core::{Config, HostColor, HostSnapshot, SessionInfo, SessionKey, Status, Tool};
 use desktop::draw::{
-    Chrome, Layout, Rect, RowLook, Span, TabView, View, header_spans, layer_order, layout,
-    session_spans,
+    Chrome, Layout, POLL_ONLY, Rect, RowLook, Span, TabView, View, header_spans, header_spans_with,
+    layer_order, layout, session_spans,
 };
 use desktop::sidebar::{Row, Sidebar};
 use desktop::theme::{self, SIDEBAR_COLS, Theme, host_rgb, mark_rgb};
@@ -42,6 +42,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         session_id: None,
         pane: None,
         activity: None,
+        last_reply: None,
     }
 }
 
@@ -888,4 +889,30 @@ fn unread_shows_a_dot_after_the_name_before_the_star() {
     );
     assert_eq!(find(&pinned, "★").col, name.col + 4 + 1);
     assert!(!pinned.iter().any(|span| span.text == "•"));
+}
+
+#[test]
+fn a_host_without_events_says_poll_dimly() {
+    let theme = Theme::default();
+    let said = header_spans_with("nas", true, true, SIDEBAR_COLS, &theme);
+    let poll = find(&said, POLL_ONLY);
+    assert_eq!((poll.col, poll.colour), (1 + 3 + 1, theme.dim_fg));
+    assert!(said.iter().any(|span| span.text == "+"), "the + stays");
+    assert_eq!(
+        header_spans_with("nas", true, false, SIDEBAR_COLS, &theme),
+        header_spans("nas", true, SIDEBAR_COLS, &theme)
+    );
+    assert!(
+        !header_spans_with("nas", false, true, SIDEBAR_COLS, &theme)
+            .iter()
+            .any(|span| span.text == POLL_ONLY),
+        "offline says offline"
+    );
+    assert_within(&header_spans_with(
+        &"h".repeat(40),
+        true,
+        true,
+        SIDEBAR_COLS,
+        &theme,
+    ));
 }

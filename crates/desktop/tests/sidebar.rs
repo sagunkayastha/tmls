@@ -9,7 +9,7 @@ use client_core::{
     Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, Tool,
     default_color,
 };
-use desktop::sidebar::{Action, Row, Sidebar};
+use desktop::sidebar::{Action, Row, Sidebar, summary};
 
 const LOCAL: &str = "laptop";
 
@@ -58,6 +58,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         session_id: None,
         pane: None,
         activity: None,
+        last_reply: None,
     }
 }
 
@@ -754,6 +755,7 @@ fn outside(name: &str, pid: u32, status: Status) -> SessionInfo {
         session_id: None,
         pane: None,
         activity: None,
+        last_reply: None,
         ..session(KITTY, name, status)
     }
 }
@@ -929,4 +931,16 @@ fn next_unread_wraps_and_never_returns_where_it_starts() {
         None,
         "an empty list"
     );
+}
+
+#[test]
+fn the_dim_line_is_the_reason_else_the_last_reply_else_the_title() {
+    let mut info = claude(LOCAL, "work", "a title");
+    info.status = Status::Idle;
+    assert_eq!(summary(&info), Some(("a title", false)));
+    info.last_reply = Some("All 12 tests pass.".to_string());
+    assert_eq!(summary(&info), Some(("All 12 tests pass.", false)));
+    info.status = Status::Waiting;
+    info.reason = Some("permission prompt".to_string());
+    assert_eq!(summary(&info), Some(("permission prompt", true)));
 }

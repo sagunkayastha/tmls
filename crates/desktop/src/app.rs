@@ -15,7 +15,9 @@
 //! List path: a polling thread delivers a host's listing → `UserEvent::Snapshot` →
 //! `Sidebar::deliver` (which marks what finished unwatched) → a redraw that rebuilds the chrome.
 //! `Alerts::observe` then compares the host's rows with its last listing: a session that started
-//! to need the user is added to the bell's list and `notify-send` is started for it.
+//! to need the user is added to the bell's list and `notify-send` is started for it. A host's
+//! events.jsonl reader (`push::Tail`) delivers each hook event → `UserEvent::Push` →
+//! `push::apply` on the host's last listing → the same path.
 //!
 //! Mouse over the terminal: `mouse::Pointer` decides whether an event is the program's (tmux
 //! with `mouse on` asked for reports) or a selection, a link or a scroll of our own;
@@ -58,12 +60,14 @@
 //! `--bench DIR`: the first tab opened writes the latency log (`Tabs::set_log`); `frame` lines
 //! are written for the frames presented while that tab is in front.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
+use client_core::push::{self, Applied, PushLine};
 use client_core::{Config, HostSnapshot, KITTY, Poller, Seen, SessionKey, Status, default_color};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
@@ -101,9 +105,8 @@ use crate::viewer::{self, MadeBody, MadeState, Opened, SideLook, SidePanel};
 /// resolution of `t_work_done_ns`.
 const WORK_DONE_POLL: Duration = Duration::from_micros(500);
 
-/// How often every host is listed, and how long a listing may take before its host counts as
-/// offline.
-const POLL_PERIOD: Duration = Duration::from_secs(5);
+/// How long a listing may take before its host counts as offline (the period is
+/// `TMLS_RS_POLL_S`, `poll::period_from`).
 const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the new-session form waits after a change of the folder before it asks the host
@@ -145,6 +148,8 @@ pub enum UserEvent {
     /// The permission dialog read off a session's pane (its key and pane), or why not; the
     /// number is the request's (`Running::approvals`).
     Approval(u64, SessionKey, Option<String>, Result<Vec<String>, String>),
+    /// A line of a host's events.jsonl reader.
+    Push(String, PushLine),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -209,6 +214,7 @@ impl ApplicationHandler<UserEvent> for App {
                 running.window.request_redraw();
             }
             UserEvent::Snapshot(snapshot) => running.snapshot(snapshot),
+            UserEvent::Push(host, line) => running.pushed(host, line),
             UserEvent::Done(request, result) => running.done(request, result),
             UserEvent::Said(said) => running.say(said),
             UserEvent::Derived { host, folder, name } => {
@@ -387,6 +393,15 @@ struct Running {
     proxy: EventLoopProxy<UserEvent>,
     /// The polling threads.
     poller: Poller,
+    /// Each host's latest listing as the poller gave it (the listing's statuses, no ◆): what
+    /// a pushed event changes.
+    listings: HashMap<String, HostSnapshot>,
+    /// The last reply of each Claude session, from pushed `Stop` events.
+    replies: HashMap<SessionKey, String>,
+    /// One events.jsonl reader per online host.
+    tails: HashMap<String, push::Tail>,
+    /// Whether a host has events.jsonl (`· poll` when not); unknown until its reader says.
+    push_on: HashMap<String, bool>,
 
     log: Option<Log>,
     marks: Option<Marks<Log>>,
@@ -575,7 +590,7 @@ impl Running {
         }
         let poller = Poller::start(
             &cfg,
-            POLL_PERIOD,
+            client_core::poll::period_from(std::env::var("TMLS_RS_POLL_S").ok().as_deref()),
             POLL_TIMEOUT,
             Box::new(move |snapshot| {
                 let _ = poll_proxy.send_event(UserEvent::Snapshot(snapshot));
@@ -621,6 +636,10 @@ impl Running {
             lookups: Arc::new(AtomicU64::new(0)),
             proxy,
             poller,
+            listings: HashMap::new(),
+            replies: HashMap::new(),
+            tails: HashMap::new(),
+            push_on: HashMap::new(),
             log,
             clip: clip::Clipboard::new(),
             mods: ModifiersState::empty(),
@@ -789,7 +808,11 @@ impl Running {
 
     /// A host's new listing, in the order the poller delivers them. The session of the tab in
     /// front is being watched: it gets no "finished unwatched" mark.
-    fn snapshot(&mut self, snapshot: HostSnapshot) {
+    fn snapshot(&mut self, mut snapshot: HostSnapshot) {
+        push::carry_replies(&mut snapshot, &mut self.replies);
+        self.listings
+            .insert(snapshot.host.clone(), snapshot.clone());
+        self.follow_push(&snapshot.host, snapshot.online);
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         let (host, online) = (snapshot.host.clone(), snapshot.online);
         // The session whose images the panel lists, and what it was doing until now.
@@ -828,6 +851,58 @@ impl Running {
             self.relist_made(&key, state, was);
         }
         self.invalidate();
+    }
+
+    /// Starts the reader of `host`'s events.jsonl when the host answers; stops it when not.
+    fn follow_push(&mut self, host: &str, online: bool) {
+        if !online {
+            self.tails.remove(host);
+            self.push_on.remove(host);
+            return;
+        }
+        if host == KITTY || self.tails.contains_key(host) {
+            return;
+        }
+        let (proxy, name) = (self.proxy.clone(), host.to_string());
+        let argv = push::tail_argv(host, &self.cfg.local_name);
+        let tail = push::Tail::start(
+            argv,
+            Box::new(move |line| {
+                let _ = proxy.send_event(UserEvent::Push(name.clone(), line));
+            }),
+        );
+        self.tails.insert(host.to_string(), tail);
+    }
+
+    /// A line of a host's reader: whether it has events at all, or an event, which moves the
+    /// app's copy of the host's last listing and goes the way a listing goes (marks, alerts,
+    /// queue, redraw). Redraws coalesce: `invalidate` asks for one frame, however many events.
+    fn pushed(&mut self, host: String, line: PushLine) {
+        match line {
+            PushLine::Available(on) => {
+                // A reader started again says what it said before: no redraw for that.
+                if self.push_on.insert(host, on) != Some(on) {
+                    self.invalidate();
+                }
+            }
+            PushLine::Event(event) => {
+                if self.push_on.insert(host.clone(), true) != Some(true) {
+                    self.invalidate();
+                }
+                let Some(mut snapshot) = self.listings.get(&host).cloned() else {
+                    return;
+                };
+                match push::apply(&mut snapshot, &event) {
+                    Applied::Unchanged => {}
+                    Applied::Relist => self.poller.refresh_now(),
+                    Applied::Changed => {
+                        // Until the next listing, which replaces this whatever it says.
+                        self.poller.force_next();
+                        self.snapshot(snapshot);
+                    }
+                }
+            }
+        }
     }
 
     /// After a listing: the panel's list of the images of the session `key` is asked for
@@ -918,6 +993,16 @@ impl Running {
                     _ => None,
                 })
                 .collect(),
+            polled: {
+                let mut polled: Vec<String> = self
+                    .push_on
+                    .iter()
+                    .filter(|(_, on)| !**on)
+                    .map(|(host, _)| host.clone())
+                    .collect();
+                polled.sort(); // the same view for the same state
+                polled
+            },
         }
     }
 
@@ -2598,6 +2683,7 @@ impl Running {
     /// Writes what is still pending and flushes the log. Dropping `self` afterwards stops the
     /// polling and emulator threads and closes the PTYs, which detaches every tab.
     fn shutdown(mut self) {
+        self.tails.clear(); // the readers are killed before the window goes
         // Stops the sampler thread first, so its last line is in before the final flush.
         drop(self.sampler.take());
         self.write_meta(true);

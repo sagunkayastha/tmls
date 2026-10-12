@@ -80,7 +80,8 @@ pub enum Action {
 }
 
 /// The dim line under a session's name, and whether it is what Claude waits for (tmls
-/// `pane_row_text`): the reason while it waits, else Claude's title when that is not the name.
+/// `pane_row_text`): the reason while it waits, else Claude's last reply (pushed), else its
+/// title when that is not the name.
 pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
     fn text(text: &Option<String>) -> Option<&str> {
         text.as_deref().map(str::trim).filter(|t| !t.is_empty())
@@ -89,6 +90,9 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
         && let Some(reason) = text(&info.reason)
     {
         return Some((reason, true));
+    }
+    if let Some(reply) = text(&info.last_reply) {
+        return Some((reply, false));
     }
     text(&info.title)
         .filter(|title| *title != info.key.name)

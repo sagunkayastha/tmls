@@ -31,6 +31,18 @@ const TICK: Duration = Duration::from_millis(20);
 /// No listing is this long; a host that prints more is not read further.
 const MAX_OUTPUT: usize = 16 << 20;
 
+/// How often every host is listed unless `TMLS_RS_POLL_S` says otherwise.
+pub const DEFAULT_PERIOD: Duration = Duration::from_secs(5);
+
+/// The listing period from `TMLS_RS_POLL_S` (whole seconds, 1 to 3600); `DEFAULT_PERIOD` for
+/// anything else.
+pub fn period_from(value: Option<&str>) -> Duration {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| (1..=3600).contains(s))
+        .map_or(DEFAULT_PERIOD, Duration::from_secs)
+}
+
 /// Makes the listing command of a host; [`LISTING_SCRIPT`] goes to its stdin.
 pub type CommandFactory = Box<dyn Fn(&str) -> Command + Send + Sync>;
 
@@ -48,6 +60,8 @@ struct State {
     stop: bool,
     /// Counts `refresh_now` calls: a thread that sees it move lists again.
     refresh: u64,
+    /// Counts force_next calls: a thread that sees it move delivers its next listing.
+    resend: u64,
 }
 
 impl Shared {
@@ -79,7 +93,7 @@ impl Poller {
         timeout: Duration,
         on_snapshot: Box<dyn Fn(HostSnapshot) + Send>,
     ) -> Poller {
-        let shared = Arc::new(Shared { state: Mutex::new(State { stop: false, refresh: 0 }), wake: Condvar::new() });
+        let shared = Arc::new(Shared { state: Mutex::new(State { stop: false, refresh: 0, resend: 0 }), wake: Condvar::new() });
         let command = Arc::new(command);
         let deliver = Arc::new(Mutex::new(on_snapshot));
         let threads = hosts
@@ -99,6 +113,12 @@ impl Poller {
     pub fn refresh_now(&self) {
         self.shared.state().refresh += 1;
         self.shared.wake.notify_all();
+    }
+
+    /// The next listing of every host is delivered even if it is the same as the last one: a
+    /// pushed event changed the app's copy, and the listing is the truth again (D3).
+    pub fn force_next(&self) {
+        self.shared.state().resend += 1;
     }
 }
 
@@ -122,8 +142,12 @@ fn poll_host(
     deliver: &Mutex<Box<dyn Fn(HostSnapshot) + Send>>,
 ) {
     let mut last: Option<HostSnapshot> = None;
+    let mut resent = 0;
     loop {
-        let refresh = shared.state().refresh;
+        let (refresh, resend) = {
+            let state = shared.state();
+            (state.refresh, state.resend)
+        };
         let stopped = || shared.state().stop;
         let Some(snapshot) = run(host, command(host), timeout, &stopped) else { return };
         if stopped() {
@@ -131,9 +155,10 @@ fn poll_host(
         }
         // compared without the output ages: they grow at every listing of a host with sessions
         let comparable = without_ages(&snapshot);
-        if last.as_ref() != Some(&comparable) {
+        if last.as_ref() != Some(&comparable) || resend != resent {
             (deliver.lock().unwrap_or_else(PoisonError::into_inner))(snapshot);
             last = Some(comparable);
+            resent = resend;
         }
 
         let wake_at = Instant::now() + period;
