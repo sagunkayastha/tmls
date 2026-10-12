@@ -2059,6 +2059,8 @@ impl Running {
         match global {
             Global::NextTab => self.switch_tab(1),
             Global::PrevTab => self.switch_tab(-1),
+            Global::NextOpenTab => self.step_tab(1),
+            Global::PrevOpenTab => self.step_tab(-1),
             Global::FocusSidebar => self.set_focus(Focus::Sidebar),
             Global::FocusTerminal => {
                 // With no tab open there is no terminal to give the keys to.
@@ -2106,6 +2108,15 @@ impl Running {
         };
         if let Some(key) = pinned.or_else(few_tabs) {
             self.open(&key);
+            return;
+        }
+        self.step_tab(step);
+    }
+
+    /// Ctrl+Alt+Right / Left: the open tab to the right or left of the one in front, wrapping
+    /// round, whatever is pinned. Nothing with fewer than two tabs.
+    fn step_tab(&mut self, step: i32) {
+        if self.tabs.len() < 2 {
             return;
         }
         if step > 0 {
