@@ -356,3 +356,37 @@ fn rekey_gives_a_tab_a_new_key_and_keeps_its_session() {
     assert_eq!(tabs.index_of(&key("new")), Some(index));
     assert_eq!(tabs.state(index), TabState::Live);
 }
+
+/// What tmux does when a mouse selection in it ends (`set-clipboard external`): OSC 52. The
+/// text is the tab's to hand over, in front or behind, and once.
+#[test]
+fn a_program_that_writes_the_clipboard_is_heard_in_front_and_behind() {
+    let _serial = serial();
+    // "front" and "behind" in base64.
+    let mut tabs = tabs(&[
+        (
+            "a",
+            "printf '\\033]52;;YmVoaW5k\\007'; sleep 30".to_string(),
+        ),
+        (
+            "b",
+            "printf '\\033]52;c;ZnJvbnQ=\\033\\\\'; sleep 30".to_string(),
+        ),
+    ]);
+    tabs.open(&key("a"), GRID).unwrap();
+    tabs.open(&key("b"), GRID).unwrap();
+    assert_eq!(tabs.active(), Some(1));
+
+    let mut copied = Vec::new();
+    until("both copies arrived", || {
+        copied.extend(tabs.take_copied());
+        copied.len() == 2
+    });
+    copied.sort();
+    assert_eq!(copied, ["behind", "front"]);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        tabs.take_copied().is_empty(),
+        "each copy is handed over once"
+    );
+}

@@ -2675,6 +2675,13 @@ impl Running {
             // A session ended (killed, exited, ssh dropped): the list hears of it now.
             self.poller.refresh_now();
         }
+        // What a program in a tab wrote to the clipboard (tmux, when a mouse selection in it
+        // ends) goes there, and the status line says so.
+        for text in self.tabs.take_copied() {
+            if std::env::var_os(clip::NO_OSC52).is_none() {
+                self.set_clipboard(text);
+            }
+        }
         let origin = (self.layout.terminal.x, self.layout.terminal.y);
         let new_frame = self
             .tabs

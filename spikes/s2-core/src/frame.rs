@@ -89,6 +89,8 @@ struct SlotInner {
     waker: Mutex<Option<Waker>>,
     exited: AtomicBool,
     mouse_reporting: AtomicBool,
+    /// Texts the program wrote to the clipboard (OSC 52), oldest first, not yet taken.
+    copied: Mutex<Vec<String>>,
     log: Option<Log>,
 }
 
@@ -100,7 +102,7 @@ pub struct FrameSlot {
 
 impl FrameSlot {
     pub(crate) fn new(log: Option<Log>) -> FrameSlot {
-        let inner = SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), exited: AtomicBool::new(false), mouse_reporting: AtomicBool::new(false), log };
+        let inner = SlotInner { frame: Mutex::new(None), waker: Mutex::new(None), exited: AtomicBool::new(false), mouse_reporting: AtomicBool::new(false), copied: Mutex::new(Vec::new()), log };
         FrameSlot { inner: Arc::new(inner) }
     }
 
@@ -151,6 +153,18 @@ impl FrameSlot {
     /// published — taken or not. An atomic read: the front-end asks on every mouse event.
     pub fn mouse_reporting(&self) -> bool {
         self.inner.mouse_reporting.load(Ordering::SeqCst)
+    }
+
+    /// The program wrote `text` to the clipboard (OSC 52). No wake of its own: the frame with
+    /// the output it came in is published right after.
+    pub(crate) fn push_copied(&self, text: String) {
+        self.inner.copied.lock().unwrap().push(text);
+    }
+
+    /// The texts the program wrote to the clipboard since the last call, oldest first. They are
+    /// never dropped with a frame: ask when woken, for a tab in front or not.
+    pub fn take_copied(&self) -> Vec<String> {
+        std::mem::take(&mut *self.inner.copied.lock().unwrap())
     }
 
     pub fn take(&self) -> Option<Frame> {

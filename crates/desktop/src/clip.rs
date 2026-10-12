@@ -2,6 +2,10 @@
 //! `wl-copy` / `wl-paste` as child processes if they are installed. Every outcome is a line for
 //! the status line (`copy_with`, `paste_with`): what was copied or pasted, that there was
 //! nothing, or why it failed — nothing goes only to stderr any more.
+//!
+//! A program in a tab copies too: tmux with `mouse on` takes a plain drag for its own selection
+//! and writes it to the clipboard with OSC 52 when the button is released (`Tabs::take_copied`,
+//! `NO_OSC52` turns it off).
 
 use std::time::Duration;
 
@@ -12,6 +16,10 @@ use crate::forms::{self, InputRunner, Runner};
 /// Set (to anything), arboard is not tried and `wl-copy` / `wl-paste` do every copy and paste:
 /// for the test of the fallback (`tests/clip_wayland.rs`, run by the e2e).
 pub const NO_ARBOARD: &str = "TMLS_RS_NO_ARBOARD";
+
+/// Set (to anything), a program in a tab cannot write to the clipboard (OSC 52): a selection
+/// made in tmux with a plain drag is then not copied; Shift+drag still is.
+pub const NO_OSC52: &str = "TMLS_RS_NO_OSC52";
 
 /// How long `wl-copy` / `wl-paste` may take: they run on the UI thread, so a copy or a paste
 /// fails fast rather than freezing the window.

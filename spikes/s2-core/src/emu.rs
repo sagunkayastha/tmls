@@ -15,6 +15,7 @@ use crate::frame::{Cell, CellFlags, Cursor, CursorShape, Frame, FrameSlot, Wide}
 use crate::keys::{self, KeyEvent, Mods, MouseButton, MouseKind};
 use crate::latency::Log;
 use crate::now_ns;
+use crate::osc52;
 use crate::pty::{Pty, PtyReader, PtyWriter, Wake};
 
 const SCROLLBACK: usize = 10_000;
@@ -235,6 +236,8 @@ struct State {
     scrolled: bool,
     /// This batch changed what the viewport shows without PTY output (resize, scroll).
     redraw: bool,
+    /// Reads the PTY output beside the terminal, for clipboard writes (OSC 52).
+    osc52: osc52::Scanner,
 }
 
 impl State {
@@ -270,6 +273,7 @@ impl State {
             repeat_ok: true,
             scrolled: false,
             redraw: false,
+            osc52: osc52::Scanner::default(),
         })
     }
 
@@ -303,6 +307,11 @@ impl State {
                         return;
                     }
                     self.term.vt_write(piece);
+                    let mut copied = Vec::new();
+                    self.osc52.feed(piece, &mut copied);
+                    for text in copied {
+                        self.frames.push_copied(text);
+                    }
                 }
                 self.backlog.remove(bytes.len());
                 t_output_ns = Some(t);
