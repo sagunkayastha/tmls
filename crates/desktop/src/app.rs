@@ -83,6 +83,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
+use crate::clip;
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, PanelKey, RepeatGate, Route};
@@ -385,7 +386,7 @@ struct Running {
     marks: Option<Marks<Log>>,
     sampler: Option<Sampler>,
     meta: Meta,
-    clipboard: Option<arboard::Clipboard>,
+    clip: clip::Clipboard,
     mods: ModifiersState,
     pointer: (f32, f32),
     wheel_carry: f32,
@@ -608,7 +609,7 @@ impl Running {
             proxy,
             poller,
             log,
-            clipboard: None,
+            clip: clip::Clipboard::new(),
             mods: ModifiersState::empty(),
             pointer: (-1.0, -1.0),
             wheel_carry: 0.0,
@@ -926,16 +927,19 @@ impl Running {
                 self.paste_into_form();
                 return After::Stay;
             }
-            Action::Copy | Action::Paste if self.focus != Focus::Terminal => return After::Stay,
-            Action::Copy => {
+            Action::Copy if self.focus != Focus::Form => {
                 self.copy();
                 return After::Stay;
             }
-            Action::Paste => {
+            Action::Paste if self.focus == Focus::Terminal => {
                 self.paste();
                 return After::Stay;
             }
-            Action::Ignore => return After::Stay,
+            Action::Paste => {
+                self.say(Ok("paste goes to the terminal: click it first".to_string()));
+                return After::Stay;
+            }
+            Action::Copy | Action::Ignore => return After::Stay,
         };
         // A key the panel does not bind is the terminal's: the keys go back there, and this
         // one with them, so nothing typed is lost.
@@ -1583,20 +1587,16 @@ impl Running {
             )));
         }
         let local = self.cfg.local_name.clone();
-        let said = match self.clipboard() {
-            Some(clipboard) => forms::copy_attach(key, &local, &mut |text| {
-                clipboard.set_text(text).map_err(|e| e.to_string())
-            }),
-            None => Err("copy failed: no clipboard".to_string()),
-        };
+        let said = forms::copy_attach(key, &local, &mut |text| self.clip.set(&text));
         self.say(said);
     }
 
     /// Ctrl+Shift+V in a form: the clipboard's text goes into the focused field.
     fn paste_into_form(&mut self) {
-        let text = match self.clipboard().map(|clipboard| clipboard.get_text()) {
-            Some(Ok(text)) => text,
-            _ => return,
+        let text = match self.clip.get() {
+            Ok(text) if !text.is_empty() => text,
+            Ok(_) => return self.say(Ok("clipboard empty".to_string())),
+            Err(e) => return self.say(Err(format!("paste failed: {e}"))),
         };
         if let Some((Modal::Form(form), _)) = &mut self.modal {
             form.paste(&text);
@@ -1978,34 +1978,20 @@ impl Running {
         }
     }
 
-    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
-        if self.clipboard.is_none() {
-            match arboard::Clipboard::new() {
-                Ok(clipboard) => self.clipboard = Some(clipboard),
-                Err(e) => crate::errln(format_args!("tmls-rs: no clipboard: {e}")),
-            }
-        }
-        self.clipboard.as_mut()
-    }
-
-    /// Ctrl+Shift+C: copies the front tab's selection.
+    /// Ctrl+Shift+C: copies the front tab's selection, and says so.
     fn copy(&mut self) {
-        let Some(text) = self
+        let text = self
             .tabs
             .active()
-            .and_then(|index| self.tabs.session(index).selected_text())
-        else {
-            return;
-        };
-        self.set_clipboard(text);
+            .and_then(|index| self.tabs.session(index).selected_text());
+        let said = clip::copy_with(text, |text| self.clip.set(text));
+        self.say(said);
     }
 
+    /// A selection made with the mouse, or Ctrl+C on one: to the clipboard, and says so.
     fn set_clipboard(&mut self, text: String) {
-        if let Some(clipboard) = self.clipboard()
-            && let Err(e) = clipboard.set_text(text)
-        {
-            crate::errln(format_args!("tmls-rs: copy failed: {e}"));
-        }
+        let said = clip::copy_with(Some(text), |text| self.clip.set(text));
+        self.say(said);
     }
 
     /// The modifiers held, for a mouse event.
@@ -2045,14 +2031,16 @@ impl Running {
 
     /// Ctrl+Shift+V: pastes the clipboard into the front tab, if its session is live.
     fn paste(&mut self) {
-        let text = match self.clipboard().map(|clipboard| clipboard.get_text()) {
-            Some(Ok(text)) => text,
-            Some(Err(e)) => return crate::errln(format_args!("tmls-rs: paste failed: {e}")),
-            None => return,
-        };
-        if let Some(session) = self.tabs.live_mut() {
-            session.paste(&text);
+        if self.tabs.live_mut().is_none() {
+            return self.say(Ok("no live session to paste into".to_string()));
         }
+        let got = self.clip.get();
+        let said = clip::paste_with(got, |text| {
+            if let Some(session) = self.tabs.live_mut() {
+                session.paste(text);
+            }
+        });
+        self.say(said);
     }
 
     fn pointer_moved(&mut self, position: PhysicalPosition<f64>) {

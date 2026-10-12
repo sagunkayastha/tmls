@@ -1093,6 +1093,45 @@ fi
 keys -k Escape
 check_typed "after the help the keys go to \"$ODD\" again" "$ODD" afterhelp
 
+# --- copy and paste (F2) -------------------------------------------------------------------------
+# "$ODD" is in front with the keys; tmux's mouse is off, so a drag selects here. wl-paste reads
+# the compositor's clipboard on its own, apart from the app.
+clipboard() { timeout 5 wl-paste --no-newline 2>/dev/null; }
+clipboard_has() { clipboard | grep -qF -- "$1"; }
+keys "clear; printf '  COPYME-%s\n' $NONCE"
+key_enter
+if wait_for 5 pane_has_line "$ODD" "  COPYME-$NONCE"; then
+  pass "the line to copy is on the pane's first row"
+else
+  fail "the line to copy is on the pane's first row" "pane: $(pane_text "$ODD" | head -2 | tr '\n' '|')"
+fi
+# Shift held while the pointer drags along the first row (y 31), from its start.
+timeout 10 wtype -M shift -s 3000 -m shift &
+HOLD=$!
+sleep 0.8
+click drag 230 31 700
+wait "$HOLD" 2>/dev/null
+# Something else on the clipboard first: only Ctrl+Shift+C can put the line back.
+timeout 5 wl-copy "not-it-$NONCE"
+keys -M ctrl -M shift -k c -m shift -m ctrl
+if wait_for 5 clipboard_has "COPYME-$NONCE"; then
+  pass "Shift+drag, then Ctrl+Shift+C puts the selection on the clipboard (wl-paste)"
+else
+  fail "Shift+drag, then Ctrl+Shift+C puts the selection on the clipboard (wl-paste)" \
+    "clipboard: $(clipboard | head -c 80); stderr: $(grep -E 'copy|clipboard' "$OUT/app.stderr" | tail -3 | tr '\n' ' ')"
+fi
+check "screenshot 35-copied (the status line says copied N chars)" shot 35-copied
+keys "echo PASTED:"
+keys -M ctrl -M shift -k v -m shift -m ctrl
+key_enter
+pasted() { pane_text "$ODD" | grep -qE "^PASTED: ?COPYME-$NONCE\$"; }
+if wait_for 5 pasted; then
+  pass "Ctrl+Shift+V pastes it into the tab"
+else
+  fail "Ctrl+Shift+V pastes it into the tab" "pane: $(pane_text "$ODD" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+check "no copy or paste failure on stderr" bash -c '! grep -qE "(copy|paste) failed" "$0"' "$OUT/app.stderr"
+
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7
 key_quit

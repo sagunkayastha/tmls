@@ -11,7 +11,7 @@
 //! itself runs inside tmux has to remove it for the attach child (tmux refuses to nest).
 
 use std::ffi::OsStr;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -368,7 +368,7 @@ impl Output {
 /// `timeout`, so not for the UI thread. A command that fails gives an error whose text is what
 /// it wrote to stderr (else to stdout); one that is not done after `timeout` is killed, with
 /// everything it started, and is an error too. The command reads nothing: its stdin is
-/// /dev/null.
+/// /dev/null (see [`run_with_stdin`]).
 pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
     run_bytes(argv, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -376,15 +376,33 @@ pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
 /// [`run`], with what the command printed as the bytes they are: for the contents of a file,
 /// which need not be text.
 pub fn run_bytes(argv: &[String], timeout: Duration) -> anyhow::Result<Vec<u8>> {
+    run_input(argv, None, timeout)
+}
+
+/// [`run`] with `input` on the command's stdin (a message for tmux's paste buffer, a text for
+/// `wl-copy`). The input is written on a thread of its own and its end closes stdin.
+pub fn run_with_stdin(argv: &[String], input: &[u8], timeout: Duration) -> anyhow::Result<String> {
+    run_input(argv, Some(input), timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+fn run_input(argv: &[String], input: Option<&[u8]>, timeout: Duration) -> anyhow::Result<Vec<u8>> {
     let (program, args) = argv.split_first().context("empty command")?;
     let mut child = Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0) // its own, so a timeout kills what it started as well
         .spawn()
         .with_context(|| format!("couldn't start {program}"))?;
+    if let (Some(input), Some(mut pipe)) = (input, child.stdin.take()) {
+        let input = input.to_vec();
+        // Not on this thread: a command that writes before it has read everything would wait
+        // for us while we wait for it.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
     let deadline = Instant::now() + timeout;
     let status = loop {

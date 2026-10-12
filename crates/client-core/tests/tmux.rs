@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use client_core::listing::SessionKey;
 use client_core::tmux::{
     MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv, new_session_argv,
-    rename_argv, run, running_commands_argv, valid_session_name,
+    rename_argv, run, run_with_stdin, running_commands_argv, valid_session_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -340,4 +340,15 @@ fn run_kills_a_command_that_takes_too_long() {
     assert!(started.elapsed() < Duration::from_millis(900), "returned after {:?}", started.elapsed());
     std::thread::sleep(Duration::from_millis(1300));
     assert!(!marker.exists(), "what the command started outlived the timeout");
+}
+
+#[test]
+fn run_with_stdin_gives_the_command_its_input() {
+    let argv = v(&["sh", "-c", "cat; echo; echo done"]);
+    assert_eq!(run_with_stdin(&argv, b"a'b $(x)\n", Duration::from_secs(5)).unwrap(), "a'b $(x)\n\ndone\n");
+    let fails = run_with_stdin(&v(&["sh", "-c", "cat >/dev/null; echo nope >&2; exit 3"]), b"x", Duration::from_secs(5));
+    assert_eq!(fails.unwrap_err().to_string(), "nope");
+    // A megabyte does not block: the command reads while the input is written.
+    let big = vec![b'x'; 1 << 20];
+    assert_eq!(run_with_stdin(&v(&["wc", "-c"]), &big, Duration::from_secs(5)).unwrap().trim(), "1048576");
 }

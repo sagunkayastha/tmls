@@ -952,6 +952,10 @@ impl RowMenu {
 /// Runs a command and returns what it printed; `tmux::run` in the app.
 pub type Runner<'a> = &'a dyn Fn(&[String]) -> anyhow::Result<String>;
 
+/// Runs a command with bytes on its stdin and returns what it printed;
+/// `tmux::run_with_stdin` in the app.
+pub type InputRunner<'a> = &'a dyn Fn(&[String], &[u8]) -> anyhow::Result<String>;
+
 /// The runner the app uses: `tmux::run` with `REQUEST_TIMEOUT`.
 pub fn run_tmux(argv: &[String]) -> anyhow::Result<String> {
     tmux::run(argv, REQUEST_TIMEOUT)
