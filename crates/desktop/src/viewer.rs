@@ -369,8 +369,12 @@ pub fn open_link(
 }
 
 /// `open_link` for a click that may be overtaken: `wanted` says whether its answer is still
-/// waited for. Asked once a picture is read, before it is decoded — the decode of a large one
-/// takes a quarter of a gigabyte for a moment, which a click nobody waits for is not given.
+/// waited for. Asked once the path is located, before anything is read; once a picture is
+/// read, and again at its turn to be decoded (`DECODING`) — the decode of a large one takes a
+/// quarter of a gigabyte for a moment, which a click nobody waits for is not given; and before
+/// a copy for the desktop's app is written, which would else take the place of the copy a
+/// newer click made of a file of the same name. A click that is overtaken gives `overtaken`'s
+/// line, which nobody reads: its answer is dropped.
 pub fn open_link_while(
     key: &SessionKey,
     link: &FileLink,
@@ -382,18 +386,21 @@ pub fn open_link_while(
     let located = locate(key, &link.path, local_name, run)?;
     let host = key.host.as_str();
     let name = named(host, &located.path, local_name);
+    if !wanted() {
+        return Err(overtaken(&name));
+    }
     if located.kind == Kind::File && is_image(&located.path) {
         return image(host, &located, local_name, cache, run, wanted);
     }
     let text_sized = located.size <= MAX_BYTES as u64;
     if located.kind != Kind::File || opens_outside(&located.path, false) || !text_sized {
-        return outside(host, &located, local_name, cache, None, run);
+        return outside(host, &located, local_name, cache, None, run, wanted);
     }
     // One byte more than fits: a file that grew since is not shown cut off.
     let argv = files::read_argv(host, &located.path, MAX_BYTES as u64 + 1, local_name);
     let bytes = run(&argv, READ_TIMEOUT).map_err(|e| format!("{name}: {}", why(&e)))?;
     if bytes.len() > MAX_BYTES {
-        return outside(host, &located, local_name, cache, None, run);
+        return outside(host, &located, local_name, cache, None, run, wanted);
     }
     match text_of(bytes) {
         Ok(text) => Ok(Opened::Text(Document {
@@ -403,9 +410,19 @@ pub fn open_link_while(
             text,
         })),
         // Not text after all: the bytes are the whole file, no need to fetch it again.
-        Err(bytes) => outside(host, &located, local_name, cache, Some(bytes), run),
+        Err(bytes) => outside(host, &located, local_name, cache, Some(bytes), run, wanted),
     }
 }
+
+/// What a click that a newer one overtook answers with, for the file called `name`.
+fn overtaken(name: &str) -> String {
+    format!("{name}: a newer click took its place")
+}
+
+/// Held for as long as a picture is decoded: one at a time, whatever the number of clicks.
+/// Impatient clicks on a large picture would else each take their quarter of a gigabyte at
+/// once. The clicks that wait hold the file's bytes they read and nothing more.
+static DECODING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Reads the picture `located` on `host` and decodes it for the panel.
 ///
@@ -425,7 +442,7 @@ fn image(
     let name = named(host, path, local_name);
     // `have`: the file's bytes, when they were read already.
     let instead = |why: &str, have: Option<Vec<u8>>| match outside(
-        host, located, local_name, cache, have, run,
+        host, located, local_name, cache, have, run, wanted,
     )? {
         Opened::Outside { target, said } => Ok(Opened::Outside {
             target,
@@ -443,9 +460,18 @@ fn image(
         return instead(TOO_LARGE, Some(bytes));
     }
     if !wanted() {
-        return Err(format!("{name}: a newer click took its place"));
+        return Err(overtaken(&name));
     }
-    match decode_file(&bytes, MAX_SIDE) {
+    let decoded = {
+        // Nothing is kept under the lock: one that a decoder's panic left poisoned is as good.
+        let _turn = DECODING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Its turn may have come after a newer click: then it does not start.
+        if !wanted() {
+            return Err(overtaken(&name));
+        }
+        decode_file(&bytes, MAX_SIDE)
+    };
+    match decoded {
         Ok(Decoded { picture, file }) => Ok(Opened::Image {
             host: host.to_string(),
             path: located.path.clone(),
@@ -509,11 +535,12 @@ pub fn open_in_app(
         name: String::new(),
     };
     let located = locate(&key, path, local_name, run)?;
-    outside(host, &located, local_name, cache, None, run)
+    outside(host, &located, local_name, cache, None, run, &|| true)
 }
 
 /// What `xdg-open` is to be given for `located`: the path itself on this machine, else a
-/// copy in `cache`. `have`: the file's bytes, when they were read already.
+/// copy in `cache`. `have`: the file's bytes, when they were read already. `wanted`: see
+/// `open_link_while`; asked before the copy is written.
 fn outside(
     host: &str,
     located: &Located,
@@ -521,6 +548,7 @@ fn outside(
     cache: Option<&Path>,
     have: Option<Vec<u8>>,
     run: Runner,
+    wanted: &dyn Fn() -> bool,
 ) -> Result<Opened, String> {
     let path = located.path.as_str();
     let name = named(host, path, local_name);
@@ -554,6 +582,9 @@ fn outside(
     };
     if bytes.len() as u64 > MAX_OUTSIDE_BYTES {
         return Err(too_large(bytes.len() as u64));
+    }
+    if !wanted() {
+        return Err(overtaken(&name));
     }
     let copy = save(cache, host, path, &bytes).map_err(|e| format!("{name}: {e}"))?;
     Ok(Opened::Outside {

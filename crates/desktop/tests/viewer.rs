@@ -1221,40 +1221,166 @@ fn a_picture_made_smaller_is_still_called_by_the_files_size() {
     assert_eq!(panel.image_body().unwrap().scroll, (3696.0, 0.0));
 }
 
+/// Whether a click is still the latest, for `open_link_while`: yes for the first `yes` times
+/// it is asked, then no. Counts how often it was asked.
+struct Until {
+    yes: usize,
+    asked: std::cell::Cell<usize>,
+}
+
+impl Until {
+    fn new(yes: usize) -> Until {
+        Until {
+            yes,
+            asked: std::cell::Cell::new(0),
+        }
+    }
+
+    fn wanted(&self) -> bool {
+        self.asked.set(self.asked.get() + 1);
+        self.asked.get() <= self.yes
+    }
+}
+
+/// A directory nothing was written to yet, under cargo's target tmp dir: nothing is removed
+/// to make it so.
+fn unused(name: &str) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "viewer-{name}-{}-{}",
+        std::process::id(),
+        now.as_nanos()
+    ));
+    assert!(!dir.exists(), "{}", dir.display());
+    dir
+}
+
+const OVERTAKEN: &str = "a newer click took its place";
+
 #[test]
 fn a_click_that_is_no_longer_the_latest_is_not_decoded() {
     let bytes = png(3, 2, corners);
-    let host = Host::new(&format!("f\n{}\n/w/shot.png", bytes.len()), &bytes);
-    let run = |argv: &[String], timeout: Duration| host.run(argv, timeout);
-    let asked = std::cell::Cell::new(0);
-    let stale = || {
-        asked.set(asked.get() + 1);
-        false
+    let located = format!("f\n{}\n/w/shot.png", bytes.len());
+    let open = |host: &Host, until: &Until| {
+        viewer::open_link_while(
+            &key(LOCAL),
+            &link("/w/shot.png", None),
+            LOCAL,
+            None,
+            &|argv, timeout| host.run(argv, timeout),
+            &|| until.wanted(),
+        )
     };
-    let opened = viewer::open_link_while(
-        &key(LOCAL),
-        &link("/w/shot.png", None),
-        LOCAL,
-        None,
-        &run,
-        &stale,
-    );
-    assert_eq!(
-        opened,
-        Err("/w/shot.png: a newer click took its place".to_string())
-    );
+    let overtaken = Err(format!("/w/shot.png: {OVERTAKEN}"));
+    // Overtaken while it was located: the picture is not read.
+    let (host, until) = (Host::new(&located, &bytes), Until::new(0));
+    assert_eq!(open(&host, &until), overtaken);
+    assert_eq!(host.calls().len(), 1, "located, then asked");
+    assert_eq!(host.calls()[0].1, LOCATE_TIMEOUT);
+    assert_eq!(until.asked.get(), 1);
+    // While it was read: not decoded.
+    let (host, until) = (Host::new(&located, &bytes), Until::new(1));
+    assert_eq!(open(&host, &until), overtaken);
     assert_eq!(host.calls().len(), 2, "read, then asked");
-    assert_eq!(asked.get(), 1);
+    assert_eq!(until.asked.get(), 2);
+    // While it waited for another picture's decode to end: not decoded either.
+    let (host, until) = (Host::new(&located, &bytes), Until::new(2));
+    assert_eq!(open(&host, &until), overtaken);
+    assert_eq!(host.calls().len(), 2);
+    assert_eq!(until.asked.get(), 3, "asked again once it is its turn");
     // Still the latest: decoded.
-    let opened = viewer::open_link_while(
-        &key(LOCAL),
-        &link("/w/shot.png", None),
-        LOCAL,
-        None,
-        &run,
-        &|| true,
-    );
+    let (host, until) = (Host::new(&located, &bytes), Until::new(usize::MAX));
+    let opened = open(&host, &until);
     assert!(matches!(opened, Ok(Opened::Image { .. })), "{opened:?}");
+    assert_eq!(until.asked.get(), 3);
+}
+
+#[test]
+fn a_click_that_is_no_longer_the_latest_writes_no_copy() {
+    let open = |host: &Host, path: &str, cache: &Path, until: &Until| {
+        viewer::open_link_while(
+            &key("nas"),
+            &link(path, None),
+            LOCAL,
+            Some(cache),
+            &|argv, timeout| host.run(argv, timeout),
+            &|| until.wanted(),
+        )
+    };
+    // A file for the desktop's app, overtaken while it was copied from its host.
+    let cache = unused("stale-copy");
+    let host = Host::new("f\n4\n/srv/a.zip", b"PK\x03\x04");
+    let until = Until::new(1);
+    assert_eq!(
+        open(&host, "/srv/a.zip", &cache, &until),
+        Err(format!("/srv/a.zip on nas: {OVERTAKEN}"))
+    );
+    assert_eq!(host.calls().len(), 2, "located and read");
+    assert_eq!(until.asked.get(), 2);
+    assert!(!cache.exists(), "nothing was written");
+    // A picture the panel does not take (it is none), overtaken once that was found out. The
+    // decode that found it out was this click's own turn: asked after locate, after the read,
+    // at its turn, and before the copy.
+    let cache = unused("stale-picture");
+    let host = Host::new("f\n5\n/w/notes.png", b"hello");
+    let until = Until::new(3);
+    assert_eq!(
+        open(&host, "/w/notes.png", &cache, &until),
+        Err(format!("/w/notes.png on nas: {OVERTAKEN}"))
+    );
+    assert_eq!(until.asked.get(), 4);
+    assert!(!cache.exists(), "nothing was written");
+    // Overtaken before the decode: no decode and no copy.
+    let (host, until) = (Host::new("f\n5\n/w/notes.png", b"hello"), Until::new(1));
+    assert_eq!(
+        open(&host, "/w/notes.png", &cache, &until),
+        Err(format!("/w/notes.png on nas: {OVERTAKEN}"))
+    );
+    assert_eq!(until.asked.get(), 2);
+    assert!(!cache.exists(), "nothing was written");
+    // The latest click's copy is written as before.
+    let until = Until::new(usize::MAX);
+    let copy = target(open(&host, "/w/notes.png", &cache, &until));
+    assert_eq!(std::fs::read(copy).unwrap(), b"hello");
+}
+
+#[test]
+fn one_picture_is_decoded_at_a_time() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Each click's third question is asked at its turn to decode, with the turn held: were
+    // two turns held at once, two of these would be inside it together.
+    let (inside, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let bytes = png(3, 2, corners);
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            scope.spawn(|| {
+                let host = Host::new(&format!("f\n{}\n/w/shot.png", bytes.len()), &bytes);
+                let asked = std::cell::Cell::new(0);
+                let wanted = || {
+                    asked.set(asked.get() + 1);
+                    if asked.get() == 3 {
+                        most.fetch_max(inside.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(15));
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    true
+                };
+                let opened = viewer::open_link_while(
+                    &key(LOCAL),
+                    &link("/w/shot.png", None),
+                    LOCAL,
+                    None,
+                    &|argv, timeout| host.run(argv, timeout),
+                    &wanted,
+                );
+                assert!(matches!(opened, Ok(Opened::Image { .. })), "{opened:?}");
+                assert_eq!(asked.get(), 3);
+            });
+        }
+    });
+    assert_eq!(most.load(Ordering::SeqCst), 1);
 }
 
 #[test]
