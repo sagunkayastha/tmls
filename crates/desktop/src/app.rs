@@ -289,6 +289,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => running.ime(t_event_ns, &ime),
             WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
+            // Out of the window: over no row.
+            WindowEvent::CursorLeft { .. } => running.hover_row(Hit::Sidebar),
             WindowEvent::MouseInput { state, button, .. } => {
                 running.button(state, button);
                 if running.quit {
@@ -393,6 +395,9 @@ struct Running {
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
     note: Option<String>,
+    /// What the session's row under the pointer says in full (`sidebar::hover_text`), for the
+    /// status line while nothing else is said there.
+    hover: Option<String>,
     /// The open form or menu, and the window pixel a menu was opened at.
     modal: Option<(Modal, Option<(u32, u32)>)>,
     /// What had the keys before `modal` opened.
@@ -661,6 +666,7 @@ impl Running {
             prompts_file: config_dir.join("prompts"),
             problem: None,
             note: None,
+            hover: None,
             modal: None,
             focus_before: Focus::Sidebar,
             select_when_listed: None,
@@ -1098,7 +1104,8 @@ impl Running {
             .collect();
         let active = self.tabs.active();
         let ended = matches!(self.tabs.active_state(), Some(TabState::Ended { .. }));
-        let status = match (self.problem.as_ref().or(self.note.as_ref()), active) {
+        let said = self.problem.as_ref().or(self.note.as_ref());
+        let status = match (said.or(self.hover.as_ref()), active) {
             (Some(said), _) => said.clone(),
             (None, Some(index)) => {
                 let key = self.tabs.key(index);
@@ -2481,6 +2488,7 @@ impl Running {
         }
         let (x, y) = self.pointer;
         let hit = self.layout.hit(x, y, self.tabs.len());
+        self.hover_row(hit);
         if self.dragging_separator {
             self.drag_separator(x);
         }
@@ -2508,6 +2516,24 @@ impl Running {
             let reporting = self.tabs.mouse_reporting();
             let acts = self.mouse.motion(at, self.mouse_mods(), reporting);
             self.mouse_acts(acts);
+        }
+    }
+
+    /// The pointer is over `hit`: over a session's row (and no form or menu in the way) the
+    /// status line says what the row says, in full.
+    fn hover_row(&mut self, hit: Hit) {
+        let hover = match hit {
+            Hit::List { line, .. } if self.modal.is_none() => self
+                .sidebar
+                .row_at(line, self.layout.list_lines)
+                .and_then(|row| self.sidebar.key_at(row))
+                .and_then(|key| self.sidebar.info(key))
+                .and_then(sidebar::hover_text),
+            _ => None,
+        };
+        if hover != self.hover {
+            self.hover = hover;
+            self.invalidate();
         }
     }
 

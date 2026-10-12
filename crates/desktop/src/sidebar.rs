@@ -99,6 +99,18 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
         .map(|title| (title, false))
 }
 
+/// The status line while the pointer is over a session's row (tmls: the row's tooltip): the
+/// whole of `summary`, which the list cuts off at its width, after the session's name — and
+/// for a session that waits, that it is what it waits for. `None` when the row says it all.
+pub fn hover_text(info: &SessionInfo) -> Option<String> {
+    let (text, waits) = summary(info)?;
+    let name = &info.key.name;
+    Some(match waits {
+        true => format!("{name} waits for you: {text}"),
+        false => format!("{name}: {text}"),
+    })
+}
+
 /// A session renamed outside the app (`renamed_outside`): its ★ and its queued messages take
 /// the new name, whether it has a tab or not (the tab is the app's to follow). Whether either
 /// moved; a ★ that could not be moved is in `take_pin_error`.

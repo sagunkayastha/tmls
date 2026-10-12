@@ -10,7 +10,7 @@ use client_core::{
     default_color,
 };
 use desktop::queue::Queue;
-use desktop::sidebar::{Action, Row, Sidebar, renamed_outside, summary};
+use desktop::sidebar::{Action, Row, Sidebar, hover_text, renamed_outside, summary};
 
 const LOCAL: &str = "laptop";
 
@@ -1032,4 +1032,28 @@ fn renamed_outside_never_guesses_between_sessions() {
         vec![with("a", None), with("a2", Some(x)), with("b", None)],
     );
     assert!(renamed_outside(&before, &reused).is_empty());
+}
+
+/// The pointer over a row: the status line has the whole of what the dim line says, which a
+/// narrow list cuts off, and names what a `?` waits for.
+#[test]
+fn hover_text_is_the_whole_dim_line_and_says_what_a_session_waits_for() {
+    let mut info = claude(LOCAL, "work", "a title");
+    assert_eq!(hover_text(&info).as_deref(), Some("work: a title"));
+    info.last_reply = Some("All 12 tests pass, and the build is green.".to_string());
+    assert_eq!(
+        hover_text(&info).as_deref(),
+        Some("work: All 12 tests pass, and the build is green.")
+    );
+    info.status = Status::Waiting;
+    info.reason = Some("permission prompt".to_string());
+    assert_eq!(
+        hover_text(&info).as_deref(),
+        Some("work waits for you: permission prompt")
+    );
+    // Nothing more to say than the row does.
+    assert_eq!(hover_text(&session(LOCAL, "plain", Status::Idle)), None);
+    let mut same = claude(LOCAL, "work", "work");
+    same.last_reply = Some("  ".to_string());
+    assert_eq!(hover_text(&same), None);
 }
