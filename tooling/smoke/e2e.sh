@@ -1351,6 +1351,12 @@ if pane_text "$APPROVE" | grep -q '^GOT\['; then
 else
   pass "a dialog read that comes back after the user typed on answers nothing"
 fi
+# ... and the read did come back: the app says it dropped the form (not a read that never ran).
+if wait_for 5 grep -qF -- "tmls-rs: $APPROVE: the prompt's answer form was dropped — keys moved on" "$OUT/app.stderr"; then
+  pass "the late dialog read was dropped because keys moved on (said on stderr)"
+else
+  fail "the late dialog read was dropped because keys moved on (said on stderr)" "stderr: $(tail -3 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
 rm -f "$OUT/slow-capture"
 
 # --- send or queue a message (F7) ----------------------------------------------------------------
