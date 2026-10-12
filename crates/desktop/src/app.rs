@@ -455,6 +455,8 @@ struct Running {
     queue: Queue,
     /// tmls's saved prompts, `~/.config/tmls/prompts`.
     prompts_file: PathBuf,
+    /// `~/.config/tmls`: where `notifications.json` is written.
+    config_dir: PathBuf,
     /// The last thing that went wrong (a tab that could not be opened), for the status line.
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
@@ -754,6 +756,7 @@ impl Running {
             alerts: Alerts::new(Settings::load(config_dir)),
             queue: Queue::default(),
             prompts_file: config_dir.join("prompts"),
+            config_dir: config_dir.to_path_buf(),
             problem: None,
             note: None,
             hover: None,
@@ -1038,9 +1041,12 @@ impl Running {
         let notes = self
             .alerts
             .observe(&host, online, listed, watching, Instant::now());
-        // In game mode no notification runs; the bell's list has the alerts all the same.
-        if !self.game {
-            alerts::send(&notes, &mut forms::spawn_detached);
+        // In game mode no notification runs and no sound plays; the bell's list has the alerts
+        // all the same.
+        if !self.game && !notes.is_empty() {
+            let settings = self.alerts.settings();
+            let player = settings.sound && forms::on_path(alerts::SOUND_PLAYER);
+            alerts::emit(&notes, settings, player, &mut forms::spawn_detached);
         }
         if let Some(key) = &self.select_when_listed
             && self.sidebar.status(key).is_some()
@@ -1464,6 +1470,22 @@ impl Running {
             PanelResult::Approve(key) => {
                 self.close_modal();
                 self.approve(&key);
+            }
+            PanelResult::Settings(wanted) => {
+                let dir = self.config_dir.clone();
+                let player = forms::on_path(alerts::SOUND_PLAYER);
+                let (now, said) = alerts::switch(
+                    self.alerts.settings(),
+                    wanted,
+                    &mut |settings| settings.save(&dir),
+                    player,
+                );
+                self.alerts.set_settings(now);
+                // A switch that could not be saved is shown as it was.
+                if let Some((Modal::Alerts(panel), _)) = &mut self.modal {
+                    panel.set_settings(now);
+                }
+                self.say(said);
             }
             PanelResult::Jump(key) => {
                 self.close_modal();

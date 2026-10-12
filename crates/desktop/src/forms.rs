@@ -262,6 +262,8 @@ pub enum Target {
     Stop(Stop),
     Start(usize),
     Item(usize),
+    /// A switch of the alerts list.
+    Switch(usize),
 }
 
 /// A piece of a panel: `text`, already cut to `cols` columns, from column `col` of `line`.

@@ -284,6 +284,8 @@ readable = "".join(c if (c.isascii() and c.isalnum()) or c in "_-" else "_" for 
 print(readable + "-" + hashlib.sha1(("local\0" + name).encode()).hexdigest()[:8])' "$ODD")
 pins_are() { [ "$(cat "$PINS" 2>/dev/null)" = "$1" ]; }
 only_pins_written() { [ "$(find "$HOME/.config/tmls" -mindepth 1 | sort | tr '\n' '|')" = "$PINS|" ]; }
+# After the alert switches (G7) the app has written notifications.json too.
+only_config_written() { [ "$(find "$HOME/.config/tmls" -mindepth 1 | sort | tr '\n' '|')" = "$HOME/.config/tmls/notifications.json|$PINS|" ]; }
 keys -k p
 if wait_for 3 pins_are "$SLUG"; then
   pass "p in the list pins: pins holds exactly $SLUG"
@@ -1484,6 +1486,26 @@ else
 fi
 tmux kill-session -t "=$WIN"
 
+# --- alert switches (G7) -------------------------------------------------------------------------
+# The list opens on the newest alert (or on Desktop when there is none): up to Desktop, down to
+# Sound, Space. canberra-gtk-play is not in the image: the status line says there is no sound.
+NOTES="$HOME/.config/tmls/notifications.json"
+notes_are() { [ "$(cat "$NOTES" 2>/dev/null)" = "$1" ]; }
+key_focus_list
+keys -k a
+keys -k k -k k -k k -k k
+keys -k j
+keys -k space
+if wait_for 3 notes_are '{"desktop": true, "sound": true, "silence_focused": true}'; then
+  pass "Space on Sound writes notifications.json with sound true"
+else
+  fail "Space on Sound writes notifications.json with sound true" "file: $(cat "$NOTES" 2>&1)"
+fi
+check "screenshot 46-alert-switches (Sound ON; no player)" shot 46-alert-switches
+keys -k space
+check "Space again writes sound false" wait_for 3 notes_are '{"desktop": true, "sound": false, "silence_focused": true}'
+keys -k Escape
+
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7
 key_quit
@@ -1500,7 +1522,7 @@ if detail=$(latency_ok 1); then
 else
   fail "at exit every key in the latency log has its write and its frame" "$detail"
 fi
-check "at exit ~/.config/tmls holds pins and nothing else" only_pins_written
+check "at exit ~/.config/tmls holds pins and notifications.json and nothing else" only_config_written
 check "pins is empty again" pins_are ""
 if grep -nE "panicked|stack backtrace|RUST_BACKTRACE" "$OUT/app.stderr" >/dev/null; then
   fail "no panic on stderr" "$(grep -nE 'panicked' -A3 "$OUT/app.stderr" | head -6 | tr '\n' ' ')"

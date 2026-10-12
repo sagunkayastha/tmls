@@ -1,13 +1,17 @@
 //! Alerts: which changes of a session's mark alert, the bell's count, the list and its keys,
-//! the notification's command, and the settings file. No window, no `notify-send`.
+//! the notification's and the sound's command, the switches and the settings file. No window,
+//! no `notify-send`, no sound.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use client_core::{Config, HostSnapshot, Seen, SessionInfo, SessionKey, Status, Tool};
 use desktop::alerts::{
-    Alerts, MAX_ALERTS, Notification, PanelResult, Settings, Watching, jump, notify_argv, send,
+    self, Alerts, MAX_ALERTS, Notification, PanelResult, SOUND_PLAYER, Settings, Watching, emit,
+    jump, notify_argv, send, sound_argv,
 };
 use desktop::forms::{self, Look};
 use desktop::sidebar::{Row, Sidebar};
@@ -444,65 +448,179 @@ fn scratch(test: &str) -> PathBuf {
 }
 
 #[test]
-fn settings_are_read_from_notifications_json_and_never_written() {
+fn settings_are_read_from_notifications_json_and_written_when_switched() {
     let on = Settings {
         desktop: true,
+        sound: false,
         silence_focused: true,
     };
     assert_eq!(Settings::default(), on);
-    // No file: the defaults, and still no file.
+    // No file: the defaults, and loading makes none.
     let dir = scratch("settings");
     assert_eq!(Settings::load(&dir), on);
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
         0,
-        "nothing is created"
+        "loading creates nothing"
     );
-    assert_eq!(Settings::load(&dir.join("no-such-dir")), on);
-    assert!(!dir.join("no-such-dir").exists());
-
     // tmls's own file.
     let file = dir.join("notifications.json");
-    let text = "{\"desktop\": false, \"sound\": true, \"silence_focused\": false}\n";
-    std::fs::write(&file, text).unwrap();
+    std::fs::write(
+        &file,
+        "{\"desktop\": false, \"sound\": true, \"silence_focused\": false}\n",
+    )
+    .unwrap();
     let off = Settings {
         desktop: false,
+        sound: true,
         silence_focused: false,
     };
     assert_eq!(Settings::load(&dir), off);
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        text,
-        "left as it is"
-    );
-
     // Damaged, not an object, a value that is no boolean, a key missing: that key's default.
     for (text, want) in [
         ("{\"desktop\": fal", on),
         ("", on),
         ("[false, false]", on),
-        ("\"desktop\"", on),
-        ("{\"desktop\": 0, \"silence_focused\": \"no\"}", on),
         (
-            "{\"desktop\": false}",
-            Settings {
-                desktop: false,
-                silence_focused: true,
-            },
+            "{\"desktop\": 0, \"sound\": \"yes\", \"silence_focused\": \"no\"}",
+            on,
         ),
+        ("{\"sound\": true}", Settings { sound: true, ..on }),
         (
             "{\"silence_focused\": false, \"desktop\": null}",
             Settings {
-                desktop: true,
                 silence_focused: false,
+                ..on
             },
         ),
     ] {
         assert_eq!(Settings::parse(text), want, "{text}");
     }
-    std::fs::write(&file, "{\"desktop\": fal").unwrap();
-    assert_eq!(Settings::load(&dir), on);
+    // Written as tmls writes it, whole, with no temp file left beside it.
+    let saved = Settings {
+        desktop: true,
+        sound: true,
+        silence_focused: false,
+    };
+    saved.save(&dir).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{\"desktop\": true, \"sound\": true, \"silence_focused\": false}\n"
+    );
+    assert_eq!(Settings::load(&dir), saved);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    // A config directory that does not exist yet is made.
+    let fresh = dir.join("fresh");
+    on.save(&fresh).unwrap();
+    assert_eq!(Settings::load(&fresh), on);
+}
+
+#[test]
+fn a_switch_that_cannot_be_saved_stays_and_says_why() {
+    let on = Settings::default();
+    let wanted = Settings { sound: true, ..on };
+    let mut failing = |_: &Settings| -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    };
+    let (kept, said) = alerts::switch(on, wanted, &mut failing, true);
+    assert_eq!(kept, on);
+    assert!(
+        said.unwrap_err()
+            .starts_with("couldn't save the alert switches: ")
+    );
+    // A read-only config directory: the real save fails the same way, the old file stays.
+    // (The test container runs as uid 1000: the mode is enforced.)
+    let dir = scratch("readonly");
+    let file = dir.join("notifications.json");
+    std::fs::write(&file, "{\"desktop\": fal").unwrap();
+    std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+    let result = wanted.save(&dir);
+    std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"desktop\": fal");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        1,
+        "no temp file left"
+    );
+    // Saved: the new settings, and the status line says which switch.
+    let mut ok = |_: &Settings| -> std::io::Result<()> { Ok(()) };
+    assert_eq!(
+        alerts::switch(on, wanted, &mut ok, true),
+        (wanted, Ok("Sound ON".to_string()))
+    );
+    assert_eq!(
+        alerts::switch(wanted, on, &mut ok, true),
+        (on, Ok("Sound OFF".to_string()))
+    );
+    let quiet = Settings {
+        desktop: false,
+        ..on
+    };
+    assert_eq!(
+        alerts::switch(on, quiet, &mut ok, false),
+        (quiet, Ok("Desktop OFF".to_string()))
+    );
+    // Sound with no player: on all the same, and it says there will be none.
+    assert_eq!(
+        alerts::switch(on, wanted, &mut ok, false),
+        (
+            wanted,
+            Ok(format!(
+                "Sound ON, but {SOUND_PLAYER} is not installed: no sound"
+            ))
+        )
+    );
+}
+
+#[test]
+fn each_alert_runs_what_the_switches_ask() {
+    let note = Notification {
+        title: "tmls · nas".to_string(),
+        body: "? s · waiting".to_string(),
+    };
+    assert_eq!(
+        sound_argv(),
+        [
+            "canberra-gtk-play",
+            "-i",
+            "message-new-instant",
+            "-d",
+            "tmls"
+        ]
+    );
+    let run = |settings: Settings, player: bool| {
+        let mut started: Vec<Vec<String>> = Vec::new();
+        emit(
+            std::slice::from_ref(&note),
+            settings,
+            player,
+            &mut |argv: &[String]| {
+                started.push(argv.to_vec());
+                Ok(())
+            },
+        );
+        started
+    };
+    let on = Settings::default();
+    assert_eq!(run(on, true), [notify_argv(&note)]);
+    let both = Settings { sound: true, ..on };
+    assert_eq!(run(both, true), [notify_argv(&note), sound_argv()]);
+    assert_eq!(
+        run(both, false),
+        [notify_argv(&note)],
+        "no player: no sound, no error"
+    );
+    let sound_only = Settings {
+        desktop: false,
+        sound: true,
+        ..on
+    };
+    assert_eq!(run(sound_only, true), [sound_argv()]);
+    // Sound alone still makes `observe` hand out the alerts' notes.
+    let mut alerts = Alerts::new(sound_only);
+    list(&mut alerts, &[("s", Status::Running)]);
+    assert_eq!(list(&mut alerts, &[("s", Status::Waiting)]).len(), 1);
 }
 
 /// Alerts for `count` sessions `s0`.., the last one newest; the second one an error.
@@ -530,38 +648,66 @@ fn lines(panel: &forms::Panel) -> Vec<&str> {
 }
 
 #[test]
-fn the_panel_lists_the_alerts_newest_first() {
+fn the_panel_shows_the_switches_then_the_alerts_newest_first() {
     let mut alerts = with_alerts(3);
     let opened = alerts.entries()[0].at + Duration::from_secs(5 * 60 + 10);
     let panel = alerts.open(opened).panel();
-    assert_eq!((panel.cols, panel.lines), (60, 4));
+    assert_eq!((panel.cols, panel.lines), (60, 7));
     assert_eq!(
         lines(&panel),
         [
-            "Alerts · Enter jumps · Esc closes",
+            "Alerts · Enter jumps · Space switches · Esc closes",
+            " Desktop ON",
+            " Sound OFF",
+            " Silence focused ON",
             "  5m  ? s2 · nas  waiting",
             "  5m  ✕ s1 · nas  error",
             "  5m  ? s0 · nas  waiting",
         ]
     );
-    // The cursor is on the newest; the error is red.
+    // The cursor is on the newest alert; the error is red.
     let looks: Vec<Look> = panel.cells[1..].iter().map(|cell| cell.look).collect();
     let item = |hovered, danger| Look::Item { hovered, danger };
     assert_eq!(
         looks,
-        [item(true, false), item(false, true), item(false, false)]
+        [
+            item(false, false),
+            item(false, false),
+            item(false, false),
+            item(true, false),
+            item(false, true),
+            item(false, false)
+        ]
     );
-
-    // No alert yet: it says so, and Enter does nothing.
+    // No alert yet: the cursor is on Desktop; Enter does nothing there, Space flips it.
     let mut none = Alerts::new(Settings::default());
     let mut empty = none.open(Instant::now());
-    assert_eq!(lines(&empty.panel())[1], "nothing yet");
-    assert_eq!(empty.panel().lines, 2);
+    assert_eq!(lines(&empty.panel())[4], "nothing yet");
+    assert_eq!(empty.panel().lines, 5);
     assert_eq!(
         empty.key(&press(Key::Named(Named::Enter))),
         PanelResult::Pending
     );
-    assert_eq!(empty.key(&press(Key::Char('j'))), PanelResult::Pending);
+    assert_eq!(
+        empty.key(&press(Key::Char(' '))),
+        PanelResult::Settings(Settings {
+            desktop: false,
+            ..Settings::default()
+        })
+    );
+    assert_eq!(lines(&empty.panel())[1], " Desktop OFF");
+    // Down stops at the last switch: "nothing yet" is no row.
+    for _ in 0..5 {
+        empty.key(&press(Key::Named(Named::Down)));
+    }
+    assert_eq!(
+        empty.key(&press(Key::Char(' '))),
+        PanelResult::Settings(Settings {
+            desktop: false,
+            silence_focused: false,
+            ..Settings::default()
+        })
+    );
     assert_eq!(
         empty.key(&press(Key::Named(Named::Escape))),
         PanelResult::Closed
@@ -569,23 +715,19 @@ fn the_panel_lists_the_alerts_newest_first() {
 }
 
 #[test]
-fn keys_and_clicks_in_the_panel_jump_to_the_session() {
+fn keys_and_clicks_in_the_panel_jump_to_the_session_or_flip_a_switch() {
     let mut alerts = with_alerts(3);
     let mut panel = alerts.open(Instant::now());
-    let name = |panel: &desktop::alerts::AlertsPanel| panel.selected().unwrap().key.name.clone();
-    // Down / j and Up / k move and stop at the ends; other keys do nothing and close nothing.
-    assert_eq!(
-        panel.key(&press(Key::Named(Named::Up))),
-        PanelResult::Pending
-    );
-    assert_eq!(name(&panel), "s2");
+    let name =
+        |panel: &desktop::alerts::AlertsPanel| panel.selected().map(|alert| alert.key.name.clone());
+    assert_eq!(name(&panel), Some("s2".to_string()));
     panel.key(&press(Key::Char('j')));
-    assert_eq!(name(&panel), "s1");
+    assert_eq!(name(&panel), Some("s1".to_string()));
     panel.key(&press(Key::Named(Named::Down)));
     panel.key(&press(Key::Named(Named::Down)));
-    assert_eq!(name(&panel), "s0");
+    assert_eq!(name(&panel), Some("s0".to_string()));
     panel.key(&press(Key::Char('k')));
-    assert_eq!(name(&panel), "s1");
+    assert_eq!(name(&panel), Some("s1".to_string()));
     assert_eq!(panel.key(&press(Key::Char('x'))), PanelResult::Pending);
     assert_eq!(
         panel.key(&press(Key::Named(Named::Tab))),
@@ -604,41 +746,80 @@ fn keys_and_clicks_in_the_panel_jump_to_the_session() {
     assert_eq!(panel.key(&held), PanelResult::Pending);
     assert_eq!(panel.key(&released), PanelResult::Pending);
     assert_eq!(panel.key(&enter), PanelResult::Jump(key(HOST, "s1")));
+    // Up past the newest alert: the switches. Space flips the one under the cursor; the
+    // panel shows it at once.
+    panel.key(&press(Key::Char('k')));
+    panel.key(&press(Key::Named(Named::Up)));
+    assert_eq!(name(&panel), None);
+    assert_eq!(
+        panel.key(&enter),
+        PanelResult::Pending,
+        "Enter on a switch does nothing"
+    );
+    let quiet = Settings {
+        silence_focused: false,
+        ..Settings::default()
+    };
+    assert_eq!(
+        panel.key(&press(Key::Char(' '))),
+        PanelResult::Settings(quiet)
+    );
+    assert_eq!(lines(&panel.panel())[3], " Silence focused OFF");
+    for _ in 0..4 {
+        panel.key(&press(Key::Named(Named::Up)));
+    }
+    assert_eq!(
+        panel.key(&press(Key::Char(' '))),
+        PanelResult::Settings(Settings {
+            desktop: false,
+            ..quiet
+        }),
+        "the cursor stops at Desktop"
+    );
     assert_eq!(
         panel.key(&press(Key::Named(Named::Escape))),
         PanelResult::Closed
     );
-
-    // The pointer: over a line the cursor follows, a click jumps; the title does nothing; a
-    // click beside the panel closes it.
-    assert!(panel.hover(5.0, 3.5));
-    assert!(!panel.hover(6.0, 3.2));
-    assert_eq!(name(&panel), "s0");
+    // The pointer: line 0 the title, 1–3 the switches, 4–6 the alerts.
+    assert!(panel.hover(5.0, 6.5));
+    assert!(!panel.hover(6.0, 6.2));
+    assert_eq!(name(&panel), Some("s0".to_string()));
     assert!(!panel.hover(5.0, 0.5), "the title");
-    assert_eq!(panel.click(59.5, 1.0), PanelResult::Jump(key(HOST, "s2")));
+    assert_eq!(panel.click(59.5, 4.0), PanelResult::Jump(key(HOST, "s2")));
+    assert_eq!(
+        panel.click(3.0, 2.5),
+        PanelResult::Settings(Settings {
+            desktop: false,
+            sound: true,
+            silence_focused: false
+        })
+    );
     assert_eq!(panel.click(3.0, 0.5), PanelResult::Pending);
-    assert_eq!(panel.click(60.5, 1.0), PanelResult::Closed);
-    assert_eq!(panel.click(3.0, 4.0), PanelResult::Closed);
-    assert_eq!(panel.click(-0.5, 1.0), PanelResult::Closed);
+    assert_eq!(panel.click(60.5, 4.0), PanelResult::Closed);
+    assert_eq!(panel.click(3.0, 7.0), PanelResult::Closed);
+    assert_eq!(panel.click(-0.5, 4.0), PanelResult::Closed);
 }
 
 #[test]
 fn a_long_list_follows_the_cursor() {
     let mut alerts = with_alerts(MAX_ALERTS);
     let mut panel = alerts.open(Instant::now());
-    assert_eq!(panel.panel().lines, 13, "the title and twelve alerts");
-    assert!(lines(&panel.panel())[1].contains(" s49 "));
+    assert_eq!(
+        panel.panel().lines,
+        16,
+        "the title, three switches and twelve alerts"
+    );
+    assert!(lines(&panel.panel())[4].contains(" s49 "));
     for _ in 0..MAX_ALERTS + 3 {
         panel.key(&press(Key::Named(Named::Down)));
     }
     assert_eq!(panel.selected().unwrap().key, key(HOST, "s0"));
     let shown = panel.panel();
-    assert_eq!(shown.lines, 13);
-    assert!(lines(&shown)[1].contains(" s11 "));
-    assert!(lines(&shown)[12].contains(" s0 "));
-    // A click on the last line shown is that alert.
-    assert_eq!(panel.click(2.0, 12.5), PanelResult::Jump(key(HOST, "s0")));
-    assert_eq!(panel.click(2.0, 1.5), PanelResult::Jump(key(HOST, "s11")));
+    assert_eq!(shown.lines, 16);
+    assert!(lines(&shown)[4].contains(" s11 "));
+    assert!(lines(&shown)[15].contains(" s0 "));
+    assert_eq!(panel.click(2.0, 15.5), PanelResult::Jump(key(HOST, "s0")));
+    assert_eq!(panel.click(2.0, 4.5), PanelResult::Jump(key(HOST, "s11")));
 }
 
 #[test]

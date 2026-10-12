@@ -491,6 +491,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑ / ↓", "choose; a saved message"),
             ("n", "No, in an approval"),
             ("Ctrl+Shift+V", "paste into the field"),
+            ("Space", "a switch in the alerts"),
         ],
     ),
 ];
