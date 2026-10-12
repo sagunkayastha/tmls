@@ -25,6 +25,7 @@ PUSH_SID='3b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 ASK='tmlsrs-test-1ask'
 ASK_SID='2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 ASK2='tmlsrs-test-1asked'
+WIN='tmlsrs-test-00win'
 # The stand-ins for Claude processes, by session id: their status files are named after them.
 declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
@@ -148,6 +149,7 @@ cleanup() {
   tmux kill-session -t "=$PUSH" 2>/dev/null
   tmux kill-session -t "=$ASK" 2>/dev/null
   tmux kill-session -t "=$ASK2" 2>/dev/null
+  tmux kill-session -t "=$WIN" 2>/dev/null
   for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
@@ -1440,6 +1442,47 @@ check "screenshot 41-renamed-outside" shot 41-renamed-outside
 check_typed "the renamed session's tab still takes the keys" "$ASK2" renamedout
 key_close_tab
 check_typed "its tab closed: the keys go to \"$ODD\"" "$ODD" afterrename
+
+# --- the row menu's window and pane entries (G1) -------------------------------------------------
+# $WIN is a plain shell, so its menu is: Rename, Kill…, Open in new terminal, Copy attach command,
+# New window, Rename window…, Split side by side, Split top / bottom, Kill pane….
+panes_are() { [ "$(tmux list-panes -s -t "=$1" -F '#{pane_id}' 2>/dev/null | wc -l)" -eq "$2" ]; }
+windows_are() { [ "$(tmux list-windows -t "=$1" -F '#{window_id}' 2>/dev/null | wc -l)" -eq "$2" ]; }
+tmux new-session -d -s "$WIN" -x 100 -y 30
+sleep 6
+key_focus_list
+check "the list's cursor finds $WIN by its name" select_row "$WIN"
+keys -k m
+check "screenshot 42-window-menu (nine entries, Kill… and Kill pane… red)" shot 42-window-menu
+keys -k j -k j -k j -k j -k j -k j
+key_enter
+if wait_for 8 panes_are "$WIN" 2; then
+  pass "Split side by side from the menu: the session has two panes"
+else
+  fail "Split side by side from the menu: the session has two panes" "panes: $(tmux list-panes -s -t "=$WIN" 2>&1 | tr '\n' '|')"
+fi
+keys -k m
+keys -k j -k j -k j -k j
+key_enter
+if wait_for 8 windows_are "$WIN" 2; then
+  pass "New window from the menu: the session has two windows"
+else
+  fail "New window from the menu: the session has two windows" "windows: $(tmux list-windows -t "=$WIN" 2>&1 | tr '\n' '|')"
+fi
+# Kill pane… on the new window's only pane: the confirm, Tab to Kill pane, Enter.
+keys -k m
+keys -k j -k j -k j -k j -k j -k j -k j -k j
+key_enter
+sleep 1
+check "screenshot 43-kill-pane (the question, what runs)" shot 43-kill-pane
+keys -k Tab
+key_enter
+if wait_for 8 windows_are "$WIN" 1 && panes_are "$WIN" 2; then
+  pass "Kill pane… then Kill pane ends the active pane only (one window, two panes left)"
+else
+  fail "Kill pane… then Kill pane ends the active pane only" "windows: $(tmux list-windows -t "=$WIN" 2>&1 | wc -l), panes: $(tmux list-panes -s -t "=$WIN" 2>&1 | wc -l)"
+fi
+tmux kill-session -t "=$WIN"
 
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7

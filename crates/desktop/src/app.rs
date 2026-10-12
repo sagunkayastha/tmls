@@ -23,11 +23,12 @@
 //! with `mouse on` asked for reports) or a selection, a link or a scroll of our own;
 //! `mouse::perform` does it to the front tab's session; the clipboard and `xdg-open` are here.
 //!
-//! Request path: a form's `Request` (new, rename, kill) runs `forms::perform` on a thread of
-//! its own → `UserEvent::Done` → the status line says what happened, the hosts are listed
-//! again at once and the tab is opened, reopened or closed. The name a new session's folder
-//! gives (`UserEvent::Derived`) and what runs in a session about to be killed
-//! (`UserEvent::Running`) come the same way.
+//! Request path: a form's `Request` (new, rename, kill, window and pane changes) runs
+//! `forms::perform` on a thread of its own → `UserEvent::Done` → the status line says what
+//! happened, the hosts are listed again at once and the tab is opened, reopened or closed. The
+//! name a new session's folder gives (`UserEvent::Derived`), what runs in a session about to
+//! be killed (`UserEvent::Running`) and what the kill-pane confirm waits for
+//! (`UserEvent::PaneInfo`) come the same way.
 //!
 //! File path: a Ctrl+click on a path in the terminal (`mouse::Effect::File`) runs
 //! `viewer::open_link` on a thread of its own, which asks the session's host where the file
@@ -68,6 +69,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use client_core::push::{self, Applied, PushLine};
+use client_core::tmux::Split;
 use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
     default_color,
@@ -144,6 +146,8 @@ pub enum UserEvent {
     },
     /// What runs in a session the user is asked about killing.
     Running(SessionKey, Vec<String>),
+    /// What runs in a session's active pane, for the kill-pane confirm, or why not.
+    PaneInfo(SessionKey, Result<forms::PaneInfo, String>),
     /// Something done off the window's thread ended: a line for the status line, or why not.
     Said(Result<String, String>),
     /// A clicked file was found and read, or not; the number is the click's (`Running::views`).
@@ -240,6 +244,12 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Running(key, commands) => {
                 if let Some((Modal::Form(form), _)) = &mut running.modal {
                     form.set_running(&key, commands);
+                    running.invalidate();
+                }
+            }
+            UserEvent::PaneInfo(key, info) => {
+                if let Some((Modal::Form(form), _)) = &mut running.modal {
+                    form.set_pane_info(&key, info);
                     running.invalidate();
                 }
             }
@@ -1404,6 +1414,30 @@ impl Running {
                     let _ = proxy.send_event(UserEvent::Running(key, commands));
                 });
             }
+            MenuResult::Pick(MenuItem::NewWindow) => {
+                self.close_modal();
+                self.run_request(Request::NewWindow(key));
+            }
+            MenuResult::Pick(MenuItem::SplitSideBySide) => {
+                self.close_modal();
+                self.run_request(Request::Split(key, Split::SideBySide));
+            }
+            MenuResult::Pick(MenuItem::SplitTopBottom) => {
+                self.close_modal();
+                self.run_request(Request::Split(key, Split::TopBottom));
+            }
+            MenuResult::Pick(MenuItem::RenameWindow) => {
+                self.modal = Some((Modal::Form(Form::rename_window(key)), None));
+            }
+            MenuResult::Pick(MenuItem::KillPane) => {
+                // Asked at once; what runs in the pane, and whether it is the last, follow.
+                self.modal = Some((Modal::Form(Form::confirm_kill_pane(key.clone())), None));
+                let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+                std::thread::spawn(move || {
+                    let info = forms::pane_info(&key, &local, &forms::run_tmux);
+                    let _ = proxy.send_event(UserEvent::PaneInfo(key, info));
+                });
+            }
             MenuResult::Pick(MenuItem::OpenTerminal) => {
                 self.close_modal();
                 self.open_in_terminal(&key);
@@ -1561,6 +1595,15 @@ impl Running {
         });
     }
 
+    /// Runs a request's command on a thread of its own; the answer is `UserEvent::Done`.
+    fn run_request(&mut self, request: Request) {
+        let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+        std::thread::spawn(move || {
+            let result = forms::perform(&request, &local, &forms::run_tmux);
+            let _ = proxy.send_event(UserEvent::Done(0, request, result));
+        });
+    }
+
     /// A request ran: says so in the status line, lists the hosts again, and opens the new
     /// session's tab, reopens a renamed session's tab under the new name, or closes a killed
     /// session's tab.
@@ -1655,6 +1698,16 @@ impl Running {
                     self.sidebar.select_key(&key);
                 }
             }
+            Request::KillPane(key, true) => {
+                // The session ended with its last pane, as after a kill.
+                if let Some(index) = self.tabs.index_of(&key) {
+                    self.close_tab(index);
+                }
+            }
+            Request::NewWindow(_)
+            | Request::RenameWindow(..)
+            | Request::Split(..)
+            | Request::KillPane(_, false) => {}
             Request::Answer { .. } => {}
         }
         if list_keeps_keys {

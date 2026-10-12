@@ -273,6 +273,81 @@ pub fn running_commands_argv(key: &SessionKey, local_name: &str) -> Vec<String> 
     }
 }
 
+/// Which way `split_argv` splits the session's current pane (tmls `tmux_ops.split`: tmux's
+/// `-h` puts the new pane beside it, `-v` under it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Split {
+    SideBySide,
+    TopBottom,
+}
+
+/// `tmux ARGS` here, or over ssh with every word single-quoted for the host's shell.
+fn session_tmux(key: &SessionKey, args: &[&str], local_name: &str) -> Vec<String> {
+    if key.host == local_name {
+        let mut argv = strings(&["tmux"]);
+        argv.extend(strings(args));
+        argv
+    } else {
+        let words: Vec<String> = args.iter().map(|word| quote(word)).collect();
+        ssh(&key.host, format!("tmux {}", words.join(" ")))
+    }
+}
+
+/// A new window in the session, in the current pane's folder (tmls `new_window`).
+pub fn new_window_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    session_tmux(key, &["new-window", "-t", &target, "-c", "#{pane_current_path}"], local_name)
+}
+
+/// Renames the session's current window. Check `new_name` with [`valid_window_name`] first.
+pub fn rename_window_argv(key: &SessionKey, new_name: &str, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    session_tmux(key, &["rename-window", "-t", &target, "--", new_name], local_name)
+}
+
+/// Splits the session's current pane, the new one in the same folder (tmls `split`).
+pub fn split_argv(key: &SessionKey, split: Split, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    let way = match split {
+        Split::SideBySide => "-h",
+        Split::TopBottom => "-v",
+    };
+    session_tmux(key, &["split-window", way, "-t", &target, "-c", "#{pane_current_path}"], local_name)
+}
+
+/// Ends the session's active pane; the last one ends the session (tmls `kill_pane`).
+pub fn kill_pane_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    session_tmux(key, &["kill-pane", "-t", &target], local_name)
+}
+
+/// Prints one line per pane of the whole session: one line means the active pane is its last.
+pub fn pane_count_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    session_tmux(key, &["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"], local_name)
+}
+
+/// Prints what the session's active pane runs (tmls `pane_info`).
+pub fn pane_command_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+    let target = format!("={}:", key.name);
+    session_tmux(key, &["display-message", "-p", "-t", &target, "#{pane_current_command}"], local_name)
+}
+
+/// Whether tmux can name a window `name`; the error is the reason, for the user. A window may
+/// have `:` `.` `#` in its name; it needs one, without control characters.
+pub fn valid_window_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("the window needs a name".to_string());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("names can't contain control characters".to_string());
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(format!("names can't be longer than {MAX_NAME_CHARS} characters"));
+    }
+    Ok(())
+}
+
 /// What a command for Claude's pane targets: the pane (`%7`) when the listing has a valid one,
 /// else the session's current pane (`=NAME:`).
 pub fn pane_target(key: &SessionKey, pane: Option<&str>) -> String {

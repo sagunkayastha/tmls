@@ -5,12 +5,14 @@
 use std::cell::RefCell;
 
 use client_core::tmux::{
-    self, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv,
-    new_session_argv, rename_argv, running_commands_argv, valid_session_name,
+    self, NewSession, Split, Start, attach_argv, attach_text, derived_name_argv, kill_argv,
+    kill_pane_argv, new_session_argv, new_window_argv, rename_argv, rename_window_argv,
+    running_commands_argv, split_argv, valid_session_name,
 };
 use client_core::{SessionInfo, SessionKey, Status, Tool};
 use desktop::forms::{
-    self, Form, FormResult, Look, MENU, MenuItem, MenuResult, Panel, Request, RowMenu, Stop,
+    self, Form, FormResult, Look, MENU, MenuItem, MenuResult, PaneInfo, Panel, Request, RowMenu,
+    Stop,
 };
 use s2_core::{Key, KeyEvent, Mods, Named};
 
@@ -446,6 +448,8 @@ fn esc_cancels_every_form() {
         new_form(&presets()),
         Form::rename(session.clone()),
         Form::confirm_kill(session.clone()),
+        Form::rename_window(session.clone()),
+        Form::confirm_kill_pane(session.clone()),
     ];
     for mut form in forms {
         // From every stop.
@@ -462,14 +466,19 @@ fn esc_cancels_every_form() {
 }
 
 #[test]
-fn the_row_menu_offers_rename_kill_open_copy() {
+fn the_row_menu_offers_rename_kill_open_copy_then_windows_and_panes() {
     assert_eq!(
         MENU,
         [
             MenuItem::Rename,
             MenuItem::Kill,
             MenuItem::OpenTerminal,
-            MenuItem::CopyAttach
+            MenuItem::CopyAttach,
+            MenuItem::NewWindow,
+            MenuItem::RenameWindow,
+            MenuItem::SplitSideBySide,
+            MenuItem::SplitTopBottom,
+            MenuItem::KillPane,
         ]
     );
     let session = key("ph", "tmlsrs-test-menu");
@@ -481,6 +490,11 @@ fn the_row_menu_offers_rename_kill_open_copy() {
         "Kill…",
         "Open in new terminal",
         "Copy attach command",
+        "New window",
+        "Rename window…",
+        "Split side by side",
+        "Split top / bottom",
+        "Kill pane…",
     ] {
         assert!(said.contains(label), "{label} in {said}");
     }
@@ -505,15 +519,202 @@ fn the_row_menu_offers_rename_kill_open_copy() {
         menu.key(&event(Key::Char('x'), Mods::default())),
         MenuResult::Closed
     );
-
     let (x, y) = at(&panel, "Copy attach command");
     assert!(menu.hover(x, y));
     assert_eq!(menu.click(x, y), MenuResult::Pick(MenuItem::CopyAttach));
+    let (x, y) = at(&panel, "Split side by side");
+    assert_eq!(
+        menu.click(x, y),
+        MenuResult::Pick(MenuItem::SplitSideBySide)
+    );
+    // Kill pane is red, as Kill is.
+    let kill_pane = menu
+        .panel()
+        .cells
+        .into_iter()
+        .find(|cell| cell.text == " Kill pane…")
+        .expect("a Kill pane row");
+    assert_eq!(
+        kill_pane.look,
+        Look::Item {
+            hovered: false,
+            danger: true
+        }
+    );
     assert_eq!(
         menu.click(-1.0, 0.5),
         MenuResult::Closed,
         "a click beside it closes"
     );
+}
+
+#[test]
+fn rename_window_needs_a_name() {
+    let k = key("ph", "w");
+    let mut form = Form::rename_window(k.clone());
+    assert_eq!(form.focus(), Stop::Name);
+    assert_eq!(form.key(&named(Named::Enter)), FormResult::Pending);
+    assert_eq!(form.error(), Some("the window needs a name"));
+    type_text(&mut form, "logs");
+    assert_eq!(form.error(), None, "typing clears it");
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Submit(Request::RenameWindow(k.clone(), "logs".to_string()))
+    );
+    let said = text(&form.panel());
+    assert!(
+        said.contains("ph · w") && said.contains("New name of the current window"),
+        "{said}"
+    );
+    assert_eq!(
+        Form::rename_window(k).key(&named(Named::Escape)),
+        FormResult::Cancelled
+    );
+}
+
+#[test]
+fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
+    let k = key("ph", "w");
+    let mut form = Form::confirm_kill_pane(k.clone());
+    assert_eq!(form.focus(), Stop::Cancel);
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Cancelled,
+        "Enter on Cancel kills nothing"
+    );
+    let mut form = Form::confirm_kill_pane(k.clone());
+    tab(&mut form, 1);
+    assert_eq!(form.focus(), Stop::Ok);
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Pending,
+        "not before the host has said"
+    );
+    assert!(text(&form.panel()).contains("asking the host"));
+    form.set_pane_info(
+        &key("ph", "other"),
+        Ok(PaneInfo {
+            command: None,
+            last: true,
+        }),
+    );
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Pending,
+        "an answer about another session is not this one's"
+    );
+    form.set_pane_info(
+        &k,
+        Ok(PaneInfo {
+            command: Some("vim".to_string()),
+            last: false,
+        }),
+    );
+    let said = text(&form.panel());
+    assert!(
+        said.contains("Running: vim") && !said.contains("last pane"),
+        "{said}"
+    );
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Submit(Request::KillPane(k.clone(), false))
+    );
+    form.set_pane_info(
+        &k,
+        Ok(PaneInfo {
+            command: None,
+            last: true,
+        }),
+    );
+    assert!(text(&form.panel()).contains(forms::LAST_PANE));
+    assert_eq!(
+        form.key(&named(Named::Enter)),
+        FormResult::Submit(Request::KillPane(k.clone(), true))
+    );
+    form.set_pane_info(
+        &k,
+        Err("couldn't ask ph about its pane: timed out".to_string()),
+    );
+    assert!(text(&form.panel()).contains("timed out"));
+    assert_eq!(form.key(&named(Named::Enter)), FormResult::Pending);
+}
+
+#[test]
+fn pane_info_reads_the_command_and_the_count() {
+    let k = key("ph", "w");
+    let answer = |command: &'static str, panes: &'static str| {
+        move |argv: &[String]| -> anyhow::Result<String> {
+            let asks_command = argv == tmux::pane_command_argv(&key("ph", "w"), LOCAL).as_slice();
+            Ok(if asks_command { command } else { panes }.to_string())
+        }
+    };
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &answer("vim\n", "%1\n%2\n")),
+        Ok(PaneInfo {
+            command: Some("vim".to_string()),
+            last: false
+        })
+    );
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &answer("bash\n", "%1\n")),
+        Ok(PaneInfo {
+            command: None,
+            last: true
+        })
+    );
+    let down = |_: &[String]| -> anyhow::Result<String> {
+        anyhow::bail!("ssh: connect to host ph: timed out")
+    };
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &down),
+        Err("couldn't ask ph about its pane: ssh: connect to host ph: timed out".to_string())
+    );
+}
+
+#[test]
+fn window_and_pane_requests_run_their_commands_and_say_what_happened() {
+    let k = key("ph", "tmlsrs-test-a b'c");
+    let cases = [
+        (
+            Request::NewWindow(k.clone()),
+            new_window_argv(&k, LOCAL),
+            "opened a new window in tmlsrs-test-a b'c on ph",
+        ),
+        (
+            Request::RenameWindow(k.clone(), "logs".to_string()),
+            rename_window_argv(&k, "logs", LOCAL),
+            "renamed the window of tmlsrs-test-a b'c to logs on ph",
+        ),
+        (
+            Request::Split(k.clone(), Split::SideBySide),
+            split_argv(&k, Split::SideBySide, LOCAL),
+            "split tmlsrs-test-a b'c side by side on ph",
+        ),
+        (
+            Request::Split(k.clone(), Split::TopBottom),
+            split_argv(&k, Split::TopBottom, LOCAL),
+            "split tmlsrs-test-a b'c top / bottom on ph",
+        ),
+        (
+            Request::KillPane(k.clone(), false),
+            kill_pane_argv(&k, LOCAL),
+            "killed the active pane of tmlsrs-test-a b'c on ph",
+        ),
+        (
+            Request::KillPane(k.clone(), true),
+            kill_pane_argv(&k, LOCAL),
+            "killed the last pane of tmlsrs-test-a b'c on ph: the session ended",
+        ),
+    ];
+    for (request, argv, said) in cases {
+        assert_eq!(forms::request_argv(&request, LOCAL), argv);
+        let ok = |_: &[String]| -> anyhow::Result<String> { Ok(String::new()) };
+        assert_eq!(forms::perform(&request, LOCAL, &ok), Ok(said.to_string()));
+        let failing =
+            |_: &[String]| -> anyhow::Result<String> { anyhow::bail!("can't find window: 3\n") };
+        let error = forms::perform(&request, LOCAL, &failing).unwrap_err();
+        assert!(error.ends_with(": can't find window: 3"), "{error:?}");
+    }
 }
 
 #[test]
@@ -823,17 +1024,10 @@ fn menu_items_offer_approve_only_while_claude_asks() {
         [MENU.as_slice(), &[MenuItem::Send]].concat()
     );
     let asks = info("w", Status::Waiting, Some("permission prompt"));
-    assert_eq!(
-        forms::menu_items(Some(&asks)),
-        [
-            MenuItem::Approve,
-            MenuItem::Rename,
-            MenuItem::Kill,
-            MenuItem::OpenTerminal,
-            MenuItem::CopyAttach,
-            MenuItem::Send
-        ]
-    );
+    let mut want = vec![MenuItem::Approve];
+    want.extend(MENU);
+    want.push(MenuItem::Send);
+    assert_eq!(forms::menu_items(Some(&asks)), want);
     let mut menu = RowMenu::with(asks.key.clone(), forms::menu_items(Some(&asks)));
     assert!(
         menu.panel()

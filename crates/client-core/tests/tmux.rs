@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use client_core::listing::SessionKey;
 use client_core::tmux::{
-    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
-    kill_argv, new_session_argv, rename_argv, run, run_with_stdin, running_commands_argv, send_keys_argv,
-    send_text_argv, send_text_script, valid_session_name,
+    MAX_NAME_CHARS, NewSession, Split, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
+    kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_command_argv, pane_count_argv, rename_argv,
+    rename_window_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, send_text_argv, send_text_script,
+    split_argv, valid_session_name, valid_window_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -406,4 +407,63 @@ fn send_text_gives_tmux_the_message_on_stdin_byte_for_byte() {
     run_with_stdin(&argv, message.as_bytes(), Duration::from_secs(5)).expect("the script");
     assert_eq!(std::fs::read(&got).unwrap(), message.as_bytes());
     assert!(!std::path::Path::new("nope").exists() && !std::path::Path::new("nope2").exists(), "nothing in it ran");
+}
+
+#[test]
+fn window_and_pane_commands_target_the_sessions_current_window() {
+    let k = key(LOCAL, "w");
+    assert_eq!(new_window_argv(&k, LOCAL), v(&["tmux", "new-window", "-t", "=w:", "-c", "#{pane_current_path}"]));
+    assert_eq!(rename_window_argv(&k, "logs", LOCAL), v(&["tmux", "rename-window", "-t", "=w:", "--", "logs"]));
+    assert_eq!(
+        split_argv(&k, Split::SideBySide, LOCAL),
+        v(&["tmux", "split-window", "-h", "-t", "=w:", "-c", "#{pane_current_path}"])
+    );
+    assert_eq!(
+        split_argv(&k, Split::TopBottom, LOCAL),
+        v(&["tmux", "split-window", "-v", "-t", "=w:", "-c", "#{pane_current_path}"])
+    );
+    assert_eq!(kill_pane_argv(&k, LOCAL), v(&["tmux", "kill-pane", "-t", "=w:"]));
+    assert_eq!(pane_count_argv(&k, LOCAL), v(&["tmux", "list-panes", "-s", "-t", "=w:", "-F", "#{pane_id}"]));
+    assert_eq!(
+        pane_command_argv(&k, LOCAL),
+        v(&["tmux", "display-message", "-p", "-t", "=w:", "#{pane_current_command}"])
+    );
+}
+
+#[test]
+fn window_commands_quote_every_word_for_a_remote_host() {
+    for name in HOSTILE {
+        let k = key("ph", name);
+        let target = format!("={name}:");
+        let cases: [(Vec<String>, Vec<&str>); 6] = [
+            (new_window_argv(&k, LOCAL), vec!["new-window", "-t", &target, "-c", "#{pane_current_path}"]),
+            (split_argv(&k, Split::SideBySide, LOCAL), vec!["split-window", "-h", "-t", &target, "-c", "#{pane_current_path}"]),
+            (split_argv(&k, Split::TopBottom, LOCAL), vec!["split-window", "-v", "-t", &target, "-c", "#{pane_current_path}"]),
+            (kill_pane_argv(&k, LOCAL), vec!["kill-pane", "-t", &target]),
+            (pane_count_argv(&k, LOCAL), vec!["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"]),
+            (pane_command_argv(&k, LOCAL), vec!["display-message", "-p", "-t", &target, "#{pane_current_command}"]),
+        ];
+        for (argv, want) in cases {
+            assert_eq!(words(&remote(&argv, &SSH)), v(&want), "{name}");
+        }
+        for title in HOSTILE {
+            assert_eq!(
+                words(&remote(&rename_window_argv(&k, title, LOCAL), &SSH)),
+                v(&["rename-window", "-t", &target, "--", title]),
+                "{name} / {title}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_window_needs_a_name_tmux_keeps() {
+    assert_eq!(valid_window_name("logs"), Ok(()));
+    assert_eq!(valid_window_name("a b: c.d #1"), Ok(()), "a window may have what a session may not");
+    assert_eq!(valid_window_name(""), Err("the window needs a name".to_string()));
+    assert_eq!(valid_window_name("a\tb"), Err("names can't contain control characters".to_string()));
+    assert_eq!(
+        valid_window_name(&"x".repeat(MAX_NAME_CHARS + 1)),
+        Err(format!("names can't be longer than {MAX_NAME_CHARS} characters"))
+    );
 }

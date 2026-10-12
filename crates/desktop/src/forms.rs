@@ -1,6 +1,6 @@
-//! The new-session form, the rename field, the kill confirm, the approval and a session's
-//! menu: what their keys and clicks do, what they look like in cells, and the commands they
-//! end in. No window and no drawing here; `draw` paints a `Panel`, `app` runs a `Request` on a
+//! The new-session form, the rename field, the kill confirm, the approval, the window and pane
+//! forms and a session's menu: what their keys and clicks do, what they look like in cells, and
+//! the commands they end in. No window and no drawing here; `draw` paints a `Panel`, `app` runs a `Request` on a
 //! worker thread.
 //!
 //! **Forms** (tmls `create_form.py`, `manage.py`) are modal: while one is open every key is
@@ -23,13 +23,17 @@
 //! - *Ask* (send a message): a field, tmls's saved prompts under it (↑ / ↓ puts one in the
 //!   field), Send and Cancel, and Clear queue while messages wait. Send goes now, or into the
 //!   queue while the session is busy — the app decides (`queue`).
+//! - *Rename window*: one empty field for the name of the session's current window.
+//! - *Kill pane*: asks first, as Kill does, and waits for the host to say what runs in the
+//!   active pane and whether it is the session's last; until then Kill pane does nothing.
 //!
 //! Esc cancels every form. Tab into a field selects its text (as Textual's inputs do).
 //!
 //! **The menu** of a session row (`RowMenu`): Approve… while Claude asks for permission, then
-//! Rename, Kill…, Open in new terminal, Copy attach command, and Send message… for a Claude
-//! session (`menu_items`). Arrows or j / k
-//! move, Enter picks, any other key or a click beside it closes it.
+//! Rename, Kill…, Open in new terminal, Copy attach command, then New window, Rename window…,
+//! Split side by side, Split top / bottom, Kill pane… (tmls `manage.py`'s Window and pane part),
+//! and Send message… for a Claude session (`menu_items`). Arrows or j / k move, Enter picks,
+//! any other key or a click beside it closes it.
 //!
 //! **Panels.** `Form::panel` and `RowMenu::panel` give the text on a grid of cells, each piece
 //! cut to its columns; `click` takes a position in those cells (fractions allowed), relative
@@ -42,7 +46,7 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use client_core::tmux::{self, NewSession, Start};
+use client_core::tmux::{self, NewSession, Split, Start};
 use client_core::{KITTY, SessionInfo, SessionKey, Status, approve};
 use s2_core::{Key, KeyEvent, Named};
 use s2_wgpu::gfx::grid::clusters;
@@ -73,6 +77,13 @@ pub enum Request {
     New(NewSession),
     Rename(SessionKey, String),
     Kill(SessionKey),
+    /// A new window in the session, in the current pane's folder.
+    NewWindow(SessionKey),
+    /// The session's current window gets this name.
+    RenameWindow(SessionKey, String),
+    Split(SessionKey, Split),
+    /// The session's active pane ends; `true`: it is the last one, and the session ends with it.
+    KillPane(SessionKey, bool),
     /// Yes (`1`) or No (Escape) to the dialog `shown`, if the pane still shows it.
     Answer {
         key: SessionKey,
@@ -190,6 +201,20 @@ pub enum Form {
         focus: Stop,
         error: Option<String>,
     },
+    /// A new name for the session's current window: an empty field (tmls "Window name").
+    RenameWindow {
+        key: SessionKey,
+        field: TextField,
+        focus: Stop,
+        error: Option<String>,
+    },
+    /// The question before the active pane is killed; `pane` is `None` until the host has
+    /// said what runs in it and whether it is the last.
+    ConfirmKillPane {
+        key: SessionKey,
+        pane: Option<Result<PaneInfo, String>>,
+        focus: Stop,
+    },
 }
 
 /// How a piece of a panel looks.
@@ -219,6 +244,17 @@ pub enum Look {
         danger: bool,
     },
 }
+
+/// What the kill-pane confirm says: what runs in the active pane (shells are not worth saying)
+/// and whether it is the session's last pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneInfo {
+    pub command: Option<String>,
+    pub last: bool,
+}
+
+/// What the kill-pane confirm says when the pane is the session's last (tmls `manage.py`).
+pub const LAST_PANE: &str = "This is the last pane: the session ends.";
 
 /// What a click on a piece of a panel means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -681,6 +717,36 @@ impl Form {
         }
     }
 
+    /// The field for the current window's new name, empty.
+    pub fn rename_window(key: SessionKey) -> Form {
+        Form::RenameWindow {
+            key,
+            field: TextField::new(),
+            focus: Stop::Name,
+            error: None,
+        }
+    }
+
+    /// The question before the active pane is killed. The focus is on Cancel; Kill pane does
+    /// nothing until `set_pane_info` brought the host's answer.
+    pub fn confirm_kill_pane(key: SessionKey) -> Form {
+        Form::ConfirmKillPane {
+            key,
+            pane: None,
+            focus: Stop::Cancel,
+        }
+    }
+
+    /// The host's answer about `session`'s active pane, for the kill-pane confirm of that
+    /// session.
+    pub fn set_pane_info(&mut self, session: &SessionKey, info: Result<PaneInfo, String>) {
+        if let Form::ConfirmKillPane { key, pane, .. } = self
+            && key == session
+        {
+            *pane = Some(info);
+        }
+    }
+
     /// The question of Claude's permission dialog, as captured. The focus is on Yes.
     pub fn approve(key: SessionKey, pane: Option<String>, dialog: Vec<String>) -> Form {
         Form::Approve {
@@ -711,7 +777,9 @@ impl Form {
             Form::Rename { focus, .. }
             | Form::ConfirmKill { focus, .. }
             | Form::Approve { focus, .. }
-            | Form::Ask { focus, .. } => *focus,
+            | Form::Ask { focus, .. }
+            | Form::RenameWindow { focus, .. }
+            | Form::ConfirmKillPane { focus, .. } => *focus,
         }
     }
 
@@ -721,7 +789,8 @@ impl Form {
             Form::New(new) => new.error.as_deref(),
             Form::Rename { error, .. } => error.as_deref(),
             Form::Ask { error, .. } => error.as_deref(),
-            Form::ConfirmKill { .. } | Form::Approve { .. } => None,
+            Form::RenameWindow { error, .. } => error.as_deref(),
+            Form::ConfirmKill { .. } | Form::Approve { .. } | Form::ConfirmKillPane { .. } => None,
         }
     }
 
@@ -742,13 +811,15 @@ impl Form {
             Form::Approve { .. } => &APPROVE_STOPS,
             Form::Ask { queued, .. } if *queued > 0 => &ASK_STOPS_CLEAR,
             Form::Ask { .. } => &ASK_STOPS,
+            Form::RenameWindow { .. } => &RENAME_STOPS,
+            Form::ConfirmKillPane { .. } => &KILL_STOPS,
         }
     }
 
     fn focus_on(&mut self, stop: Stop) {
         match self {
             Form::New(new) => new.focus_on(stop),
-            Form::Rename { focus, field, .. } => {
+            Form::Rename { focus, field, .. } | Form::RenameWindow { focus, field, .. } => {
                 *focus = stop;
                 if stop == Stop::Name {
                     field.select_all();
@@ -760,11 +831,13 @@ impl Form {
                     field.select_all();
                 }
             }
-            Form::ConfirmKill { focus, .. } | Form::Approve { focus, .. } => *focus = stop,
+            Form::ConfirmKill { focus, .. }
+            | Form::Approve { focus, .. }
+            | Form::ConfirmKillPane { focus, .. } => *focus = stop,
         }
     }
 
-    /// Create, Rename or Kill.
+    /// Create, Rename, Kill or Kill pane.
     fn submit(&mut self) -> FormResult {
         match self {
             Form::New(new) => new.submit(),
@@ -806,6 +879,23 @@ impl Form {
                     text,
                 }
             }
+            Form::RenameWindow {
+                key, field, error, ..
+            } => {
+                let name = field.text().trim().to_string();
+                if let Err(why) = tmux::valid_window_name(&name) {
+                    *error = Some(why);
+                    return FormResult::Pending;
+                }
+                FormResult::Submit(Request::RenameWindow(key.clone(), name))
+            }
+            Form::ConfirmKillPane {
+                key,
+                pane: Some(Ok(info)),
+                ..
+            } => FormResult::Submit(Request::KillPane(key.clone(), info.last)),
+            // Not before the host has said what would end.
+            Form::ConfirmKillPane { .. } => FormResult::Pending,
         }
     }
 
@@ -849,6 +939,12 @@ impl Form {
         match self {
             Form::New(new) => new.other_key(ev),
             Form::Rename {
+                field,
+                focus: Stop::Name,
+                error,
+                ..
+            }
+            | Form::RenameWindow {
                 field,
                 focus: Stop::Name,
                 error,
@@ -904,7 +1000,10 @@ impl Form {
                     *focus = step(stops, *focus, forward);
                 }
             }
-            Form::Rename { focus, .. } | Form::ConfirmKill { focus, .. } => {
+            Form::Rename { focus, .. }
+            | Form::ConfirmKill { focus, .. }
+            | Form::RenameWindow { focus, .. }
+            | Form::ConfirmKillPane { focus, .. } => {
                 if arrow(ev).is_some() {
                     *focus = other_button(*focus);
                 }
@@ -928,6 +1027,12 @@ impl Form {
                 new.name_changed();
             }
             Form::Rename {
+                field,
+                focus: Stop::Name,
+                error,
+                ..
+            }
+            | Form::RenameWindow {
                 field,
                 focus: Stop::Name,
                 error,
@@ -976,7 +1081,10 @@ impl Form {
                 new.focus = Stop::Name;
                 new.name.click(col);
             }
-            (Target::Stop(Stop::Name), Form::Rename { field, focus, .. }) => {
+            (
+                Target::Stop(Stop::Name),
+                Form::Rename { field, focus, .. } | Form::RenameWindow { field, focus, .. },
+            ) => {
                 *focus = Stop::Name;
                 field.click(col);
             }
@@ -1128,6 +1236,50 @@ impl Form {
                 p.lines = buttons + 2;
                 p
             }
+            Form::RenameWindow {
+                key,
+                field,
+                focus,
+                error,
+            } => {
+                let mut p = Panel::new(ACTION_COLS);
+                let title = format!("{} · {}", key.host, key.name);
+                p.put(0, PAD, inner, &title, Look::Title);
+                p.put(2, PAD, inner, "New name of the current window", Look::Label);
+                p.field(3, PAD, inner, field, Stop::Name, *focus);
+                if let Some(error) = error {
+                    p.put(4, PAD, inner, error, Look::Error);
+                }
+                p.buttons(5, "Rename", false, *focus);
+                p.lines = 7;
+                p
+            }
+            Form::ConfirmKillPane { key, pane, focus } => {
+                let mut p = Panel::new(ACTION_COLS);
+                let title = format!("{} · {}", key.host, key.name);
+                p.put(0, PAD, inner, &title, Look::Title);
+                let question = format!("Kill the active pane of {}?", key.name);
+                p.put(2, PAD, inner, &question, Look::Text);
+                match pane {
+                    None => {
+                        p.put(3, PAD, inner, "asking the host what runs in it…", Look::Dim);
+                    }
+                    Some(Err(why)) => {
+                        p.put(3, PAD, inner, why, Look::Error);
+                    }
+                    Some(Ok(info)) => {
+                        if let Some(command) = &info.command {
+                            p.put(3, PAD, inner, &format!("Running: {command}"), Look::Error);
+                        }
+                        if info.last {
+                            p.put(4, PAD, inner, LAST_PANE, Look::Error);
+                        }
+                    }
+                }
+                p.buttons(6, "Kill pane", true, *focus);
+                p.lines = 8;
+                p
+            }
         }
     }
 }
@@ -1141,16 +1293,26 @@ pub enum MenuItem {
     Kill,
     OpenTerminal,
     CopyAttach,
+    NewWindow,
+    RenameWindow,
+    SplitSideBySide,
+    SplitTopBottom,
+    KillPane,
     /// Send or queue a message; listed for Claude sessions in tmux.
     Send,
 }
 
 /// The menu from top to bottom.
-pub const MENU: [MenuItem; 4] = [
+pub const MENU: [MenuItem; 9] = [
     MenuItem::Rename,
     MenuItem::Kill,
     MenuItem::OpenTerminal,
     MenuItem::CopyAttach,
+    MenuItem::NewWindow,
+    MenuItem::RenameWindow,
+    MenuItem::SplitSideBySide,
+    MenuItem::SplitTopBottom,
+    MenuItem::KillPane,
 ];
 
 impl MenuItem {
@@ -1162,6 +1324,12 @@ impl MenuItem {
             MenuItem::Kill => "Kill…",
             MenuItem::OpenTerminal => "Open in new terminal",
             MenuItem::CopyAttach => "Copy attach command",
+            MenuItem::NewWindow => "New window",
+            MenuItem::RenameWindow => "Rename window…",
+            MenuItem::SplitSideBySide => "Split side by side",
+            MenuItem::SplitTopBottom => "Split top / bottom",
+            // It asks first, as Kill does.
+            MenuItem::KillPane => "Kill pane…",
             MenuItem::Send => "Send message…",
         }
     }
@@ -1267,7 +1435,7 @@ impl RowMenu {
         for (index, item) in self.items.iter().enumerate() {
             let look = Look::Item {
                 hovered: self.hovered == Some(index),
-                danger: *item == MenuItem::Kill,
+                danger: matches!(*item, MenuItem::Kill | MenuItem::KillPane),
             };
             let text = format!(" {}", item.label());
             p.put(index + 1, 0, MENU_COLS, &text, look).target = Some(Target::Item(index));
@@ -1295,6 +1463,10 @@ pub fn request_argv(request: &Request, local_name: &str) -> Vec<String> {
         Request::New(new) => tmux::new_session_argv(new, local_name),
         Request::Rename(key, name) => tmux::rename_argv(key, name, local_name),
         Request::Kill(key) => tmux::kill_argv(key, local_name),
+        Request::NewWindow(key) => tmux::new_window_argv(key, local_name),
+        Request::RenameWindow(key, name) => tmux::rename_window_argv(key, name, local_name),
+        Request::Split(key, split) => tmux::split_argv(key, *split, local_name),
+        Request::KillPane(key, _) => tmux::kill_pane_argv(key, local_name),
         Request::Answer { key, pane, yes, .. } => tmux::send_keys_argv(
             key,
             pane.as_deref(),
@@ -1329,6 +1501,37 @@ pub fn perform(request: &Request, local_name: &str, run: Runner) -> Result<Strin
             format!("killed {} on {}", key.name, key.host),
             format!("couldn't kill {} on {}", key.name, key.host),
         ),
+        Request::NewWindow(key) => (
+            format!("opened a new window in {} on {}", key.name, key.host),
+            format!("couldn't open a window in {} on {}", key.name, key.host),
+        ),
+        Request::RenameWindow(key, name) => (
+            format!(
+                "renamed the window of {} to {name} on {}",
+                key.name, key.host
+            ),
+            format!("couldn't rename the window of {} on {}", key.name, key.host),
+        ),
+        Request::Split(key, split) => {
+            let way = match split {
+                Split::SideBySide => "side by side",
+                Split::TopBottom => "top / bottom",
+            };
+            (
+                format!("split {} {way} on {}", key.name, key.host),
+                format!("couldn't split {} on {}", key.name, key.host),
+            )
+        }
+        Request::KillPane(key, last) => (
+            match last {
+                true => format!(
+                    "killed the last pane of {} on {}: the session ended",
+                    key.name, key.host
+                ),
+                false => format!("killed the active pane of {} on {}", key.name, key.host),
+            },
+            format!("couldn't kill the pane of {} on {}", key.name, key.host),
+        ),
     };
     match run(&request_argv(request, local_name)) {
         Ok(_) => Ok(done),
@@ -1357,6 +1560,27 @@ pub fn running_commands(key: &SessionKey, local_name: &str, run: Runner) -> Vec<
     commands.sort();
     commands.dedup();
     commands
+}
+
+/// What runs in the session's active pane and whether it is the session's last (tmls
+/// `pane_info`), for the kill-pane confirm; why not, when the host did not say.
+pub fn pane_info(key: &SessionKey, local_name: &str, run: Runner) -> Result<PaneInfo, String> {
+    let ask = |argv: Vec<String>| {
+        run(&argv).map_err(|e| {
+            format!(
+                "couldn't ask {} about its pane: {}",
+                key.host,
+                first_line(&e)
+            )
+        })
+    };
+    let command = ask(tmux::pane_command_argv(key, local_name))?;
+    let panes = ask(tmux::pane_count_argv(key, local_name))?;
+    let command = command.trim();
+    Ok(PaneInfo {
+        command: (!command.is_empty() && !SHELLS.contains(&command)).then(|| command.to_string()),
+        last: panes.lines().filter(|line| !line.trim().is_empty()).count() <= 1,
+    })
 }
 
 /// What Claude's status file says while it waits for a permission answer.

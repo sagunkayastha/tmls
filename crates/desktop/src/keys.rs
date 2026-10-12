@@ -389,7 +389,12 @@ pub fn keys_at(focus: Focus, focus_before: Focus, modal: bool) -> Focus {
 pub fn list_keeps_keys(request: &Request, keys_were: Focus) -> bool {
     match request {
         Request::New(_) | Request::Answer { .. } => false,
-        Request::Rename(..) | Request::Kill(_) => keys_were == Focus::Sidebar,
+        Request::Rename(..)
+        | Request::Kill(_)
+        | Request::NewWindow(_)
+        | Request::RenameWindow(..)
+        | Request::Split(..)
+        | Request::KillPane(..) => keys_were == Focus::Sidebar,
     }
 }
 
