@@ -162,6 +162,18 @@ absent on a host the sidebar's host header shows `· poll` dimly and everything 
   must not move.
 - Real window: nothing is injected into the user's KDE session. A hand-off sheet `docs/NIGHT-TEST.md` lists what to try.
 
+## Departures taken by the plan (`docs/superpowers/plans/2026-10-12-tmls-rs-attention-loop.md`)
+
+- F4 unread uses Claude's `statusUpdatedAt`, not tmux `window_activity` (which ticks every minute for every Claude
+  session because its status line repaints).
+- F6 "newer than the listing time": `HostSnapshot` has no listing time; an event older than the session's own
+  status time is dropped (tmls's rule). D3 needs `Poller::force_next` because the poller only delivers changed listings.
+- F8 the tab follows a rename when Claude next writes its status file (that is when `session_id` reattaches to the
+  new name), not at the rename itself.
+- F3 `ssh_base(host, flags)` (attach needs `-t` and no BatchMode); socket dir `$XDG_RUNTIME_DIR/tmls-rs` else
+  `~/.cache/tmls-rs`; too long a path → plain ssh, never a bind failure.
+- `tmux::run_with_stdin` is built in F2 (the `wl-copy` fallback needs it), not F7. `?` in the list accepts Shift.
+
 ## Decisions (veto any)
 
 | # | Decision | Why |
