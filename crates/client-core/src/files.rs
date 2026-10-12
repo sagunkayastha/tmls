@@ -39,7 +39,11 @@ pub struct Located {
 }
 
 /// Prints what `path` is on the session's host, for [`parse_located`]: a line `f`, `d` or `o`, a
-/// line with the size in bytes, then the absolute path. Fails with `not found` on stderr when
+/// line with the size in bytes, then the absolute path. A relative path that is not in the
+/// pane's directory is looked for in the directories right below it, and taken when exactly one
+/// has it (or all that have it mean the same file, as with a path that starts with `..`): Claude
+/// names files from the directory it works in, which may be one below the one it
+/// was started in. Fails with `not found` on stderr when
 /// nothing is there, and with the shell's own words when the file cannot be read.
 pub fn locate_argv(key: &SessionKey, path: &str, local_name: &str) -> Vec<String> {
     let fixed = path.starts_with('/') || path == "~" || path.starts_with("~/");
@@ -51,7 +55,11 @@ pub fn locate_argv(key: &SessionKey, path: &str, local_name: &str) -> Vec<String
         format!(
             "d=$(tmux display-message -p -t {target} '#{{pane_current_path}}') || exit 1; \
              [ -n \"$d\" ] || {{ echo 'the session has no current directory' >&2; exit 1; }}; \
-             p=\"$d\"/{}",
+             r={}; q=; p=\"$d/$r\"; \
+             [ -e \"$p\" ] || {{ n=0; for c in \"$d\"/*/; do \
+             [ -e \"$c$r\" ] && ! [ \"$c$r\" -ef \"$q\" ] && {{ n=$((n+1)); q=\"$c$r\"; }}; done; \
+             [ \"$n\" = 1 ] && {{ p=\"$q\"; e=$(cd \"${{q%/*}}\" 2>/dev/null && pwd -P) && \
+             [ -e \"$e/${{q##*/}}\" ] && p=\"$e/${{q##*/}}\"; }}; }}",
             quote(path)
         )
     };

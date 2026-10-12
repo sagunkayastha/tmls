@@ -1955,11 +1955,19 @@ impl Running {
             return;
         }
         let from_list = self.back_for.take() == Some(click);
+        // Not on the session's host and found here: the line says so.
+        let (result, note) = match result {
+            Ok(Opened::Elsewhere { asked, opened }) => {
+                let here = &self.cfg.local_name;
+                (Ok(*opened), format!(" (not on {asked}: the one on {here})"))
+            }
+            result => (result, String::new()),
+        };
         match result {
             Ok(Opened::Text(document)) => {
                 let said = match &document.line {
-                    Some(line) => format!("opened {} at line {line}", document.path),
-                    None => format!("opened {}", document.path),
+                    Some(line) => format!("opened {} at line {line}{note}", document.path),
+                    None => format!("opened {}{note}", document.path),
                 };
                 // Whatever the panel showed, it shows no picture now: its texture is freed.
                 self.picture.set(&self.gpu.device, &self.gpu.queue, None);
@@ -1993,7 +2001,7 @@ impl Running {
                             .picture
                             .set(&self.gpu.device, &self.gpu.queue, Some(&picture))
                         {
-                            true => format!("opened {path}"),
+                            true => format!("opened {path}{note}"),
                             false => {
                                 self.close_side();
                                 format!("{path}: too large a picture for this GPU")
@@ -2008,11 +2016,12 @@ impl Running {
                 self.say(Ok(said));
             }
             Ok(Opened::Outside { target, said }) => {
-                let said = links::open_path(&target).map(|()| said);
+                let said = links::open_path(&target).map(|()| format!("{said}{note}"));
                 self.say(Ok(said.unwrap_or_else(|problem| problem)));
             }
-            // A list is not a click's answer: it comes as `UserEvent::Listed`.
-            Ok(Opened::Made { .. }) => {}
+            // A list is not a click's answer (it comes as `UserEvent::Listed`), and what is
+            // found here is unwrapped above.
+            Ok(Opened::Made { .. } | Opened::Elsewhere { .. }) => {}
             Err(problem) => {
                 crate::errln(format_args!("tmls-rs: {problem}"));
                 self.say(Ok(problem));

@@ -303,6 +303,9 @@ pub enum Opened {
         file: (u32, u32),
         picture: Picture,
     },
+    /// `opened`, of this machine: the path the click asked for is not on `asked`, the
+    /// session's host, and is here (`open_link_while`).
+    Elsewhere { asked: String, opened: Box<Opened> },
     /// For the desktop's app: the file or folder on this machine to give to `xdg-open`, and
     /// the line for the status line once that is started.
     Outside { target: String, said: String },
@@ -375,7 +378,47 @@ pub fn open_link(
 /// a copy for the desktop's app is written, which would else take the place of the copy a
 /// newer click made of a file of the same name. A click that is overtaken gives `overtaken`'s
 /// line, which nobody reads: its answer is dropped.
+///
+/// A path from the root or the home directory that the session's host does not have is looked
+/// for on this machine too: output often names a file of the machine the user sits at (one
+/// read through ssh, a screenshot). What is found here comes as `Opened::Elsewhere`, so that
+/// the status line says whose file it is.
 pub fn open_link_while(
+    key: &SessionKey,
+    link: &FileLink,
+    local_name: &str,
+    cache: Option<&Path>,
+    run: Runner,
+    wanted: &dyn Fn() -> bool,
+) -> Result<Opened, String> {
+    match open_on(key, link, local_name, cache, run, wanted) {
+        Err(problem) if key.host != local_name && is_missing(&link.path, &problem) => {
+            let here = SessionKey {
+                host: local_name.to_string(),
+                name: String::new(),
+            };
+            match open_on(&here, link, local_name, cache, run, wanted) {
+                Ok(opened) => Ok(Opened::Elsewhere {
+                    asked: key.host.clone(),
+                    opened: Box::new(opened),
+                }),
+                // The first answer stands: it names the host that was asked.
+                Err(_) => Err(problem),
+            }
+        }
+        answer => answer,
+    }
+}
+
+/// Whether `problem` says that the host has nothing at `path`, and `path` means the same on
+/// every host: from the root or the home directory, not from a pane's directory.
+fn is_missing(path: &str, problem: &str) -> bool {
+    let fixed = path.starts_with('/') || path == "~" || path.starts_with("~/");
+    fixed && problem.ends_with(": not found")
+}
+
+/// `open_link_while` on the host of `key` alone.
+fn open_on(
     key: &SessionKey,
     link: &FileLink,
     local_name: &str,

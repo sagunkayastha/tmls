@@ -1887,3 +1887,49 @@ fn the_folder_of_a_file_is_itself_here_and_an_sftp_address_elsewhere() {
         assert!(folder_target(host, "/w/f", "pc").is_err(), "{host:?}");
     }
 }
+
+#[test]
+fn a_fixed_path_the_sessions_host_lacks_is_looked_for_on_this_machine() {
+    // The other host has nothing; this machine has the file.
+    let calls = RefCell::new(Vec::new());
+    let run = |argv: &[String], _: Duration| -> anyhow::Result<Vec<u8>> {
+        calls.borrow_mut().push(argv[0].clone());
+        match (argv[0].as_str(), argv.last().unwrap().starts_with("head ")) {
+            ("ssh", _) => Err(anyhow::anyhow!("not found")),
+            ("head", _) | (_, true) => Ok(b"here\n".to_vec()),
+            _ => Ok(b"f\n5\n/home/u/.config/x.json".to_vec()),
+        }
+    };
+    let open = |path: &str| viewer::open_link(&key("nas"), &link(path, None), LOCAL, None, &run);
+    let Ok(Opened::Elsewhere { asked, opened }) = open("~/.config/x.json") else {
+        panic!("not found here");
+    };
+    assert_eq!(asked, "nas");
+    let Opened::Text(document) = *opened else {
+        panic!("not text");
+    };
+    assert_eq!(
+        (document.host.as_str(), document.text.as_str()),
+        (LOCAL, "here\n")
+    );
+    assert_eq!(calls.borrow()[0], "ssh");
+    assert!(calls.borrow()[1..].iter().all(|program| program != "ssh"));
+    // A path from the pane's directory means nothing here: the host's answer stands.
+    calls.borrow_mut().clear();
+    assert_eq!(
+        open("src/x.rs"),
+        Err("src/x.rs on nas: not found".to_string())
+    );
+    assert_eq!(calls.borrow().len(), 1);
+
+    // Nowhere, or the host not reached: what the host said, and no second try for the latter.
+    let nowhere = Host::failing("not found");
+    assert_eq!(
+        nowhere.open("nas", &link("/x", None), None),
+        Err("/x on nas: not found".to_string())
+    );
+    assert_eq!(nowhere.calls().len(), 2);
+    let down = Host::failing("ssh: connect to host nas port 22: Connection timed out");
+    assert!(down.open("nas", &link("/x", None), None).is_err());
+    assert_eq!(down.calls().len(), 1);
+}
