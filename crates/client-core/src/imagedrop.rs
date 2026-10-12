@@ -33,23 +33,53 @@ pub fn uris(list: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The path `text` names when it is one path or one `file://` URI of this machine whose name
-/// ends like an image. Nothing is looked up on disk.
-pub fn named_image(text: &str) -> Option<PathBuf> {
+/// The path one line names: a `file://` URI of this machine, decoded, or the line itself.
+/// `None` for an empty line, more than one line, or a `file://` URI of another machine.
+pub fn local_path(text: &str) -> Option<PathBuf> {
     let value = text.trim();
     if value.is_empty() || value.contains(['\n', '\r']) {
         return None;
     }
-    let path = match value.strip_prefix("file://") {
+    match value.strip_prefix("file://") {
         Some(rest) => {
             let (authority, path) = rest.split_at(rest.find('/')?);
             if !(authority.is_empty() || authority == "localhost") {
                 return None;
             }
-            PathBuf::from(percent_decoded(path)?)
+            Some(PathBuf::from(percent_decoded(path)?))
         }
-        None => PathBuf::from(value),
+        None => Some(PathBuf::from(value)),
+    }
+}
+
+/// The text to paste for a dropped `text/uri-list`: one file's path as it is (so that
+/// `dropped_image` can know it, and a prompt reads it); several, each quoted for a shell where
+/// it needs it, with a space between. `None` when the list names nothing.
+pub fn dropped_text(list: &str) -> Option<String> {
+    let entry = |uri: &str| match local_path(uri) {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => uri.to_string(),
     };
+    match uris(list).as_slice() {
+        [] => None,
+        [one] => Some(entry(one)),
+        many => Some(many.iter().map(|uri| quoted(&entry(uri))).collect::<Vec<_>>().join(" ")),
+    }
+}
+
+/// `word` as one word of a shell command line.
+fn quoted(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_./-+@%=:,".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_string();
+    }
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// The path `text` names when it is one path or one `file://` URI of this machine whose name
+/// ends like an image. Nothing is looked up on disk.
+pub fn named_image(text: &str) -> Option<PathBuf> {
+    let path = local_path(text)?;
     let suffix = path.extension()?.to_str()?.to_ascii_lowercase();
     SUFFIXES.contains(&suffix.as_str()).then_some(path)
 }
@@ -160,6 +190,18 @@ mod tests {
         let list = "# from the file manager\r\nfile:///a/one.png\r\n\r\nfile:///a/two.png\r\n";
         assert_eq!(uris(list), ["file:///a/one.png", "file:///a/two.png"]);
         assert!(uris("\r\n# only a comment\r\n").is_empty());
+    }
+
+    #[test]
+    fn a_drop_is_pasted_as_paths() {
+        assert_eq!(dropped_text("file:///a/my%20pic.png\r\n").as_deref(), Some("/a/my pic.png"));
+        assert_eq!(
+            dropped_text("file:///a/one.png\r\nfile:///b/it's%20two.txt\r\n").as_deref(),
+            Some("/a/one.png '/b/it'\\''s two.txt'")
+        );
+        // Not a file of this machine: pasted as it came.
+        assert_eq!(dropped_text("https://example.com/x\r\n").as_deref(), Some("https://example.com/x"));
+        assert_eq!(dropped_text("# nothing\r\n"), None);
     }
 
     #[test]

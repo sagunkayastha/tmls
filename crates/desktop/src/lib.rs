@@ -27,6 +27,7 @@
 pub mod alerts;
 pub mod app;
 pub mod clip;
+pub mod dnd;
 pub mod draw;
 pub mod forms;
 pub mod icon;

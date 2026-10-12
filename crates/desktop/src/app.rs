@@ -162,6 +162,8 @@ pub enum UserEvent {
     /// An image dropped on (or pasted into) a tab of another host was copied there, or not:
     /// the tab's session, the file's name, and the path to paste on that host.
     Dropped(SessionKey, String, Result<String, String>),
+    /// Files were dropped on the window: the `text/uri-list` of them (`dnd`).
+    FilesDropped(String),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -248,6 +250,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Sent(id, key, result) => running.sent(id, key, result),
             UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
+            UserEvent::FilesDropped(list) => running.files_dropped(&list),
         }
     }
 
@@ -335,6 +338,38 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// The listener for files dropped on the window, on Wayland (`dnd`). `None` elsewhere, with
+/// `TMLS_RS_NO_DND`, and when it cannot start — which the log says, and nothing else: the
+/// app is the same without it.
+fn start_drops(
+    event_loop: &ActiveEventLoop,
+    proxy: &EventLoopProxy<UserEvent>,
+) -> Option<crate::dnd::Drops> {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    if std::env::var_os(crate::dnd::NO_DND).is_some() {
+        return None;
+    }
+    let RawDisplayHandle::Wayland(handle) = event_loop.display_handle().ok()?.as_raw() else {
+        return None;
+    };
+    let proxy = proxy.clone();
+    let sink: crate::dnd::Sink = Arc::new(move |dropped| {
+        let _ = proxy.send_event(match dropped {
+            Ok(list) => UserEvent::FilesDropped(list),
+            Err(why) => UserEvent::Said(Err(why)),
+        });
+    });
+    // SAFETY: the display is the event loop's, which outlives `Running` and with it the
+    // listener (`exiting` drops `Running` before the loop ends).
+    match unsafe { crate::dnd::Drops::start(handle.display.as_ptr(), sink) } {
+        Ok(drops) => Some(drops),
+        Err(why) => {
+            crate::errln(format_args!("tmls-rs: no drag and drop: {why}"));
+            None
+        }
+    }
+}
+
 /// Why a redraw runs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Redraw {
@@ -400,6 +435,9 @@ struct Running {
     problem: Option<String>,
     /// What a request did ("created x on host"), for the status line until the next key.
     note: Option<String>,
+    /// Listens for files dropped on the window (`dnd`); `None` off Wayland, with
+    /// `TMLS_RS_NO_DND`, or when it could not start.
+    drops: Option<crate::dnd::Drops>,
     /// What the session's row under the pointer says in full (`sidebar::hover_text`), for the
     /// status line while nothing else is said there.
     hover: Option<String>,
@@ -521,6 +559,7 @@ impl Running {
         );
         // Nothing is open yet and the keys are the list's, which takes no composed text.
         window.set_ime_allowed(false);
+        let drops = start_drops(event_loop, &proxy);
 
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
@@ -672,6 +711,7 @@ impl Running {
             problem: None,
             note: None,
             hover: None,
+            drops,
             modal: None,
             focus_before: Focus::Sidebar,
             select_when_listed: None,
@@ -2485,6 +2525,19 @@ impl Running {
         self.say(said);
     }
 
+    /// Files dropped on the window (tmls: kitty pastes them): their paths are pasted into the
+    /// tab in front — one image for a session on another host is copied there first, as with
+    /// a paste.
+    fn files_dropped(&mut self, list: &str) {
+        let Some(text) = imagedrop::dropped_text(list) else {
+            return;
+        };
+        if self.tabs.live_mut().is_none() {
+            return self.say(Ok("no live session to drop into".to_string()));
+        }
+        self.paste_text(Ok(text));
+    }
+
     /// `text` names one image file of this machine and the tab in front is a session on
     /// another host (tmls `_paste_input`): the file is copied to that host on a thread, and
     /// `dropped` pastes the path it has there. `false`: `text` is to be pasted as it is — a
@@ -3014,6 +3067,9 @@ impl Running {
     /// polling and emulator threads and closes the PTYs, which detaches every tab.
     fn shutdown(mut self) {
         self.tails.clear(); // the readers are killed before the window goes
+        // The drop listener reads the window's connection: its thread ends here, while the
+        // connection is still there.
+        drop(self.drops.take());
         // Stops the sampler thread first, so its last line is in before the final flush.
         drop(self.sampler.take());
         self.write_meta(true);
