@@ -140,6 +140,12 @@ impl Tabs {
         self.tabs.iter().position(|tab| &tab.key == key)
     }
 
+    /// The tab's session was renamed outside the app: the tab goes on under `key`. Its attach
+    /// command follows the session by itself and is not started again; a reattach uses `key`.
+    pub fn rekey(&mut self, index: usize, key: SessionKey) {
+        self.tabs[index].key = key;
+    }
+
     /// Brings a tab to the front (an index that does not exist changes nothing): the tab that
     /// was there loses the keyboard focus, its composition and a drag in progress; the new one
     /// gets the current grid size and, if the terminal has it, the focus.

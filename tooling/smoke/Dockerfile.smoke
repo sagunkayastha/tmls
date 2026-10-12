@@ -11,7 +11,7 @@ USER root
 # wtype: keys through the virtual-keyboard protocol; grim: screenshots (PNG/PPM);
 # fonts: DejaVu Sans Mono (the app's first choice), WenQuanYi Micro Hei (CJK), Noto Color Emoji.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      sway grim wtype \
+      sway grim wtype wl-clipboard \
       mesa-vulkan-drivers libvulkan1 libwayland-client0 libwayland-cursor0 libxkbcommon0 xkb-data \
       libfontconfig1 fontconfig \
       tmux openssh-client procps \

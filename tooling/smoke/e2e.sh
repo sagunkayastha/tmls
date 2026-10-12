@@ -18,6 +18,15 @@ ODD="tmlsrs-test-a b'c"
 NEW='tmlsrs-test-new'
 RENAMED='tmlsrs-test-renamed'
 BYE='tmlsrs-test-bye'
+APPROVE='tmlsrs-test-0approve'
+APPROVE_SID='1b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+PUSH='tmlsrs-test-2push'
+PUSH_SID='3b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+ASK='tmlsrs-test-1ask'
+ASK_SID='2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+ASK2='tmlsrs-test-1asked'
+# The stand-ins for Claude processes, by session id: their status files are named after them.
+declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
 
 # The container must not be the user's machine: this script starts and stops a tmux server.
@@ -135,6 +144,11 @@ cleanup() {
   tmux kill-session -t "=$BYE" 2>/dev/null
   # The stand-in for a Claude process (the images' list), if it still runs.
   [ -n "${FAKE_CLAUDE:-}" ] && kill "$FAKE_CLAUDE" 2>/dev/null
+  tmux kill-session -t "=$APPROVE" 2>/dev/null
+  tmux kill-session -t "=$PUSH" 2>/dev/null
+  tmux kill-session -t "=$ASK" 2>/dev/null
+  tmux kill-session -t "=$ASK2" 2>/dev/null
+  for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
 }
@@ -196,6 +210,16 @@ cat >"$OUT/bin/notify-send" <<EOF
 { printf '%s|' "\$@"; echo; } >>"$NOTIFY_LOG"
 EOF
 chmod +x "$OUT/bin/notify-send"
+# tmux as it is, but while $OUT/slow-capture is there a capture-pane takes a second first, as
+# on a slow host (the approval check that keys typed on win over a late dialog read); while
+# $OUT/slow-create is there a has-session takes three (a create that fails late).
+cat >"$OUT/bin/tmux" <<EOF
+#!/bin/sh
+[ "\$1" = capture-pane ] && [ -e "$OUT/slow-capture" ] && sleep 1
+[ "\$1" = has-session ] && [ -e "$OUT/slow-create" ] && sleep 3
+exec /usr/bin/tmux "\$@"
+EOF
+chmod +x "$OUT/bin/tmux"
 export PATH="$OUT/bin:$PATH"
 # How often the stand-in was asked to say that $ONE is done.
 notified() { grep -cxF -- "--|tmls · $(hostname)|◆ $ONE · done|" "$NOTIFY_LOG"; }
@@ -900,6 +924,78 @@ keys -k Escape
 keys -k Escape
 check_typed "Esc closes the form and then leaves the list: typing goes to $NEW" "$NEW" afterform
 
+# A create that fails while the user waits: the form comes back with what was typed.
+NOFOLDER="/nonexistent-$NONCE"
+nofolder_lines() { grep -cF -- "no such folder: $NOFOLDER" "$OUT/app.stderr"; }
+nofolder_lines_are() { [ "$(nofolder_lines)" -eq "$1" ]; }
+key_focus_list
+keys -k c
+keys -k Tab
+keys "$NOFOLDER"
+keys -k Tab
+keys "tmlsrs-test-nofolder"
+key_enter
+if wait_for 8 nofolder_lines_are 1; then
+  pass "a create in a folder that does not exist fails and says why"
+else
+  fail "a create in a folder that does not exist fails and says why" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+check "screenshot 22b-new-form-failed (the form again, with the folder and the reason)" shot 22b-new-form-failed
+# Enter on the form that came back creates again with the same values: the same failure.
+key_enter
+if wait_for 8 nofolder_lines_are 2; then
+  pass "the failed form comes back with its values when nothing was typed (Enter tries again)"
+else
+  fail "the failed form comes back with its values when nothing was typed (Enter tries again)" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+keys -k Escape
+keys -k Escape
+check_typed "Esc closes the failed form and leaves the list: typing goes to $NEW" "$NEW" afterfailed
+
+# A create that fails late, after the user typed on: no form over what they typed into; the
+# reason is in the status line, and c brings the form back with the values.
+exists_lines() { grep -cF -- "a session named $ONE already exists" "$OUT/app.stderr"; }
+exists_lines_are() { [ "$(exists_lines)" -eq "$1" ]; }
+key_focus_list
+keys -k c
+keys -k Tab -k Tab
+keys "$ONE"
+: >"$OUT/slow-create"
+key_enter
+keys -k Escape
+keys "echo typed-on-$NONCE"
+key_enter
+if wait_for 8 exists_lines_are 1; then
+  pass "a create that fails late says why in the status line"
+else
+  fail "a create that fails late says why in the status line" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+rm -f "$OUT/slow-create"
+sleep 0.5
+keys "echo after-failed-$NONCE"
+key_enter
+if wait_for 5 pane_has_line "$NEW" "after-failed-$NONCE"; then
+  pass "a create that fails after the user typed on opens no form: the keys stay with the terminal"
+else
+  fail "a create that fails after the user typed on opens no form: the keys stay with the terminal" \
+    "pane: $(pane_text "$NEW" | grep -v '^$' | tail -3 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 22c-late-failure (no form; the reason in the status line)" shot 22c-late-failure
+key_focus_list
+keys -k c
+key_enter
+if wait_for 8 exists_lines_are 2; then
+  pass "c after a late failure brings the form back with its values (Enter tries again)"
+else
+  fail "c after a late failure brings the form back with its values (Enter tries again)" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+keys -k Escape
+keys -k Escape
+check_typed "Esc closes that form and leaves the list: typing goes to $NEW" "$NEW" afterlate
+
 # m in the list: the session's menu; Enter on its first row: rename.
 key_menu
 check "screenshot 23-menu" shot 23-menu
@@ -1065,6 +1161,286 @@ fi
 key_close_tab
 check_typed "the alert's tab is closed: the keys go to \"$ODD\"" "$ODD" afteralert
 
+# --- the keys' help (F1) -------------------------------------------------------------------------
+# "$ODD" is the only tab, in front, with the keys.
+if "$BIN" keys | grep -qF 'Alt+Shift+N'; then
+  pass "tmls-rs keys prints the key table"
+else
+  fail "tmls-rs keys prints the key table" "$("$BIN" keys 2>&1 | head -3 | tr '\n' ' ')"
+fi
+key_focus_list
+NO_HELP=$(picture)
+keys "?"
+HELP_PICTURE=$(picture)
+check "screenshot 34-help" shot 34-help
+if [ "$HELP_PICTURE" != "$NO_HELP" ]; then
+  pass "? in the list opens the help (the picture changed)"
+else
+  fail "? in the list opens the help (the picture changed)" "same picture"
+fi
+keys -k Escape
+sleep 0.5
+if [ "$(picture)" != "$HELP_PICTURE" ]; then
+  pass "Esc closes the help"
+else
+  fail "Esc closes the help" "the picture is the help's"
+fi
+# Esc again: the keys go back to the terminal of "$ODD".
+keys -k Escape
+check_typed "after the help the keys go to \"$ODD\" again" "$ODD" afterhelp
+
+# --- copy and paste (F2) -------------------------------------------------------------------------
+# "$ODD" is in front with the keys; tmux's mouse is off, so a drag selects here. wl-paste reads
+# the compositor's clipboard on its own, apart from the app.
+clipboard() { timeout 5 wl-paste --no-newline 2>/dev/null; }
+clipboard_has() { clipboard | grep -qF -- "$1"; }
+keys "clear; printf '  COPYME-%s\n' $NONCE"
+key_enter
+if wait_for 5 pane_has_line "$ODD" "  COPYME-$NONCE"; then
+  pass "the line to copy is on the pane's first row"
+else
+  fail "the line to copy is on the pane's first row" "pane: $(pane_text "$ODD" | head -2 | tr '\n' '|')"
+fi
+# Shift held while the pointer drags along the first row (y 31), from its start.
+timeout 10 wtype -M shift -s 3000 -m shift &
+HOLD=$!
+sleep 0.8
+click drag 230 31 700
+wait "$HOLD" 2>/dev/null
+# Something else on the clipboard first: only Ctrl+Shift+C can put the line back.
+timeout 5 wl-copy "not-it-$NONCE"
+keys -M ctrl -M shift -k c -m shift -m ctrl
+if wait_for 5 clipboard_has "COPYME-$NONCE"; then
+  pass "Shift+drag, then Ctrl+Shift+C puts the selection on the clipboard (wl-paste)"
+else
+  fail "Shift+drag, then Ctrl+Shift+C puts the selection on the clipboard (wl-paste)" \
+    "clipboard: $(clipboard | head -c 80); stderr: $(grep -E 'copy|clipboard' "$OUT/app.stderr" | tail -3 | tr '\n' ' ')"
+fi
+check "screenshot 35-copied (the status line says copied N chars)" shot 35-copied
+keys "echo PASTED:"
+keys -M ctrl -M shift -k v -m shift -m ctrl
+key_enter
+pasted() { pane_text "$ODD" | grep -qE "^PASTED: ?COPYME-$NONCE\$"; }
+if wait_for 5 pasted; then
+  pass "Ctrl+Shift+V pastes it into the tab"
+else
+  fail "Ctrl+Shift+V pastes it into the tab" "pane: $(pane_text "$ODD" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+check "no copy or paste failure on stderr" bash -c '! grep -qE "(copy|paste) failed" "$0"' "$OUT/app.stderr"
+# The fallback for real (crates/desktop/tests/clip_wayland.rs, built by run.sh): arboard off,
+# wl-copy and wl-paste do the copy and the paste, each in under 300 ms (the UI thread waits).
+CLIP_WL="arboard off: wl-copy and wl-paste copy and paste, each under 300 ms (tests/clip_wayland.rs)"
+if [ -n "${SMOKE_CLIP_TEST:-}" ] && [ -x "$SMOKE_CLIP_TEST" ]; then
+  if CLIP_SAID=$(TMLS_RS_NO_ARBOARD=1 timeout 30 "$SMOKE_CLIP_TEST" --nocapture 2>&1) &&
+    grep -q "the wl-clipboard fallback: copy and paste" <<<"$CLIP_SAID"; then
+    pass "$CLIP_WL"
+  else
+    fail "$CLIP_WL" "$(grep -E 'panicked|took|left|right|error' <<<"$CLIP_SAID" | head -4 | tr '\n' ' ')"
+  fi
+else
+  fail "$CLIP_WL" "no test binary (SMOKE_CLIP_TEST=${SMOKE_CLIP_TEST:-})"
+fi
+
+# fake_claude NAME SID STATUS [WAITING_FOR] — (re)writes the status file of a Claude with session
+# id SID that runs in NAME's pane and is STATUS. The file is named after a sleep of this script's
+# (the listing skips files of dead processes); statusUpdatedAt is now.
+fake_claude() {
+  local name=$1 sid=$2 status=$3 waiting=${4:-} pid ids
+  pid=${FAKE_PIDS[$sid]:-}
+  if [ -z "$pid" ]; then
+    sleep 900 &
+    pid=$!
+    FAKE_PIDS[$sid]=$pid
+  fi
+  ids=$(tmux display -p -t "=$name:" '#{window_id}.#{pane_id}')
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"kind":"interactive","sessionId":"%s","status":"%s","waitingFor":"%s","statusUpdatedAt":%s,"tmux":"%s:%s","cwd":"/work"}\n' \
+    "$pid" "$sid" "$status" "$waiting" "$(date +%s%3N)" "$name" "$ids" >"$HOME/.claude/sessions/$pid.json"
+}
+# top_of_list  — the list's cursor to its first session (pins are empty here).
+top_of_list() { keys -k k -k k -k k -k k -k k -k k -k k -k k; }
+# said_lines — what the app wrote on stderr, but its focus reports.
+said_lines() { grep -v '^tmls-rs: focus ' "$OUT/app.stderr"; }
+said_count() { said_lines | wc -l; }
+said_since() { [ "$(said_count)" -gt "$1" ]; }
+# select_row NAME — the list's cursor (the list has the keys) to the row of the session NAME,
+# found by its name, not its place, so a session another block left behind moves nothing: y on
+# a row that is not asking says "NAME isn't asking anything" at once; a row that asks opens its
+# form instead and says nothing, and Esc closes that.
+select_row() {
+  local name=$1 n before
+  top_of_list
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    before=$(said_count)
+    keys y
+    if wait_for 2 said_since "$before"; then
+      [ "$(said_lines | tail -1)" = "tmls-rs: $name isn't asking anything" ] && return 0
+    else
+      keys -k Escape
+    fi
+    keys -k j
+  done
+  return 1
+}
+
+# --- approvals from the list (F5) ----------------------------------------------------------------
+# A stand-in for Claude asking: the dialog of client-core's fixture, then one key read and shown.
+# $APPROVE sorts first ('0' < 'a'), so it is the list's first session.
+cp /work/crates/client-core/tests/data/approve-dialog.txt "$SCRATCH/dialog.txt"
+cat >"$SCRATCH/dialog.sh" <<'EOF'
+clear
+cat "$1"
+IFS= read -rsn1 k
+printf 'GOT[%s]\n' "$k"
+sleep 600
+EOF
+tmux new-session -d -s "$APPROVE" -x 100 -y 40 "bash '$SCRATCH/dialog.sh' '$SCRATCH/dialog.txt'"
+fake_claude "$APPROVE" "$APPROVE_SID" waiting "permission prompt"
+# `y` is refused at once, in stderr, while the list's first row is not one that asks (the
+# listing has not shown $APPROVE yet); a `y` that is not refused within a second was taken.
+refusals() { grep -cE "isn't asking anything|is not listed any more|runs outside tmux" "$OUT/app.stderr"; }
+refused_since() { [ "$(refusals)" -gt "$1" ]; }
+y_taken() {
+  local before
+  before=$(refusals)
+  top_of_list
+  keys y
+  ! wait_for 1 refused_since "$before"
+}
+key_focus_list
+if wait_for 20 y_taken; then
+  pass "the listing shows $APPROVE asking: y on its row is taken"
+else
+  fail "the listing shows $APPROVE asking: y on its row is taken" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 36-approve (the dialog, Yes / No / Cancel)" shot 36-approve
+key_enter
+if wait_for 8 pane_has_line "$APPROVE" "GOT[1]"; then
+  pass "y on a row that asks, then Enter, presses 1 in its pane"
+else
+  fail "y on a row that asks, then Enter, presses 1 in its pane" \
+    "pane: $(pane_text "$APPROVE" | grep -v '^$' | tail -3 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+# Keys typed after the y belong to what they were typed into: a dialog read that comes back
+# after them opens no form, so an Enter meant for the shell never answers Yes. The same prompt
+# again (the pane id stays), then y, Esc to the terminal and a command line at once.
+tmux respawn-pane -k -t "=$APPROVE:" "bash '$SCRATCH/dialog.sh' '$SCRATCH/dialog.txt'"
+fake_claude "$APPROVE" "$APPROVE_SID" waiting "permission prompt"
+wait_for 5 pane_has_line "$APPROVE" " Do you want to proceed?"
+key_focus_list
+top_of_list
+# One burst (1 ms between keys; wtype refuses 0): Esc and the text are handled before the
+# capture is back, as when a slow host answers late. The capture is made slow (the tmux
+# stand-in): an idle machine's took a few ms and sometimes came back before the Esc, and then
+# the form opened and the Esc closed it, leaving the text to the list.
+: >"$OUT/slow-capture"
+timeout 10 wtype -s 250 -d 1 y -k Escape "echo moved-on-$NONCE"
+sleep 0.3
+key_enter
+if wait_for 5 pane_has_line "$ODD" "moved-on-$NONCE"; then
+  pass "y, then Esc and a command line at once: the keys reach the terminal"
+else
+  fail "y, then Esc and a command line at once: the keys reach the terminal" \
+    "pane: $(pane_text "$ODD" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+sleep 2
+check "screenshot 37-approve-moved-on (no form over the terminal)" shot 37-approve-moved-on
+if pane_text "$APPROVE" | grep -q '^GOT\['; then
+  fail "a dialog read that comes back after the user typed on answers nothing" \
+    "pane: $(pane_text "$APPROVE" | grep '^GOT' | tr '\n' '|')"
+else
+  pass "a dialog read that comes back after the user typed on answers nothing"
+fi
+# ... and the read did come back: the app says it dropped the form (not a read that never ran).
+if wait_for 5 grep -qF -- "tmls-rs: $APPROVE: the prompt's answer form was dropped — keys moved on" "$OUT/app.stderr"; then
+  pass "the late dialog read was dropped because keys moved on (said on stderr)"
+else
+  fail "the late dialog read was dropped because keys moved on (said on stderr)" "stderr: $(tail -3 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+rm -f "$OUT/slow-capture"
+
+# --- send or queue a message (F7) ----------------------------------------------------------------
+# $ASK is a shell that a status file calls Claude's.
+tmux new-session -d -s "$ASK" -x 100 -y 30
+fake_claude "$ASK" "$ASK_SID" idle
+sleep 6
+# The F5 block left the keys with the terminal.
+key_focus_list
+check "the list's cursor finds $ASK by its name" select_row "$ASK"
+keys s
+check "screenshot 37-ask (Send to $ASK, the default saved prompt)" shot 37-ask
+keys "echo tmls-ask-ok-$NONCE"
+key_enter
+if wait_for 8 pane_has_line "$ASK" "tmls-ask-ok-$NONCE"; then
+  pass "s on an idle Claude row sends the message at once"
+else
+  fail "s on an idle Claude row sends the message at once" "pane: $(pane_text "$ASK" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+fake_claude "$ASK" "$ASK_SID" busy
+sleep 6
+keys s
+keys "echo tmls-queued-$NONCE"
+key_enter
+sleep 2
+check "a message for a busy session waits in the queue" \
+  bash -c '! tmux capture-pane -p -t "=$0:" | grep -qxF -- "$1"' "$ASK" "tmls-queued-$NONCE"
+check "screenshot 38-queued (1✉ on the row)" shot 38-queued
+fake_claude "$ASK" "$ASK_SID" idle
+if wait_for 12 pane_has_line "$ASK" "tmls-queued-$NONCE"; then
+  pass "when its turn ends the queued message is sent"
+else
+  fail "when its turn ends the queued message is sent" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+# Claude exits while a message waits for it: the session is a plain shell again, and a message
+# typed there would run as a command. It stays in the queue and the app says why.
+fake_claude "$ASK" "$ASK_SID" busy
+sleep 6
+keys s
+keys "echo tmls-gone-\$(echo RAN)-$NONCE"
+key_enter
+sleep 2
+check "a message for the busy session waits in the queue again" \
+  bash -c '! tmux capture-pane -p -t "=$0:" | grep -qF -- "$1"' "$ASK" "tmls-gone-"
+# Its process ends: the listing drops the status file of a dead process (kill -0), so the row is
+# the shell left behind, busy until 30 s without output, then idle.
+kill "${FAKE_PIDS[$ASK_SID]}" 2>/dev/null
+wait "${FAKE_PIDS[$ASK_SID]}" 2>/dev/null
+unset "FAKE_PIDS[$ASK_SID]"
+gone_said() { grep -qF -- "tmls-rs: Claude is gone from $ASK; 1 kept" "$OUT/app.stderr"; }
+if wait_for 60 gone_said; then
+  pass "Claude gone, its turn over: the app says so and keeps the message"
+else
+  fail "Claude gone, its turn over: the app says so and keeps the message" "stderr: $(tail -3 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 1
+if pane_text "$ASK" | grep -qF -- "tmls-gone-"; then
+  fail "a queued message is never typed into the shell Claude left" "pane: $(pane_text "$ASK" | grep -v '^$' | tail -3 | tr '\n' '|')"
+else
+  pass "a queued message is never typed into the shell Claude left"
+fi
+check "screenshot 39-claude-gone (the row keeps 1✉)" shot 39-claude-gone
+# Claude again in $ASK (a new process), for the rename below; the cursor back on its row.
+fake_claude "$ASK" "$ASK_SID" idle
+sleep 6
+check "the list's cursor finds $ASK again" select_row "$ASK"
+
+# --- a session renamed outside the app keeps its tab (F8) ---------------------------------------------
+key_enter
+if wait_for 8 attached_to "$ASK"; then pass "Enter attaches $ASK"; else fail "Enter attaches $ASK" "clients: $(attached | tr '\n' '|')"; fi
+tmux rename-session -t "=$ASK" "$ASK2"
+# Claude writes its status file again under the new name (here: the stand-in does).
+fake_claude "$ASK2" "$ASK_SID" idle
+titled() { sway_msg -t get_tree | grep -qF -- "$ASK2"; }
+if wait_for 12 titled; then
+  pass "a session renamed outside the app keeps its tab: the window is titled $ASK2"
+else
+  fail "a session renamed outside the app keeps its tab: the window is titled $ASK2" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 41-renamed-outside" shot 41-renamed-outside
+check_typed "the renamed session's tab still takes the keys" "$ASK2" renamedout
+key_close_tab
+check_typed "its tab closed: the keys go to \"$ODD\"" "$ODD" afterrename
+
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7
 key_quit
@@ -1087,6 +1463,64 @@ if grep -nE "panicked|stack backtrace|RUST_BACKTRACE" "$OUT/app.stderr" >/dev/nu
   fail "no panic on stderr" "$(grep -nE 'panicked' -A3 "$OUT/app.stderr" | head -6 | tr '\n' ' ')"
 else
   pass "no panic on stderr"
+fi
+
+# --- push: events.jsonl moves the marks without a poll (F6) ----------------------------------------
+# A second run of the app that lists every 60 s: what changes within seconds came by push.
+PUSH_START_NOTIFIED=$(wc -l <"$NOTIFY_LOG")
+tmux new-session -d -s "$PUSH" -x 100 -y 30
+fake_claude "$PUSH" "$PUSH_SID" idle
+EVENTS="$HOME/.cache/tmls/events.jsonl"
+mkdir -p "$HOME/.cache/tmls" && : >"$EVENTS"
+PUSH_PANE=$(tmux display -p -t "=$PUSH:" '#{pane_id}')
+# push_event EV [MORE_JSON] — one line as tmls's hook writes it, timed now.
+push_event() {
+  printf '{"t":%s,"ev":"%s","sid":"%s","pane":"%s","cwd":"/work"%s}\n' \
+    "$(date +%s.%N)" "$1" "$PUSH_SID" "$PUSH_PANE" "${2:-}" >>"$EVENTS"
+}
+# list_picture — a hash of the list's pixel columns only (0-223).
+list_picture() {
+  timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+crop = hashlib.sha256()
+for y in range(h):
+    crop.update(px[3 * w * y:3 * (w * y + 224)])
+print(crop.hexdigest()[:16])
+' 2>/dev/null || echo none
+}
+# In the foreground (launch.rs): a run without --bench detaches from its terminal otherwise.
+TMLS_RS_FOREGROUND=1 TMLS_RS_POLL_S=60 "$BIN" 2>"$OUT/app2.stderr" &
+APP_PID=$!
+if wait_for 30 window_up; then pass "the second run's window opened (TMLS_RS_POLL_S=60)"; else fail "the second run's window opened (TMLS_RS_POLL_S=60)"; fi
+sleep 3 # its first listing, at start; the next one is a minute away
+push_event PermissionRequest ',"tool":"Bash"'
+if wait_for 4 grep -qxF -- "--|tmls · $(hostname)|? $PUSH · permission prompt|" "$NOTIFY_LOG"; then
+  pass "a PermissionRequest event alerts within seconds, with no poll ('? $PUSH · permission prompt')"
+else
+  fail "a PermissionRequest event alerts within seconds, with no poll" "log: $(tail -n +"$((PUSH_START_NOTIFIED + 1))" "$NOTIFY_LOG" | tr '\n' ' ')"
+fi
+check "screenshot 39-push-waiting" shot 39-push-waiting
+push_event Stop ',"msg":"first reply","bg":0'
+sleep 1.5
+REPLY_BEFORE=$(list_picture)
+push_event Stop ',"msg":"tmls-push-reply-two","bg":0'
+list_changed() { [ "$(list_picture)" != "$REPLY_BEFORE" ]; }
+if [ "$REPLY_BEFORE" != none ] && wait_for 3 list_changed; then
+  pass "a Stop event's reply changes the row's dim line, with no poll"
+else
+  fail "a Stop event's reply changes the row's dim line, with no poll" "the list's pixels did not change"
+fi
+check "screenshot 40-push-reply (the dim line is the reply)" shot 40-push-reply
+key_quit
+wait_for 10 app_gone || kill "$APP_PID" 2>/dev/null
+if grep -nE "panicked|stack backtrace" "$OUT/app2.stderr" >/dev/null; then
+  fail "no panic on the second run's stderr" "$(grep -n 'panicked' -A3 "$OUT/app2.stderr" | head -6 | tr '\n' ' ')"
+else
+  pass "no panic on the second run's stderr"
 fi
 
 echo "--- files under the scratch HOME"

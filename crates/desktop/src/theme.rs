@@ -44,6 +44,13 @@ pub const PIN: &str = "★";
 pub const PIN_RGB: [u8; 3] = [0xe5, 0xc0, 0x7b];
 /// Before the number of other clients attached to a session (tmls line 144).
 pub const ATTACHED_MARK: &str = "◉";
+/// After a session's name when it has news the user has not looked at (`Seen::unread`), and
+/// its colour: one dot, no animation (D7).
+pub const UNREAD_MARK: &str = "•";
+pub const UNREAD_RGB: [u8; 3] = [0x56, 0xb6, 0xc2];
+/// After a session's name while messages wait for it (`3✉`), and its colour.
+pub const QUEUED_MARK: &str = "✉";
+pub const QUEUED_RGB: [u8; 3] = [0xc6, 0x78, 0xdd];
 /// After a host's name when it does not answer (tmls line 893).
 pub const OFFLINE: &str = "· offline";
 /// The legend's words, in tmls's order (lines 92–93); tmls's `failed` is `Status::Error`.

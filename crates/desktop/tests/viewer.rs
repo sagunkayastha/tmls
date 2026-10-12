@@ -197,10 +197,15 @@ fn a_text_file_of_another_host_comes_through_ssh() {
     assert_eq!(calls.len(), 2);
     for (argv, _) in &calls {
         assert_eq!(&argv[..2], ["ssh", "-o"], "{argv:?}");
-        assert_eq!(argv.len(), 7, "the command is one argument: {argv:?}");
+        assert_eq!(
+            argv[argv.len() - 2],
+            "nas",
+            "the command is one argument: {argv:?}"
+        );
     }
-    assert!(calls[0].0[6].starts_with("p=\"$HOME\"/'a b.txt'; "));
-    assert_eq!(calls[1].0[6], "head -c 2000001 -- '/home/u/a b.txt'");
+    let command = |n: usize| calls[n].0.last().unwrap().as_str();
+    assert!(command(0).starts_with("p=\"$HOME\"/'a b.txt'; "));
+    assert_eq!(command(1), "head -c 2000001 -- '/home/u/a b.txt'");
 }
 
 #[test]

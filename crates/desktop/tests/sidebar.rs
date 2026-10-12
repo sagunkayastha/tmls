@@ -9,7 +9,8 @@ use client_core::{
     Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, Tool,
     default_color,
 };
-use desktop::sidebar::{Action, Row, Sidebar};
+use desktop::queue::Queue;
+use desktop::sidebar::{Action, Row, Sidebar, renamed_outside, summary};
 
 const LOCAL: &str = "laptop";
 
@@ -56,6 +57,9 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         last_output_age_s: None,
         pid: None,
         session_id: None,
+        pane: None,
+        activity: None,
+        last_reply: None,
     }
 }
 
@@ -750,6 +754,9 @@ fn outside(name: &str, pid: u32, status: Status) -> SessionInfo {
         tool: Tool::Claude,
         pid: Some(pid),
         session_id: None,
+        pane: None,
+        activity: None,
+        last_reply: None,
         ..session(KITTY, name, status)
     }
 }
@@ -890,4 +897,139 @@ fn claude_outside_tmux_that_is_gone_is_forgotten() {
     // One of its name that comes later did not finish anything.
     s.deliver(&mut seen, listing(Some(Status::Idle)), None);
     assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Idle));
+}
+
+#[test]
+fn next_unread_wraps_and_never_returns_where_it_starts() {
+    let mut s = sidebar(&[LOCAL]);
+    s.apply(snapshot(
+        LOCAL,
+        vec![
+            session(LOCAL, "a", Status::Idle),
+            session(LOCAL, "b", Status::Idle),
+            session(LOCAL, "c", Status::Idle),
+        ],
+    ));
+    let unread = |k: &SessionKey| k.name == "a" || k.name == "c";
+    assert_eq!(s.next_unread(None, &unread), Some(key(LOCAL, "a")));
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "a")), &unread),
+        Some(key(LOCAL, "c"))
+    );
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "c")), &unread),
+        Some(key(LOCAL, "a")),
+        "wraps round"
+    );
+    let only_a = |k: &SessionKey| k.name == "a";
+    assert_eq!(
+        s.next_unread(Some(&key(LOCAL, "a")), &only_a),
+        None,
+        "not the one it starts from"
+    );
+    assert_eq!(
+        sidebar(&[LOCAL]).next_unread(None, &unread),
+        None,
+        "an empty list"
+    );
+}
+
+#[test]
+fn the_dim_line_is_the_reason_else_the_last_reply_else_the_title() {
+    let mut info = claude(LOCAL, "work", "a title");
+    info.status = Status::Idle;
+    assert_eq!(summary(&info), Some(("a title", false)));
+    info.last_reply = Some("All 12 tests pass.".to_string());
+    assert_eq!(summary(&info), Some(("All 12 tests pass.", false)));
+    info.status = Status::Waiting;
+    info.reason = Some("permission prompt".to_string());
+    assert_eq!(summary(&info), Some(("permission prompt", true)));
+}
+
+#[test]
+fn renamed_outside_follows_claudes_session_id() {
+    let id = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let with = |name: &str, id: Option<&str>| SessionInfo {
+        session_id: id.map(str::to_string),
+        ..session("nas", name, Status::Idle)
+    };
+    let before = vec![with("old", Some(id)), with("plain", None)];
+    let after = snapshot("nas", vec![with("new", Some(id)), with("plain2", None)]);
+    assert_eq!(
+        renamed_outside(&before, &after),
+        [(key("nas", "old"), key("nas", "new"))]
+    );
+    // Still listed under its name: no rename. A host away says nothing. Another host's
+    // listing is not this one's.
+    let both = snapshot("nas", vec![with("old", Some(id)), with("new", Some(id))]);
+    assert!(renamed_outside(&before, &both).is_empty());
+    assert!(renamed_outside(&before, &offline("nas")).is_empty());
+    assert!(renamed_outside(&before, &snapshot("ph", vec![with("new", Some(id))])).is_empty());
+}
+
+#[test]
+fn a_session_renamed_outside_takes_its_queue_and_pin_along_tab_or_not() {
+    let dir = scratch("outside-rename");
+    let mut s = Sidebar::new(&config(&[LOCAL]), dir.clone());
+    let mut q = Queue::default();
+    s.apply(idle(LOCAL, &["a", "b"]));
+    s.select_key(&key(LOCAL, "a"));
+    assert!(s.toggle_pin());
+    q.add(&key(LOCAL, "a"), "hi".into());
+    // No tab is involved: what follows is the list's and the queue's.
+    assert!(desktop::sidebar::follow_outside_rename(
+        &mut s,
+        &mut q,
+        &key(LOCAL, "a"),
+        &key(LOCAL, "a2")
+    ));
+    assert!(s.take_pin_error().is_ok());
+    assert_eq!(
+        (q.count(&key(LOCAL, "a")), q.count(&key(LOCAL, "a2"))),
+        (0, 1)
+    );
+    s.apply(idle(LOCAL, &["a2", "b"]));
+    assert!(s.is_pinned(&key(LOCAL, "a2")));
+    // Neither pinned nor queued: nothing to follow.
+    assert!(!desktop::sidebar::follow_outside_rename(
+        &mut s,
+        &mut q,
+        &key(LOCAL, "b"),
+        &key(LOCAL, "b2")
+    ));
+}
+
+#[test]
+fn renamed_outside_never_guesses_between_sessions() {
+    let x = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let with = |name: &str, id: Option<&str>| SessionInfo {
+        session_id: id.map(str::to_string),
+        ..session("nas", name, Status::Idle)
+    };
+    // A and B share a conversation (one resumed in two sessions); A is renamed to A2. The new
+    // name is the one the list did not have: never B, which was there all along.
+    let shared = vec![with("a", Some(x)), with("b", Some(x))];
+    let after = snapshot("nas", vec![with("b", Some(x)), with("a2", Some(x))]);
+    assert_eq!(
+        renamed_outside(&shared, &after),
+        [(key("nas", "a"), key("nas", "a2"))]
+    );
+    // Both renamed: which new name is whose is not known, so neither is followed.
+    let both = snapshot("nas", vec![with("a2", Some(x)), with("b2", Some(x))]);
+    assert!(renamed_outside(&shared, &both).is_empty());
+    // Two old names, one new name with their id: ambiguous, nothing is followed.
+    let one = snapshot("nas", vec![with("n", Some(x))]);
+    assert!(renamed_outside(&shared, &one).is_empty());
+    // Renamed onto a name the list already had (its session gone at the same time): that
+    // name is another session's, not this one's.
+    let before = vec![with("a", Some(x)), with("b", None)];
+    let onto = snapshot("nas", vec![with("b", Some(x))]);
+    assert!(renamed_outside(&before, &onto).is_empty());
+    // Renamed, and the old name taken by a new session in the same listing: the old name is
+    // still listed, so whatever has that name keeps it.
+    let reused = snapshot(
+        "nas",
+        vec![with("a", None), with("a2", Some(x)), with("b", None)],
+    );
+    assert!(renamed_outside(&before, &reused).is_empty());
 }

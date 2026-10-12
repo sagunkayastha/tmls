@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use client_core::config::tmls_slug;
 use client_core::{Config, HostColor, HostSnapshot, SessionInfo, SessionKey, Status, Tool};
 use desktop::draw::{
-    Chrome, Layout, Rect, RowLook, Span, TabView, View, header_spans, layer_order, layout,
-    session_spans,
+    Chrome, Layout, POLL_ONLY, Rect, RowLook, Span, TabView, View, header_spans, header_spans_with,
+    layer_order, layout, session_spans,
 };
 use desktop::sidebar::{Row, Sidebar};
 use desktop::theme::{self, SIDEBAR_COLS, Theme, host_rgb, mark_rgb};
@@ -40,6 +40,9 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         last_output_age_s: None,
         pid: None,
         session_id: None,
+        pane: None,
+        activity: None,
+        last_reply: None,
     }
 }
 
@@ -106,13 +109,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         sidebar_focused,
         tabs: tabs.iter().map(|key| tab(key)).collect(),
         active,
-        status: String::new(),
-        notice: None,
-        panel: None,
-        sketch: false,
-        unread: 0,
-        side: None,
-        side_focused: false,
+        ..View::default()
     }
 }
 
@@ -642,7 +639,7 @@ fn legend_and_buttons_sit_level_with_the_terminals_last_row() {
     );
     assert!(l.buttons.bottom() < l.sidebar.bottom());
     assert_eq!(l.legend.bottom(), l.buttons.y);
-    assert_eq!(l.legend.h, 5.0 * l.cell.1);
+    assert_eq!(l.legend.h, 6.0 * l.cell.1);
     assert!(l.list.bottom() <= l.legend.y);
     // One mark of each status's colour in the legend — the ★ has the `?`'s colour — then one
     // letter for each agent, and a line above it all.
@@ -662,6 +659,16 @@ fn legend_and_buttons_sit_level_with_the_terminals_last_row() {
         let (_, colour) = theme::tool_letter(tool).unwrap();
         assert_eq!(glyphs(&quads, l.legend, colour).len(), 1, "{tool:?}");
     }
+    assert_eq!(
+        glyphs(&quads, l.legend, theme::UNREAD_RGB).len(),
+        1,
+        "• unread"
+    );
+    assert_eq!(
+        glyphs(&quads, l.legend, theme::QUEUED_RGB).len(),
+        1,
+        "✉ queued"
+    );
     let above = Rect {
         y: l.legend.y - 4.0,
         h: 4.0,
@@ -861,4 +868,78 @@ fn the_sidebar_renders_offscreen() {
     } else {
         println!("NOT SAVED: {PICTURE} (its directory is not here)");
     }
+}
+
+#[test]
+fn unread_shows_a_dot_after_the_name_before_the_star() {
+    let info = session(LOCAL, "work", Status::Idle);
+    let look = RowLook {
+        unread: true,
+        pinned: true,
+        ..RowLook::default()
+    };
+    let said = spans(&info, look);
+    let (name, dot, star) = (find(&said, "work"), find(&said, "•"), find(&said, "★"));
+    assert_eq!(dot.col, name.col + 4 + 1);
+    assert_eq!(star.col, dot.col + 2);
+    assert_eq!(dot.colour, theme::UNREAD_RGB);
+    assert_within(&said);
+    // Without it nothing moves: the ★ is right after the name.
+    let pinned = spans(
+        &info,
+        RowLook {
+            pinned: true,
+            ..RowLook::default()
+        },
+    );
+    assert_eq!(find(&pinned, "★").col, name.col + 4 + 1);
+    assert!(!pinned.iter().any(|span| span.text == "•"));
+}
+
+#[test]
+fn a_host_without_events_says_poll_dimly() {
+    let theme = Theme::default();
+    let said = header_spans_with("nas", true, true, SIDEBAR_COLS, &theme);
+    let poll = find(&said, POLL_ONLY);
+    assert_eq!((poll.col, poll.colour), (1 + 3 + 1, theme.dim_fg));
+    assert!(said.iter().any(|span| span.text == "+"), "the + stays");
+    assert_eq!(
+        header_spans_with("nas", true, false, SIDEBAR_COLS, &theme),
+        header_spans("nas", true, SIDEBAR_COLS, &theme)
+    );
+    assert!(
+        !header_spans_with("nas", false, true, SIDEBAR_COLS, &theme)
+            .iter()
+            .any(|span| span.text == POLL_ONLY),
+        "offline says offline"
+    );
+    assert_within(&header_spans_with(
+        &"h".repeat(40),
+        true,
+        true,
+        SIDEBAR_COLS,
+        &theme,
+    ));
+}
+
+#[test]
+fn queued_messages_show_before_the_dot_and_the_star() {
+    let info = session(LOCAL, "work", Status::Running);
+    let look = RowLook {
+        queued: 2,
+        unread: true,
+        pinned: true,
+        ..RowLook::default()
+    };
+    let said = spans(&info, look);
+    let (name, queued, dot, star) = (
+        find(&said, "work"),
+        find(&said, "2✉"),
+        find(&said, "•"),
+        find(&said, "★"),
+    );
+    assert_eq!(queued.col, name.col + 4 + 1);
+    assert_eq!((dot.col, star.col), (queued.col + 3, queued.col + 5));
+    assert_eq!(queued.colour, theme::QUEUED_RGB);
+    assert_within(&said);
 }

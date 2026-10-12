@@ -4,8 +4,9 @@ use client_core::SessionKey;
 use client_core::tmux::{NewSession, Start};
 use desktop::forms::Request;
 use desktop::keys::{
-    Focus, Global, ListKey, PanelKey, RepeatGate, Route, focus_after_close, focus_after_panel,
-    global, keys_at, leaves_panel, list_keeps_keys, list_key, panel_key, route,
+    Focus, Global, HELP, ListKey, PanelKey, RepeatGate, Route, focus_after_close,
+    focus_after_panel, global, help_panel, help_text, keys_at, leaves_panel, list_keeps_keys,
+    list_key, panel_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -608,4 +609,93 @@ fn a_panel_that_is_not_drawn_does_not_keep_the_keys() {
         route(&ch('j', NONE), focus, Some(TabState::Live)),
         Route::Terminal
     );
+}
+
+#[test]
+fn question_mark_in_the_list_opens_the_help() {
+    assert_eq!(list_key(&ch('?', SHIFT)), Some(ListKey::Help));
+    assert_eq!(list_key(&ch('?', NONE)), Some(ListKey::Help));
+    assert_eq!(list_key(&repeat(&ch('?', SHIFT))), None);
+    assert_eq!(list_key(&ch('?', CTRL)), None);
+    assert_eq!(list_key(&ch('?', ALT_SHIFT)), None);
+}
+
+/// The chords of a group, split into their words (`j / k  ↑ / ↓` → j, k, ↑, ↓).
+fn chords(group: &str) -> Vec<&'static str> {
+    let rows = HELP.iter().find(|(name, _)| *name == group).expect(group).1;
+    rows.iter()
+        .flat_map(|(chord, _)| chord.split([' ', '/']))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+#[test]
+fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
+    let list = chords("List");
+    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'y', 's', '?'] {
+        let mods = if c == '?' { SHIFT } else { NONE };
+        assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
+        assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
+    }
+    let everywhere: Vec<&str> = HELP[0].1.iter().map(|(chord, _)| *chord).collect();
+    assert_eq!(HELP[0].0, "Everywhere");
+    for c in ['n', 'w', 'x', 'f', 'a'] {
+        assert!(
+            global(&ch(c, ALT_SHIFT), Focus::Terminal).is_some(),
+            "Alt+Shift+{c} is bound"
+        );
+        let chord = format!("Alt+Shift+{}", c.to_ascii_uppercase());
+        assert!(
+            everywhere.contains(&chord.as_str()),
+            "{chord} is in the help"
+        );
+    }
+}
+
+#[test]
+fn the_help_panel_shows_every_row_and_fits_a_small_window() {
+    let panel = help_panel();
+    let texts: Vec<&str> = panel.cells.iter().map(|cell| cell.text.as_str()).collect();
+    for (group, rows) in HELP {
+        assert!(texts.contains(group), "{group}");
+        for (chord, what) in *rows {
+            assert!(texts.contains(chord), "{chord} uncut");
+            assert!(texts.contains(what), "{what} uncut");
+        }
+    }
+    assert!(panel.lines <= 40, "{} lines", panel.lines);
+    assert!(panel.cols <= 110, "{} columns", panel.cols);
+}
+
+#[test]
+fn help_text_is_the_same_table() {
+    let text = help_text();
+    for (group, rows) in HELP {
+        assert!(text.contains(&format!("{group}\n")));
+        for (chord, what) in *rows {
+            assert!(
+                text.lines()
+                    .any(|line| line.trim_start().starts_with(chord) && line.ends_with(what)),
+                "{chord}"
+            );
+        }
+    }
+}
+
+#[test]
+fn y_in_the_list_approves() {
+    assert_eq!(list_key(&ch('y', NONE)), Some(ListKey::Approve));
+    assert_eq!(list_key(&repeat(&ch('y', NONE))), None);
+    assert_eq!(list_key(&ch('Y', SHIFT)), None);
+}
+
+#[test]
+fn s_in_the_list_and_alt_shift_a_send_a_message() {
+    assert_eq!(list_key(&ch('s', NONE)), Some(ListKey::Send));
+    assert_eq!(list_key(&repeat(&ch('s', NONE))), None);
+    for focus in [Focus::Terminal, Focus::Sidebar] {
+        assert_eq!(global(&ch('A', ALT_SHIFT), focus), Some(Global::Ask));
+        assert_eq!(global(&ch('a', ALT_SHIFT), focus), Some(Global::Ask));
+    }
+    assert_eq!(global(&ch('a', ALT_SHIFT), Focus::Form), None);
 }

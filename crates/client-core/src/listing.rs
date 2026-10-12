@@ -112,6 +112,17 @@ pub struct SessionInfo {
     /// (`~/.claude/projects/*/ID.jsonl`); `None` for a session that is not Claude's, and for an
     /// id that is not one ([`crate::files::valid_session_id`]): it becomes part of a command.
     pub session_id: Option<String>,
+    /// Claude's own tmux pane (`%7`, from its status file's `tmux`); `None` for a session that
+    /// is not Claude's. Approvals and messages go there: after a split the window's active pane
+    /// may be a shell.
+    pub pane: Option<String>,
+    /// When the session last had news, by the host's clock (s): for a Claude session the time
+    /// of its last status change, for any other its newest window output; `None` outside tmux.
+    /// What "unread" compares (`seen`).
+    pub activity: Option<u64>,
+    /// The first line of Claude's last reply (at most 120 characters), from a pushed `Stop`
+    /// event; a listing never has it (D10).
+    pub last_reply: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,16 +167,18 @@ true
 "##;
 
 /// The command that lists `host`; the caller writes [`LISTING_SCRIPT`] to its stdin.
-/// This machine (`host == local_name`) runs `sh -s`; any other host runs it over ssh, which
-/// must not prompt (`BatchMode`) and gives up connecting after 5 s.
+/// This machine (`host == local_name`) runs `sh -s`; any other host runs it over ssh
+/// (`tmux::ssh_base`: keepalive, the shared connection), which must not prompt (`BatchMode`) and
+/// gives up connecting after 5 s.
 pub fn listing_command(host: &str, local_name: &str) -> std::process::Command {
     if host == local_name {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-s");
         cmd
     } else {
-        let mut cmd = std::process::Command::new("ssh");
-        cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "sh", "-s"]);
+        let argv = crate::tmux::ssh_base(host, &["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]);
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]).args(["sh", "-s"]);
         cmd
     }
 }
@@ -173,6 +186,8 @@ pub fn listing_command(host: &str, local_name: &str) -> std::process::Command {
 /// One Claude Code session, from its status file and the lines the script printed after it.
 struct Claude {
     session: String,
+    /// Its tmux pane id (`%N`), if its `tmux` names one.
+    pane: Option<String>,
     status: Option<String>,
     since: i64,
     waiting: Option<String>,
@@ -201,6 +216,8 @@ impl Claude {
         Some(Claude {
             // "SESSION:@WINDOW.%PANE"
             session: pane.rsplit_once(':').map_or(pane, |(session, _)| session).to_string(),
+            // "SESSION:@WINDOW.%PANE": the pane is what follows the last dot, if it is an id
+            pane: pane.rsplit_once('.').map(|(_, id)| id).filter(|id| crate::tmux::valid_pane(id)).map(str::to_string),
             status: text("status"),
             since: millis.div_euclid(1000),
             waiting: text("waitingFor"),
@@ -393,6 +410,13 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
                 last_output_age_s: Some(age),
                 pid: None,
                 session_id: claude.and_then(|c| c.id.clone()),
+                pane: claude.and_then(|c| c.pane.clone()),
+                // Claude repaints its status line every minute: its news is its status time
+                activity: Some(match claude.filter(|c| c.status.is_some()) {
+                    Some(c) => c.since.max(0) as u64,
+                    None => w.activity,
+                }),
+                last_reply: None,
             }
         })
         .collect();
@@ -422,6 +446,9 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
             last_output_age_s: None,
             pid: Some(pid),
             session_id: file.id.clone(),
+            pane: None,
+            activity: None,
+            last_reply: None,
         });
     }
     HostSnapshot { host: host.to_string(), online: true, error: None, sessions }

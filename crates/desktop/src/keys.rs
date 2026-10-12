@@ -6,8 +6,13 @@
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the
-//!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts
+//!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts,
+//!   y — answer the cursor's session's permission prompt (Yes / No / Cancel),
+//!   s — the message form (send now, or queue while the session is busy)
+//! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
+//!   click beside it closes it
 //! - Alt+Shift+N — the next session that waits for the user
+//! - Alt+Shift+A — the message form for the front tab's Claude session
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
 //! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here a file's
 //!   panel never has the keys, so Esc stays the terminal's)
@@ -64,6 +69,8 @@ pub enum Global {
     /// the panel if it is open.
     ToggleFiles,
     NextWaiting,
+    /// The message form for the front tab's Claude session.
+    Ask,
     Quit,
     ZoomIn,
     ZoomOut,
@@ -132,6 +139,7 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
             Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
             Key::Char(c) if c.eq_ignore_ascii_case(&'f') => Some(Global::ToggleFiles),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'a') => Some(Global::Ask),
             _ => None,
         };
     }
@@ -245,11 +253,25 @@ pub enum ListKey {
     Menu,
     /// The list of alerts.
     Alerts,
+    /// The keys and mouse actions (`?`).
+    Help,
+    /// Approve the permission prompt of the session under the cursor.
+    Approve,
+    /// Send or queue a message to the cursor's Claude session.
+    Send,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
 pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
-    if !ev.pressed || ev.mods != NONE {
+    if !ev.pressed {
+        return None;
+    }
+    // `?` is Shift+/ on most layouts: Shift may be down.
+    let plain = !ev.mods.ctrl && !ev.mods.alt && !ev.mods.logo;
+    if ev.key == Key::Char('?') && plain && !ev.repeat {
+        return Some(ListKey::Help);
+    }
+    if ev.mods != NONE {
         return None;
     }
     match ev.key {
@@ -261,6 +283,8 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('c') if !ev.repeat => Some(ListKey::New),
         Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
         Key::Char('a') if !ev.repeat => Some(ListKey::Alerts),
+        Key::Char('y') if !ev.repeat => Some(ListKey::Approve),
+        Key::Char('s') if !ev.repeat => Some(ListKey::Send),
         _ => None,
     }
 }
@@ -348,7 +372,7 @@ pub fn keys_at(focus: Focus, focus_before: Focus, modal: bool) -> Focus {
 /// session's tab takes them.
 pub fn list_keeps_keys(request: &Request, keys_were: Focus) -> bool {
     match request {
-        Request::New(_) => false,
+        Request::New(_) | Request::Answer { .. } => false,
         Request::Rename(..) | Request::Kill(_) => keys_were == Focus::Sidebar,
     }
 }
@@ -377,4 +401,130 @@ impl RepeatGate {
         }
         !(ev.pressed && ev.repeat && self.holding)
     }
+}
+
+/// Every key and mouse action, grouped: the help panel (`?`) and `tmls-rs keys` print this
+/// one table, so neither can drift from the other. Each description fits 31 columns.
+pub const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Everywhere",
+        &[
+            ("Ctrl+Q", "quit; the sessions keep running"),
+            ("Ctrl+= / Ctrl+−", "font size"),
+            ("Alt+Shift+→ / ←", "next / previous pinned or tab"),
+            ("Alt+Shift+↑", "the keys to the session list"),
+            ("Alt+Shift+N", "next that waits, else unread"),
+            ("Alt+Shift+A", "send a message to this tab"),
+            ("Alt+Shift+W", "close the tab (session lives)"),
+            ("Alt+Shift+F", "images this session made"),
+            ("Alt+Shift+X", "close the file panel"),
+        ],
+    ),
+    (
+        "List",
+        &[
+            ("j / k  ↑ / ↓", "move"),
+            ("Enter", "attach"),
+            ("Esc", "keys back to the terminal"),
+            ("p", "pin or unpin (★)"),
+            ("n", "next that waits, else unread"),
+            ("c", "new session on this host"),
+            ("m", "the session's menu"),
+            ("a", "alerts"),
+            ("?", "this help"),
+            ("y", "approve a permission prompt"),
+            ("s", "send or queue a message"),
+            ("click", "attach; on + a new session"),
+            ("right-click", "the session's menu"),
+            ("middle-click", "pin or unpin"),
+        ],
+    ),
+    (
+        "Terminal",
+        &[
+            ("Ctrl+Shift+C", "copy the selection"),
+            ("Ctrl+Shift+V", "paste"),
+            ("Ctrl+C", "copies when text is selected"),
+            ("drag", "select (Shift+drag in tmux)"),
+            ("Ctrl+click", "open a link or a file"),
+            ("Shift+wheel", "scroll here, not in tmux"),
+            ("Enter", "reattach a tab that ended"),
+        ],
+    ),
+    (
+        "Panel",
+        &[
+            ("j / k", "move in the image list"),
+            ("Enter", "open the picture"),
+            ("Backspace / Esc", "back"),
+            ("drag the divider", "the panel's width"),
+        ],
+    ),
+    (
+        "Forms",
+        &[
+            ("Tab / Shift+Tab", "next / previous field"),
+            ("Enter", "the focused button"),
+            ("Esc", "cancel"),
+            ("↑ / ↓", "choose; a saved message"),
+            ("n", "No, in an approval"),
+            ("Ctrl+Shift+V", "paste into the field"),
+        ],
+    ),
+];
+
+/// Columns of a chord and of its description in the help panel.
+const HELP_CHORD_COLS: usize = 20;
+const HELP_WHAT_COLS: usize = 32;
+/// The groups of the left column; the rest go right.
+const HELP_LEFT_GROUPS: usize = 2;
+
+/// `HELP` as plain text, for `tmls-rs keys`.
+pub fn help_text() -> String {
+    let mut out = String::new();
+    for (group, rows) in HELP {
+        out.push_str(group);
+        out.push('\n');
+        for (chord, what) in *rows {
+            out.push_str(&format!("  {chord:<w$}{what}\n", w = HELP_CHORD_COLS));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// `HELP` as a panel: a title line, then the groups in two columns.
+pub fn help_panel() -> crate::forms::Panel {
+    use crate::forms::{Look, Panel};
+    let column = HELP_CHORD_COLS + HELP_WHAT_COLS;
+    let cols = 2 + column + 2 + column + 2;
+    let mut p = Panel::new(cols);
+    p.put(
+        0,
+        2,
+        cols - 4,
+        "Keys and mouse · Esc or ? closes",
+        Look::Title,
+    );
+    let mut bottom = 0;
+    for (index, groups) in [&HELP[..HELP_LEFT_GROUPS], &HELP[HELP_LEFT_GROUPS..]]
+        .into_iter()
+        .enumerate()
+    {
+        let x = 2 + index * (column + 2);
+        let mut line = 2;
+        for (group, rows) in groups {
+            p.put(line, x, column, group, Look::Label);
+            line += 1;
+            for (chord, what) in *rows {
+                p.put(line, x, HELP_CHORD_COLS - 1, chord, Look::Text);
+                p.put(line, x + HELP_CHORD_COLS, HELP_WHAT_COLS, what, Look::Dim);
+                line += 1;
+            }
+            line += 1;
+        }
+        bottom = bottom.max(line);
+    }
+    p.lines = bottom;
+    p
 }

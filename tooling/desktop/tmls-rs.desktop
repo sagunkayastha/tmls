@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=tmls-rs
+Comment=tmux sessions across hosts
+Exec=tmls-rs
+Icon=tmls-rs
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=tmls-rs

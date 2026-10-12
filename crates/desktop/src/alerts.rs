@@ -18,8 +18,8 @@
 //! `desktop` (default on) and `silence_focused` (default on). `sound` is tmls's; this app
 //! plays none. A missing or damaged file, or a value that is not a boolean, is the default.
 //!
-//! **Approvals** (tmls's Yes / No on a permission prompt) are not built: nothing here sends
-//! a key to a session.
+//! **Approvals** (tmls's Yes / No on a permission prompt): `y` on an alert asks the app to
+//! answer its session's prompt (`PanelResult::Approve`); nothing here sends a key to a session.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -238,6 +238,8 @@ pub enum PanelResult {
     Closed,
     /// Go to this alert's session.
     Jump(SessionKey),
+    /// Answer this alert's session's permission prompt.
+    Approve(SessionKey),
 }
 
 /// What a jump to an alert's session does: opens its tab, or says in the status line why
@@ -300,6 +302,11 @@ impl AlertsPanel {
             Key::Named(Named::Enter) if !ev.repeat => {
                 return self.selected().map_or(PanelResult::Pending, |alert| {
                     PanelResult::Jump(alert.key.clone())
+                });
+            }
+            Key::Char('y') if !ev.repeat => {
+                return self.selected().map_or(PanelResult::Pending, |alert| {
+                    PanelResult::Approve(alert.key.clone())
                 });
             }
             Key::Named(Named::Escape) => return PanelResult::Closed,

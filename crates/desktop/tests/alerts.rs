@@ -34,6 +34,9 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         last_output_age_s: None,
         pid: None,
         session_id: None,
+        pane: None,
+        activity: None,
+        last_reply: None,
     }
 }
 
@@ -726,5 +729,22 @@ fn a_session_that_finishes_in_the_list_alerts_and_its_alert_outlives_it() {
     assert_eq!(
         jump(&front, list.status(&front).is_some(), false, true),
         Ok(())
+    );
+}
+
+#[test]
+fn y_on_an_alert_asks_to_approve_its_session() {
+    let mut alerts = Alerts::new(Settings::default());
+    let idle = session(HOST, "ask", Status::Idle);
+    alerts.observe(HOST, true, [&idle], AWAY, Instant::now());
+    let asking = SessionInfo {
+        reason: Some("permission prompt".to_string()),
+        ..session(HOST, "ask", Status::Waiting)
+    };
+    alerts.observe(HOST, true, [&asking], AWAY, Instant::now());
+    let mut panel = alerts.open(Instant::now());
+    assert_eq!(
+        panel.key(&press(Key::Char('y'))),
+        PanelResult::Approve(key(HOST, "ask"))
     );
 }

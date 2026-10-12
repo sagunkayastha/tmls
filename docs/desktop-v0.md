@@ -25,7 +25,7 @@ but does nothing yet, it says "not built yet".
 
 ## Not in v0
 
-`ag`, `ct`, approvals, Ask / queue, prompts, the file viewer, image paste, quick select, the
+`ag`, `ct`, the file viewer, image paste, quick select, the
 splits menu, kitty (non-tmux) sessions, web, Android, Windows.
 
 ## Build
@@ -48,10 +48,25 @@ target-docker/release/tmls-rs [HOST…] [--bench DIR]
   always listed when it has tmux.
 - `--bench DIR` — writes a latency log to `DIR/latency.jsonl`. Only the first tab opened is
   logged.
+- `--foreground` (or `--fg`) — stay attached to the terminal (see below).
+
+`tmls-rs` returns the shell at once, like a desktop app: it starts itself again as its own
+process in a new session (no controlling terminal, stdin from `/dev/null`, same working
+directory) and exits; closing the terminal leaves the window up. Nothing is printed. Its
+stdout and stderr (errors, adapter and focus lines) go to `$XDG_CACHE_HOME/tmls-rs/tmls-rs.log`,
+else `~/.cache/tmls-rs/tmls-rs.log`, emptied at each launch, so it holds the last run only.
+
+It stays in the foreground instead, with its output on the terminal, when given
+`--foreground`/`--fg`, with `--bench`, with `TMLS_RS_FOREGROUND=1` in the environment, for the
+`tmls-rs keys` subcommand, when the arguments are wrong (the usage is printed), or when the log
+file cannot be opened (the reason is printed). `tmls-rs HOST…` detaches like `tmls-rs`.
 
 Hosts are reached with your own ssh setup (keys, `~/.ssh/config`). Listing never asks for a
 password: a host that needs one shows as offline. Attaching runs ssh inside the tab, so a
 prompt from ssh shows there.
+
+`tooling/desktop/install.sh [/abs/path/to/tmls-rs]` puts the icon and `tmls-rs.desktop` under `~/.local/share` (`uninstall.sh` removes them).
+Once installed, the icon (Rem's face) and the name show in the task bar and the launcher: Wayland takes the icon from the desktop entry via the window's `app_id` `tmls-rs`; the embedded icon is for X11.
 
 ## Config files
 
@@ -66,67 +81,88 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
 | `sketchpad` | the sketchpad hub's address, first line | read |
+| `prompts` | saved messages for the Send form, one per line; `#` starts a comment (default: `What's the progress?`) | read |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.
+
+Also read, never written: `~/.cache/tmls/events.jsonl` on each host (written by `tmls hooks install`; without it the host's header says `· poll`). Environment: `TMLS_RS_POLL_S` (listing period in seconds, default 5), `TMLS_RS_NO_CONTROLMASTER=1` (no shared ssh connection; the keepalive stays). ssh sockets: `$XDG_RUNTIME_DIR/tmls-rs/cm-*`, else `~/.cache/tmls-rs/cm-*`.
 
 ## Keys
 
 The keyboard focus is on the terminal of the front tab, on the session list, or in an open
 form or menu. At start it is on the list. Opening or switching a tab moves it to the terminal.
 
-Everywhere:
+The full table is in the app (`?` in the list, or the `?` button) and on the command line:
 
-| Key | Does |
-| --- | --- |
-| Ctrl+Q | quit (sessions keep running) |
-| Ctrl+= or Ctrl++ | larger font |
-| Ctrl+- | smaller font |
-| Alt+Shift+Right / Left | next / previous pinned (★) session, opening its tab if needed; with nothing pinned, next / previous tab, or next / previous session while fewer than two tabs are open |
-| Alt+Shift+Up | focus to the session list |
-| Alt+Shift+N | open the next session that waits for you |
-| Alt+Shift+W | close the front tab (the session lives on) |
+```text
+Everywhere
+  Ctrl+Q              quit; the sessions keep running
+  Ctrl+= / Ctrl+−     font size
+  Alt+Shift+→ / ←     next / previous pinned or tab
+  Alt+Shift+↑         the keys to the session list
+  Alt+Shift+N         next that waits, else unread
+  Alt+Shift+A         send a message to this tab
+  Alt+Shift+W         close the tab (session lives)
+  Alt+Shift+F         images this session made
+  Alt+Shift+X         close the file panel
 
-In the session list:
+List
+  j / k  ↑ / ↓        move
+  Enter               attach
+  Esc                 keys back to the terminal
+  p                   pin or unpin (★)
+  n                   next that waits, else unread
+  c                   new session on this host
+  m                   the session's menu
+  a                   alerts
+  ?                   this help
+  y                   approve a permission prompt
+  s                   send or queue a message
+  click               attach; on + a new session
+  right-click         the session's menu
+  middle-click        pin or unpin
 
-| Key | Does |
-| --- | --- |
-| j / Down, k / Up | move the cursor |
-| Enter | attach the session under the cursor |
-| p | pin or unpin it |
-| n | open the next session that waits for you |
-| c | new-session form, for the host of the session under the cursor |
-| m | menu of the session under the cursor: Rename, Kill…, Open in new terminal, Copy attach command |
-| a | the list of alerts |
-| Esc | focus back to the terminal |
+Terminal
+  Ctrl+Shift+C        copy the selection
+  Ctrl+Shift+V        paste
+  Ctrl+C              copies when text is selected
+  drag                select (Shift+drag in tmux)
+  Ctrl+click          open a link or a file
+  Shift+wheel         scroll here, not in tmux
+  Enter               reattach a tab that ended
 
-In a form (new session, rename, kill confirm):
+Panel
+  j / k               move in the image list
+  Enter               open the picture
+  Backspace / Esc     back
+  drag the divider    the panel's width
 
-| Key | Does |
-| --- | --- |
-| Tab / Shift+Tab | next / previous field or button |
-| Left / Right / Up / Down | on Host or Start: choose; on a button: the other button; in a field: move the caret |
-| Enter | Create / Rename, from any field; on Cancel: cancel |
-| Esc | cancel |
-| Ctrl+A | select the field's text |
-| Ctrl+Shift+V | paste into the field |
+Forms
+  Tab / Shift+Tab     next / previous field
+  Enter               the focused button
+  Esc                 cancel
+  ↑ / ↓               choose; a saved message
+  n                   No, in an approval
+  Ctrl+Shift+V        paste into the field
+```
 
-In the menu: Up / Down or k / j move, Enter picks, any other key closes it.
+**Approvals.** On a session that waits for a permission (`?`), `y` in the list, `y` in the
+list of alerts, or Menu → Approve… opens a form with the dialog as the session shows it. Enter
+answers Yes (sends `1`), `n` answers No (sends Esc), Esc cancels and sends nothing. The dialog
+is read again just before the key is sent: if it changed, nothing is sent and the status line
+says the session isn't asking that any more. A form that arrives late is dropped if you typed
+into the session meanwhile.
 
-In the list of alerts: Up / Down or k / j move, Enter goes to the session, Esc closes.
+**Messages.** `s` on a Claude session in the list, Alt+Shift+A in its tab, or Menu → Send
+message… opens a form with your saved prompts (`~/.config/tmls/prompts`). A message to a session
+that is running or waiting is queued (`N✉` on the row) and sent one per turn end; the queue is
+kept in memory and lost at quit. If sending fails the message stays queued.
 
-The Alt+Shift keys do nothing while a form or menu is open. Ctrl+Q and zoom still work.
-
-In the terminal:
-
-| Key | Does |
-| --- | --- |
-| Enter on an ended tab | reattach |
-| Ctrl+Shift+C | copy the selection |
-| Ctrl+C | with text selected: copy it and end the selection; else it goes to the session (interrupt) |
-| Ctrl+Shift+V | paste |
-| every other key | goes to the session unchanged (Tab, Esc, Alt+letters included) |
+**Unread.** A session with output you have not looked at has `•` after its name. Alt+Shift+N
+(and `n` in the list) visits the sessions that wait; when none waits it visits the unread ones.
 
 Keys typed while the focus is on the list, in a form or in a menu reach no session.
+
 
 ## New session, rename, kill
 
@@ -189,8 +225,8 @@ panel saves): `"desktop": false` turns the notifications off, `"silence_focused"
 alerts for the tab you are looking at too. The app never writes that file and has no switches
 of its own. tmls's `sound` switch is ignored: the app plays no sound.
 
-Not built: approvals (tmls's Yes / No on a Claude permission prompt). Nothing in the alerts
-sends a key to a session.
+Approvals (tmls's Yes / No on a Claude permission prompt) are done from the list or the alerts
+with `y`; see "Keys". Nothing else in the alerts sends a key to a session.
 
 ## Claude outside tmux
 
@@ -216,6 +252,9 @@ not found. Other hosts' sessions outside tmux are not shown, as in tmls. They ra
 | click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
+| the `?` button | the keys and mouse actions |
+| right-click a session that asks | its menu starts with Approve… |
+| right-click a Claude session | its menu ends with Send message… |
 | `+` on a host's header | new-session form for that host |
 | `New` button | new-session form for the host of the session under the cursor |
 | `Open` button | attach the session under the cursor |
@@ -226,6 +265,8 @@ not found. Other hosts' sessions outside tmux are not shown, as in tmls. They ra
 | click an alert | go to its session; a click beside the list closes it |
 
 ### Mouse in the terminal
+
+Every copy and paste says in the status line what it did (`copied N chars`, `nothing selected`, `pasted N chars`, `clipboard empty`, or why it failed).
 
 A program in the session can ask for the mouse; tmux does with `set -g mouse on`. What the
 mouse does over the terminal depends on that:
@@ -257,10 +298,9 @@ Not built yet:
 
 - the `⋯` at the end of a session row that tmls has (use right-click or `m`);
 - window and pane actions of tmls's menu (new window, split, kill pane);
-- the `?` button (key help);
 - file paths and `file:line` as links, and tmls's quick select (Alt+Shift+S);
 - right-click paste in the terminal;
-- in the alerts: approvals (Yes / No), sound, and switches in the app.
+- in the alerts: sound, and switches in the app.
 
 ## Smoke test
 

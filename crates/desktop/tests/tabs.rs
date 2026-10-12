@@ -344,3 +344,15 @@ fn resize_reaches_the_active_pty() {
         screen(&mut tabs, 1).contains("5 30")
     });
 }
+
+#[test]
+fn rekey_gives_a_tab_a_new_key_and_keeps_its_session() {
+    let _serial = serial();
+    let mut tabs = tabs(&[("old", "sleep 30".to_string())]);
+    let index = tabs.open(&key("old"), GRID).unwrap();
+    tabs.rekey(index, key("new"));
+    assert_eq!(tabs.key(index), &key("new"));
+    assert_eq!(tabs.index_of(&key("old")), None);
+    assert_eq!(tabs.index_of(&key("new")), Some(index));
+    assert_eq!(tabs.state(index), TabState::Live);
+}

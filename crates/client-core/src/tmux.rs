@@ -10,12 +10,15 @@
 //! Nothing here strips `TMUX` from the environment. A caller that attaches from a process which
 //! itself runs inside tmux has to remove it for the attach child (tmux refuses to nest).
 
-use std::io::{ErrorKind, Read};
+use std::ffi::OsStr;
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 
@@ -80,9 +83,76 @@ pub(crate) fn strings(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
+/// What every ssh tmls-rs starts says first: a probe every 15 s, given up after three
+/// unanswered, so a link that died (a laptop asleep, Wi-Fi gone) ends the command — and an
+/// attached tab shows "ended" — within 45 s instead of hanging.
+const KEEPALIVE: [&str; 4] = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+
+/// The ControlMaster options, once `use_control_master` ran; never set in a process that does
+/// not call it (the tests), whose ssh commands then have the keepalive only.
+static CONTROL: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Where the shared connections' sockets go: `$XDG_RUNTIME_DIR/tmls-rs`, else
+/// `~/.cache/tmls-rs`. `None` when neither is known; when the socket's path would not fit: ssh
+/// binds the ControlPath (the directory, `/cm-`, the 40 characters of `%C`) plus `.` and 16
+/// random characters into a Unix socket's 107 bytes, so the directory has 46 bytes at most; and
+/// when the directory has whitespace or a `%` (`-o ControlPath=` is not quoted, and `%` starts
+/// one of ssh's tokens).
+pub fn control_dir(runtime: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    let dir = match (runtime.filter(|r| !r.is_empty()), home.filter(|h| !h.is_empty())) {
+        (Some(runtime), _) => Path::new(runtime).join("tmls-rs"),
+        (None, Some(home)) => Path::new(home).join(".cache/tmls-rs"),
+        (None, None) => return None,
+    };
+    let bytes = dir.as_os_str().as_encoded_bytes();
+    let plain = !bytes.iter().any(|b| b.is_ascii_whitespace() || *b == b'%');
+    (plain && bytes.len() + 44 <= 90).then_some(dir)
+}
+
+/// One master connection per host, kept 10 minutes after its last user (tmls does the same).
+pub fn control_options(dir: &Path) -> Vec<String> {
+    vec![
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        "ControlPersist=10m".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}/cm-%C", dir.display()),
+    ]
+}
+
+/// Whether to share connections, from `TMLS_RS_NO_CONTROLMASTER`: off only for `1`.
+pub fn control_wanted(value: Option<&OsStr>) -> bool {
+    value != Some(OsStr::new("1"))
+}
+
+/// Makes `dir` (mode 0700, also when it existed with another mode) and from then on every ssh
+/// this process starts shares one connection per host through it. Call once, at start; a
+/// second call changes nothing.
+pub fn use_control_master(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let _ = CONTROL.set(control_options(dir));
+    Ok(())
+}
+
+/// The start of every ssh argv: `ssh`, the keepalive, the shared connection once switched on,
+/// `flags`, then `host`. The caller adds the remote command.
+pub fn ssh_base(host: &str, flags: &[&str]) -> Vec<String> {
+    let mut argv = vec!["ssh".to_string()];
+    argv.extend(KEEPALIVE.iter().map(|word| word.to_string()));
+    if let Some(control) = CONTROL.get() {
+        argv.extend(control.iter().cloned());
+    }
+    argv.extend(flags.iter().map(|word| word.to_string()));
+    argv.push(host.to_string());
+    argv
+}
+
 /// `command` run by `host`'s shell without ever prompting (as the listing does).
 pub(crate) fn ssh(host: &str, command: String) -> Vec<String> {
-    let mut argv = strings(&["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host]);
+    let mut argv = ssh_base(host, &["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]);
     argv.push(command);
     argv
 }
@@ -100,7 +170,9 @@ pub fn attach_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     if key.host == local_name {
         strings(&["tmux", "-u", "attach", "-t", &target])
     } else {
-        strings(&["ssh", "-t", &key.host, &format!("tmux -u attach -t {}", quote(&target))])
+        let mut argv = ssh_base(&key.host, &["-t"]);
+        argv.push(format!("tmux -u attach -t {}", quote(&target)));
+        argv
     }
 }
 
@@ -201,6 +273,60 @@ pub fn running_commands_argv(key: &SessionKey, local_name: &str) -> Vec<String> 
     }
 }
 
+/// What a command for Claude's pane targets: the pane (`%7`) when the listing has a valid one,
+/// else the session's current pane (`=NAME:`).
+pub fn pane_target(key: &SessionKey, pane: Option<&str>) -> String {
+    match pane.filter(|pane| valid_pane(pane)) {
+        Some(pane) => pane.to_string(),
+        None => format!("={}:", key.name),
+    }
+}
+
+/// Prints what the pane shows now (tmls `approve._capture_script`).
+pub fn capture_argv(key: &SessionKey, pane: Option<&str>, local_name: &str) -> Vec<String> {
+    let target = pane_target(key, pane);
+    if key.host == local_name {
+        strings(&["tmux", "capture-pane", "-p", "-t", &target])
+    } else {
+        ssh(&key.host, format!("tmux capture-pane -p -t {}", quote(&target)))
+    }
+}
+
+/// Presses `keys` (a tmux key name: `1`, `Escape`, `Enter`) in the pane.
+pub fn send_keys_argv(key: &SessionKey, pane: Option<&str>, keys: &str, local_name: &str) -> Vec<String> {
+    let target = pane_target(key, pane);
+    if key.host == local_name {
+        strings(&["tmux", "send-keys", "-t", &target, keys])
+    } else {
+        ssh(&key.host, format!("tmux send-keys -t {} {}", quote(&target), quote(keys)))
+    }
+}
+
+/// Types the text on the script's stdin into `target` and presses Enter (tmls `prompts.send`):
+/// through a paste buffer of its own (`buffer`), as a bracketed paste when the program asks for
+/// one, so a message of several lines arrives whole; the buffer is deleted after the paste, or
+/// when the paste fails. The text never appears in the script.
+pub fn send_text_script(target: &str, buffer: &str) -> String {
+    let (t, b) = (quote(target), quote(buffer));
+    format!(
+        "tmux load-buffer -b {b} - && {{ tmux paste-buffer -p -d -b {b} -t {t} || {{ tmux delete-buffer -b {b}; false; }}; }} && sleep 0.2 && tmux send-keys -t {t} Enter"
+    )
+}
+
+/// [`send_text_script`] for Claude's pane of the session (`pane_target`), here or on its host.
+pub fn send_text_argv(key: &SessionKey, pane: Option<&str>, buffer: &str, local_name: &str) -> Vec<String> {
+    script_argv(&key.host, send_text_script(&pane_target(key, pane), buffer), local_name)
+}
+
+/// A paste buffer's name of its own (`tmls-` and 8 hex digits): two sends in the same moment
+/// cannot swap their texts.
+pub fn buffer_name() -> String {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let n = COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    format!("tmls-{:08x}", nanos ^ std::process::id().rotate_left(16) ^ n.wrapping_mul(0x9e37_79b9))
+}
+
 /// tmls's name for a session in `folder` when git knows nothing: the folder's own name.
 pub fn folder_name(folder: &str) -> &str {
     if folder.trim_matches(['~', '/']).is_empty() {
@@ -249,6 +375,12 @@ pub fn valid_session_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `pane` is a tmux pane id (`%` and digits): the only form of a pane that goes into a
+/// command.
+pub fn valid_pane(pane: &str) -> bool {
+    pane.strip_prefix('%').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// What a pipe has given so far, and a channel that closes when the pipe does.
 struct Output {
     bytes: Arc<Mutex<Vec<u8>>>,
@@ -295,7 +427,7 @@ impl Output {
 /// `timeout`, so not for the UI thread. A command that fails gives an error whose text is what
 /// it wrote to stderr (else to stdout); one that is not done after `timeout` is killed, with
 /// everything it started, and is an error too. The command reads nothing: its stdin is
-/// /dev/null.
+/// /dev/null (see [`run_with_stdin`]).
 pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
     run_bytes(argv, timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -303,15 +435,33 @@ pub fn run(argv: &[String], timeout: Duration) -> anyhow::Result<String> {
 /// [`run`], with what the command printed as the bytes they are: for the contents of a file,
 /// which need not be text.
 pub fn run_bytes(argv: &[String], timeout: Duration) -> anyhow::Result<Vec<u8>> {
+    run_input(argv, None, timeout)
+}
+
+/// [`run`] with `input` on the command's stdin (a message for tmux's paste buffer, a text for
+/// `wl-copy`). The input is written on a thread of its own and its end closes stdin.
+pub fn run_with_stdin(argv: &[String], input: &[u8], timeout: Duration) -> anyhow::Result<String> {
+    run_input(argv, Some(input), timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+fn run_input(argv: &[String], input: Option<&[u8]>, timeout: Duration) -> anyhow::Result<Vec<u8>> {
     let (program, args) = argv.split_first().context("empty command")?;
     let mut child = Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0) // its own, so a timeout kills what it started as well
         .spawn()
         .with_context(|| format!("couldn't start {program}"))?;
+    if let (Some(input), Some(mut pipe)) = (input, child.stdin.take()) {
+        let input = input.to_vec();
+        // Not on this thread: a command that writes before it has read everything would wait
+        // for us while we wait for it.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -328,10 +478,13 @@ pub fn run_bytes(argv: &[String], timeout: Duration) -> anyhow::Result<Vec<u8>> 
         std::thread::sleep(TICK);
     };
     let grace = Instant::now() + OUTPUT_GRACE;
-    let (stdout, stderr) = (stdout.bytes(grace), stderr.text(grace));
+    let stdout = stdout.bytes(grace);
+    // A success is its stdout alone: no waiting for a stderr that something it left running
+    // still holds (wl-copy's daemon, which keeps the clipboard).
     if status.success() {
         return Ok(stdout);
     }
+    let stderr = stderr.text(grace);
     let stdout = String::from_utf8_lossy(&stdout);
     let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
     if said.is_empty() {

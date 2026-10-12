@@ -80,7 +80,8 @@ pub enum Action {
 }
 
 /// The dim line under a session's name, and whether it is what Claude waits for (tmls
-/// `pane_row_text`): the reason while it waits, else Claude's title when that is not the name.
+/// `pane_row_text`): the reason while it waits, else Claude's last reply (pushed), else its
+/// title when that is not the name.
 pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
     fn text(text: &Option<String>) -> Option<&str> {
         text.as_deref().map(str::trim).filter(|t| !t.is_empty())
@@ -90,9 +91,72 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
     {
         return Some((reason, true));
     }
+    if let Some(reply) = text(&info.last_reply) {
+        return Some((reply, false));
+    }
     text(&info.title)
         .filter(|title| *title != info.key.name)
         .map(|title| (title, false))
+}
+
+/// A session renamed outside the app (`renamed_outside`): its ★ and its queued messages take
+/// the new name, whether it has a tab or not (the tab is the app's to follow). Whether either
+/// moved; a ★ that could not be moved is in `take_pin_error`.
+pub fn follow_outside_rename(
+    sidebar: &mut Sidebar,
+    queue: &mut crate::queue::Queue,
+    old: &SessionKey,
+    new: &SessionKey,
+) -> bool {
+    let pinned = sidebar.renamed(old, new);
+    let queued = queue.count(old) > 0;
+    queue.renamed(old, new);
+    pinned || queued
+}
+
+/// The sessions of `snap`'s host renamed outside the app since `before` (that host's rows as
+/// the list had them): a name the listing no longer has whose Claude conversation
+/// (`session_id`) it lists under a name the list did not have. Pairs (old, new). Only a
+/// rename nothing else could explain is followed: one name gone and one name new with that
+/// id. Sessions without a Claude id are not followed, nor are two gone or two new with one id
+/// (a conversation resumed in two sessions): nothing says which new name is whose.
+pub fn renamed_outside(
+    before: &[SessionInfo],
+    snap: &HostSnapshot,
+) -> Vec<(SessionKey, SessionKey)> {
+    if !snap.online {
+        return Vec::new();
+    }
+    let ours = |s: &&SessionInfo| s.key.host == snap.host;
+    let listed = |key: &SessionKey| snap.sessions.iter().any(|s| &s.key == key);
+    let had = |key: &SessionKey| before.iter().any(|s| &s.key == key);
+    // The names gone since `before`, and the names new in `snap`, that carry this id.
+    let gone = |id: &String| {
+        before
+            .iter()
+            .filter(ours)
+            .filter(|s| s.session_id.as_ref() == Some(id) && !listed(&s.key))
+            .count()
+    };
+    let new = |id: &String| -> Vec<&SessionInfo> {
+        snap.sessions
+            .iter()
+            .filter(ours)
+            .filter(|s| s.session_id.as_ref() == Some(id) && !had(&s.key))
+            .collect()
+    };
+    before
+        .iter()
+        .filter(ours)
+        .filter(|old| !listed(&old.key))
+        .filter_map(|old| {
+            let id = old.session_id.as_ref()?;
+            match new(id)[..] {
+                [new] if gone(id) == 1 => Some((old.key.clone(), new.key.clone())),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -329,6 +393,14 @@ impl Sidebar {
         })
     }
 
+    /// The session as the list shows it, marks included; `None` when it is not listed.
+    pub fn info(&self, key: &SessionKey) -> Option<&SessionInfo> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Session(info) if info.key == *key => Some(info),
+            _ => None,
+        })
+    }
+
     /// Claude's process, for a listed session outside tmux.
     pub fn pid(&self, key: &SessionKey) -> Option<u32> {
         self.rows.iter().find_map(|row| match row {
@@ -480,6 +552,27 @@ impl Sidebar {
                 .map(|info| info.key.clone())
         };
         next(Status::Waiting).or_else(|| next(Status::Unseen))
+    }
+
+    /// The next session after `after` with news the user has not looked at (`unread`), wrapping
+    /// round: where Alt+Shift+N goes when nothing waits (tmls visits its "done" ones too).
+    /// Never `after` itself, never a session outside tmux.
+    pub fn next_unread(
+        &self,
+        after: Option<&SessionKey>,
+        unread: &dyn Fn(&SessionKey) -> bool,
+    ) -> Option<SessionKey> {
+        let count = self.rows.len();
+        let from = after
+            .and_then(|key| self.position(key))
+            .map_or(0, |at| at + 1);
+        (0..count)
+            .filter_map(|step| match &self.rows[(from + step) % count] {
+                Row::Session(info) => Some(&info.key),
+                _ => None,
+            })
+            .find(|key| Some(*key) != after && key.host != KITTY && unread(key))
+            .cloned()
     }
 
     /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places

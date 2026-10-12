@@ -3,13 +3,15 @@
 //! command string is given to `sh`, `tmux`, `cd`, `git`, `ssh` and `claude` are shell functions
 //! that print their arguments.
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use client_core::listing::SessionKey;
 use client_core::tmux::{
-    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, derived_name_argv, kill_argv, new_session_argv,
-    rename_argv, run, running_commands_argv, valid_session_name,
+    MAX_NAME_CHARS, NewSession, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
+    kill_argv, new_session_argv, rename_argv, run, run_with_stdin, running_commands_argv, send_keys_argv,
+    send_text_argv, send_text_script, valid_session_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -18,8 +20,13 @@ const LOCAL: &str = "archbox";
 /// Names a shell would mangle if any builder forgot to quote.
 const HOSTILE: [&str; 7] = ["a b", "it's", "x\"y", "$HOME", "a;rm", "日本", "-lead"];
 
-/// The words ssh puts before the command for everything but attach.
-const SSH: [&str; 6] = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph"];
+/// The words ssh puts before the command for everything but attach (no `use_control_master`
+/// in this test binary: keepalive only).
+const SSH: [&str; 10] = [
+    "ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ph",
+];
+/// The same for attach: a terminal, and ssh may ask (no BatchMode).
+const ATTACH: [&str; 7] = ["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-t", "ph"];
 
 /// In place of the real programs: each prints its arguments, one per line. `has-session` says
 /// "no such session", so a new-session script goes on.
@@ -71,11 +78,12 @@ fn attach_argv_local_and_remote() {
         v(&["tmux", "-u", "attach", "-t", "=Agent Thing"]),
         "an argv needs no quoting"
     );
-    assert_eq!(attach_argv(&key("ph", "work"), LOCAL), v(&["ssh", "-t", "ph", "tmux -u attach -t '=work'"]));
-    assert_eq!(
-        attach_argv(&key("ph", "Agent Thing"), LOCAL),
-        v(&["ssh", "-t", "ph", "tmux -u attach -t '=Agent Thing'"])
-    );
+    let mut work = v(&ATTACH);
+    work.push("tmux -u attach -t '=work'".to_string());
+    assert_eq!(attach_argv(&key("ph", "work"), LOCAL), work);
+    let mut agent = v(&ATTACH);
+    agent.push("tmux -u attach -t '=Agent Thing'".to_string());
+    assert_eq!(attach_argv(&key("ph", "Agent Thing"), LOCAL), agent);
 }
 
 #[test]
@@ -212,7 +220,7 @@ fn attach_and_ops_quote_hostile_names() {
         let exact = format!("={name}");
         let other = format!("{name} 2");
 
-        let attach = remote(&attach_argv(&key("ph", name), LOCAL), &["ssh", "-t", "ph"]);
+        let attach = remote(&attach_argv(&key("ph", name), LOCAL), &ATTACH);
         assert_eq!(words(&attach), v(&["-u", "attach", "-t", &exact]), "attach {name:?}");
 
         // the copied text, pasted into a shell: ssh gets the command, the host's shell the name
@@ -334,4 +342,68 @@ fn run_kills_a_command_that_takes_too_long() {
     assert!(started.elapsed() < Duration::from_millis(900), "returned after {:?}", started.elapsed());
     std::thread::sleep(Duration::from_millis(1300));
     assert!(!marker.exists(), "what the command started outlived the timeout");
+}
+
+#[test]
+fn run_with_stdin_gives_the_command_its_input() {
+    let argv = v(&["sh", "-c", "cat; echo; echo done"]);
+    assert_eq!(run_with_stdin(&argv, b"a'b $(x)\n", Duration::from_secs(5)).unwrap(), "a'b $(x)\n\ndone\n");
+    let fails = run_with_stdin(&v(&["sh", "-c", "cat >/dev/null; echo nope >&2; exit 3"]), b"x", Duration::from_secs(5));
+    assert_eq!(fails.unwrap_err().to_string(), "nope");
+    // A megabyte does not block: the command reads while the input is written.
+    let big = vec![b'x'; 1 << 20];
+    assert_eq!(run_with_stdin(&v(&["wc", "-c"]), &big, Duration::from_secs(5)).unwrap().trim(), "1048576");
+}
+
+#[test]
+fn run_does_not_wait_for_a_stderr_held_open_after_success() {
+    // wl-copy's daemon (wl-clipboard 2.1) keeps the clipboard after wl-copy exits: its stdin and
+    // stdout go to /dev/null, its stderr stays the pipe. A success needs no stderr.
+    let started = Instant::now();
+    let argv = v(&["sh", "-c", "cat >/dev/null; sleep 3 </dev/null >/dev/null & echo ok"]);
+    assert_eq!(run_with_stdin(&argv, b"x", Duration::from_secs(5)).unwrap(), "ok\n");
+    assert!(started.elapsed() < Duration::from_millis(300), "returned after {:?}", started.elapsed());
+}
+
+#[test]
+fn capture_and_send_keys_target_claudes_pane_else_the_session() {
+    let k = key(LOCAL, "w");
+    assert_eq!(capture_argv(&k, Some("%7"), LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "%7"]));
+    assert_eq!(capture_argv(&k, None, LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "=w:"]));
+    // Not a pane id: it never goes into a command.
+    assert_eq!(capture_argv(&k, Some("%7; reboot"), LOCAL), v(&["tmux", "capture-pane", "-p", "-t", "=w:"]));
+    assert_eq!(send_keys_argv(&k, Some("%7"), "Escape", LOCAL), v(&["tmux", "send-keys", "-t", "%7", "Escape"]));
+    let capture = remote(&capture_argv(&key("ph", "a b"), None, LOCAL), &SSH);
+    assert_eq!(words(&capture), v(&["capture-pane", "-p", "-t", "=a b:"]));
+    let send = remote(&send_keys_argv(&key("ph", "it's"), Some("%3"), "1", LOCAL), &SSH);
+    assert_eq!(words(&send), v(&["send-keys", "-t", "%3", "1"]));
+}
+
+#[test]
+fn send_text_script_pastes_through_a_named_buffer_then_presses_enter() {
+    assert_eq!(
+        send_text_script("%7", "tmls-0123abcd"),
+        "tmux load-buffer -b 'tmls-0123abcd' - && { tmux paste-buffer -p -d -b 'tmls-0123abcd' -t '%7' || { tmux delete-buffer -b 'tmls-0123abcd'; false; }; } && sleep 0.2 && tmux send-keys -t '%7' Enter"
+    );
+    let name = buffer_name();
+    assert!(name.len() == 13 && name.starts_with("tmls-") && name[5..].bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+    assert_ne!(buffer_name(), buffer_name(), "two sends in one tick get two buffers");
+    let there = send_text_argv(&key("ph", "a b"), None, "tmls-0123abcd", LOCAL);
+    assert_eq!(&there[..SSH.len()], &v(&SSH)[..]);
+    assert!(there.last().unwrap().ends_with("tmux send-keys -t '=a b:' Enter"), "{there:?}");
+    assert_eq!(send_text_argv(&key(LOCAL, "w"), Some("%7"), "tmls-0123abcd", LOCAL)[..2], v(&["sh", "-c"]));
+}
+
+#[test]
+fn send_text_gives_tmux_the_message_on_stdin_byte_for_byte() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("send-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let got = dir.join("buffer");
+    let message = "it's \"quoted\" $(touch nope) `touch nope2` \\n; 日本 é\n\tsecond line\n".repeat(64);
+    // A tmux that keeps what load-buffer reads; paste-buffer and send-keys succeed.
+    let stub = format!("tmux() {{ if [ \"$1\" = load-buffer ]; then cat >'{}'; fi; }}; ", got.display());
+    let argv = v(&["sh", "-c", &format!("{stub}{}", send_text_script("%7", "tmls-0123abcd"))]);
+    run_with_stdin(&argv, message.as_bytes(), Duration::from_secs(5)).expect("the script");
+    assert_eq!(std::fs::read(&got).unwrap(), message.as_bytes());
+    assert!(!std::path::Path::new("nope").exists() && !std::path::Path::new("nope2").exists(), "nothing in it ran");
 }
