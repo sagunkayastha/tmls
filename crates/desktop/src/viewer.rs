@@ -464,7 +464,9 @@ fn image(
     }
     let decoded = {
         // Nothing is kept under the lock: one that a decoder's panic left poisoned is as good.
-        let _turn = DECODING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _turn = DECODING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Its turn may have come after a newer click: then it does not start.
         if !wanted() {
             return Err(overtaken(&name));

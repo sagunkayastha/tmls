@@ -4,8 +4,8 @@ use client_core::SessionKey;
 use client_core::tmux::{NewSession, Start};
 use desktop::forms::Request;
 use desktop::keys::{
-    Focus, Global, ListKey, PanelKey, RepeatGate, Route, focus_after_close, global, keys_at,
-    leaves_panel, list_keeps_keys, list_key, panel_key, route,
+    Focus, Global, ListKey, PanelKey, RepeatGate, Route, focus_after_close, focus_after_panel,
+    global, keys_at, leaves_panel, list_keeps_keys, list_key, panel_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -567,4 +567,45 @@ fn a_key_the_panel_does_not_bind_takes_the_keys_back_to_the_terminal() {
         assert!(!leaves_panel(&ev), "{ev:?}");
         assert!(!leaves_panel(&repeat(&ev)), "{ev:?} held");
     }
+}
+
+#[test]
+fn a_panel_that_is_not_drawn_does_not_keep_the_keys() {
+    // The panel's list has the keys and the window is made so narrow that the layout has no
+    // panel any more: `j` would move a cursor nobody sees. The terminal gets them.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, false, true),
+        Focus::Terminal
+    );
+    // No tab: the list of sessions.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, false, false),
+        Focus::Sidebar
+    );
+    // It is drawn and takes keys: nothing moves.
+    assert_eq!(
+        focus_after_panel(Focus::Panel, true, true, true),
+        Focus::Panel
+    );
+    // Drawn, but what it shows now takes none (a file from the terminal, nothing).
+    assert_eq!(
+        focus_after_panel(Focus::Panel, false, true, true),
+        Focus::Terminal
+    );
+    // Whoever else has the keys keeps them, whatever becomes of the panel.
+    for focus in [Focus::Terminal, Focus::Sidebar, Focus::Form] {
+        for (takes, drawn, tabs) in [
+            (false, false, true),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(focus_after_panel(focus, takes, drawn, tabs), focus);
+        }
+    }
+    // And the key that follows goes to the session.
+    let focus = focus_after_panel(Focus::Panel, true, false, true);
+    assert_eq!(
+        route(&ch('j', NONE), focus, Some(TabState::Live)),
+        Route::Terminal
+    );
 }

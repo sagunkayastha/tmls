@@ -320,6 +320,21 @@ pub fn focus_after_close(focus: Focus, front_changed: bool, no_tabs: bool) -> Fo
     }
 }
 
+/// What has the keys after the panel changed, closed or was laid out again. The panel keeps
+/// them only while what it shows takes keys (`takes_keys`: the list of images, a picture
+/// opened from it) and the layout has a panel at all (`drawn`: a window too narrow for one
+/// has none, though the panel is still open). Else they go to the terminal, or with no tab
+/// (`tabs`) to the list of sessions: `j` must not move a cursor that is not drawn. Whoever
+/// else has them keeps them.
+pub fn focus_after_panel(focus: Focus, takes_keys: bool, drawn: bool, tabs: bool) -> Focus {
+    match focus {
+        Focus::Panel if takes_keys && drawn => Focus::Panel,
+        Focus::Panel if tabs => Focus::Terminal,
+        Focus::Panel => Focus::Sidebar,
+        other => other,
+    }
+}
+
 /// Where the keys are: `focus`, or with a form or menu open (`modal`) where they go when it
 /// closes (`focus_before`).
 pub fn keys_at(focus: Focus, focus_before: Focus, modal: bool) -> Focus {

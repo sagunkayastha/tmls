@@ -728,6 +728,9 @@ impl Running {
         });
         self.layout = self.layout_for(side);
         self.tabs.resize_all(self.layout.grid);
+        // A window made too narrow for the panel: the keys do not stay with a list that is
+        // not drawn.
+        self.settle_panel_focus();
         self.invalidate();
     }
 
@@ -929,7 +932,7 @@ impl Running {
         if self.modal.take().is_none() {
             return;
         }
-        let panel = self.side.as_ref().is_some_and(SidePanel::takes_keys);
+        let panel = self.panel_takes_keys();
         let back = match self.focus_before {
             Focus::Panel if panel => Focus::Panel,
             Focus::Terminal | Focus::Panel if !self.tabs.is_empty() => Focus::Terminal,
@@ -1319,16 +1322,26 @@ impl Running {
         self.set_focus(to);
     }
 
-    /// After the panel changed or closed: if it had the keys and what it shows now takes
-    /// none (a file from the terminal, nothing), they go back to the terminal.
+    /// Whether the panel can have the keys: what it shows takes some, and the layout has a
+    /// panel (a window too narrow for one draws none, though it is still open).
+    fn panel_takes_keys(&self) -> bool {
+        self.side.as_ref().is_some_and(SidePanel::takes_keys) && self.layout.side.w > 0.0
+    }
+
+    /// After the panel changed or closed, or the window was laid out again: if it had the
+    /// keys and what it shows now takes none (a file from the terminal, nothing) or it is not
+    /// drawn any more, they go back to the terminal (`keys::focus_after_panel`).
     fn settle_panel_focus(&mut self) {
-        if self.side.as_ref().is_some_and(SidePanel::takes_keys) {
+        if self.modal.is_some() {
+            // `close_modal` finds the panel has no keys to give back.
             return;
         }
-        if self.modal.is_none() && self.focus == Focus::Panel {
-            self.leave_panel();
+        let takes = self.side.as_ref().is_some_and(SidePanel::takes_keys);
+        let drawn = self.layout.side.w > 0.0;
+        let to = keys::focus_after_panel(self.focus, takes, drawn, !self.tabs.is_empty());
+        if to != self.focus {
+            self.set_focus(to);
         }
-        // With a form open, `close_modal` finds the panel has no keys to give back.
     }
 
     /// What the panel's header has now, for `Layout::hit_with`.
@@ -2099,7 +2112,7 @@ impl Running {
 
     /// A click on the panel gives it the keys, if what it shows takes any.
     fn focus_panel(&mut self) {
-        let takes = self.side.as_ref().is_some_and(SidePanel::takes_keys);
+        let takes = self.panel_takes_keys();
         if takes && self.focus != Focus::Panel {
             self.set_focus(Focus::Panel);
         }
