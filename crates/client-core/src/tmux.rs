@@ -93,16 +93,20 @@ const KEEPALIVE: [&str; 4] = ["-o", "ServerAliveInterval=15", "-o", "ServerAlive
 static CONTROL: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Where the shared connections' sockets go: `$XDG_RUNTIME_DIR/tmls-rs`, else
-/// `~/.cache/tmls-rs`. `None` when neither is known, or when the socket's path would not fit:
-/// `cm-` and the 40 characters of `%C` after the directory must stay well under a Unix
-/// socket's 108 bytes (ssh adds a suffix while it binds).
+/// `~/.cache/tmls-rs`. `None` when neither is known; when the socket's path would not fit: ssh
+/// binds the ControlPath (the directory, `/cm-`, the 40 characters of `%C`) plus `.` and 16
+/// random characters into a Unix socket's 107 bytes, so the directory has 46 bytes at most; and
+/// when the directory has whitespace or a `%` (`-o ControlPath=` is not quoted, and `%` starts
+/// one of ssh's tokens).
 pub fn control_dir(runtime: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     let dir = match (runtime.filter(|r| !r.is_empty()), home.filter(|h| !h.is_empty())) {
         (Some(runtime), _) => Path::new(runtime).join("tmls-rs"),
         (None, Some(home)) => Path::new(home).join(".cache/tmls-rs"),
         (None, None) => return None,
     };
-    (dir.as_os_str().len() + "/cm-".len() + 40 < 100).then_some(dir)
+    let bytes = dir.as_os_str().as_encoded_bytes();
+    let plain = !bytes.iter().any(|b| b.is_ascii_whitespace() || *b == b'%');
+    (plain && bytes.len() + 44 <= 90).then_some(dir)
 }
 
 /// One master connection per host, kept 10 minutes after its last user (tmls does the same).

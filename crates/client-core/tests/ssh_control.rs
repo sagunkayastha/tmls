@@ -27,6 +27,29 @@ fn the_socket_directory_is_the_runtime_dir_else_the_cache() {
 }
 
 #[test]
+fn the_socket_directory_leaves_room_for_the_suffix_ssh_binds() {
+    // ssh binds `<ControlPath>.` and 16 random characters into a 107-byte sun_path: the directory,
+    // `/cm-`, the 40 of %C and those 17 fit only while the directory has 46 bytes or fewer.
+    // `/tmls-rs` is 8 of them.
+    let runtime = |len: usize| format!("/{}", "r".repeat(len - 1));
+    let at_46 = runtime(38);
+    assert_eq!(control_dir(Some(OsStr::new(&at_46)), None).map(|d| d.as_os_str().len()), Some(46));
+    let at_47 = runtime(39);
+    assert_eq!(control_dir(Some(OsStr::new(&at_47)), None), None);
+}
+
+#[test]
+fn no_socket_directory_with_a_space_or_a_percent() {
+    // `-o ControlPath=...` is not quoted, and `%` starts one of ssh's tokens.
+    let os = |s: &'static str| Some(OsStr::new(s));
+    assert_eq!(control_dir(os("/run/user/my dir"), None), None);
+    assert_eq!(control_dir(os("/run/user/tab\there"), None), None);
+    assert_eq!(control_dir(None, os("/home/a b")), None);
+    assert_eq!(control_dir(os("/run/user/100%"), None), None);
+    assert_eq!(control_dir(None, os("/home/%u")), None);
+}
+
+#[test]
 fn the_switch_is_off_only_for_1() {
     assert!(control_wanted(None));
     assert!(control_wanted(Some(OsStr::new(""))));
