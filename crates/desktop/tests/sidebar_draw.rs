@@ -38,6 +38,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         context_pct: None,
         attached: 0,
         last_output_age_s: None,
+        pid: None,
     }
 }
 
@@ -107,6 +108,7 @@ fn view(tabs: &[&SessionKey], active: Option<usize>, sidebar_focused: bool) -> V
         status: String::new(),
         notice: None,
         panel: None,
+        sketch: false,
         unread: 0,
     }
 }
@@ -625,30 +627,37 @@ fn other_clients_show_beside_the_name() {
 }
 
 #[test]
-fn legend_and_buttons_sit_at_the_bottom() {
+fn legend_and_buttons_sit_level_with_the_terminals_last_row() {
     let theme = Theme::default();
     let mut list = sidebar(&[LOCAL]);
     list.apply(snapshot(LOCAL, vec![session(LOCAL, "work", Status::Idle)]));
     let (quads, l, _atlas) = built(&view(&[], None, false), &list, &theme);
+    // The buttons' last row is level with the terminal's last one; under them it is empty.
     assert_eq!(
         l.buttons.bottom(),
-        l.sidebar.bottom() - (theme.inset).round()
+        l.terminal.y + l.grid.1 as f32 * l.cell.1
     );
+    assert!(l.buttons.bottom() < l.sidebar.bottom());
     assert_eq!(l.legend.bottom(), l.buttons.y);
-    assert_eq!(l.legend.h, 3.0 * l.cell.1);
+    assert_eq!(l.legend.h, 5.0 * l.cell.1);
     assert!(l.list.bottom() <= l.legend.y);
-    // One mark of each status's colour in the legend, and a line above it.
-    for status in [
-        Status::Running,
-        Status::Waiting,
-        Status::Unseen,
-        Status::Error,
+    // One mark of each status's colour in the legend — the ★ has the `?`'s colour — then one
+    // letter for each agent, and a line above it all.
+    for (status, marks) in [
+        (Status::Running, 1),
+        (Status::Waiting, 2),
+        (Status::Unseen, 1),
+        (Status::Error, 1),
     ] {
         assert_eq!(
             glyphs(&quads, l.legend, mark_rgb(status)).len(),
-            1,
+            marks,
             "{status:?}"
         );
+    }
+    for tool in [Tool::Claude, Tool::Opencode, Tool::Codex] {
+        let (_, colour) = theme::tool_letter(tool).unwrap();
+        assert_eq!(glyphs(&quads, l.legend, colour).len(), 1, "{tool:?}");
     }
     let above = Rect {
         y: l.legend.y - 4.0,
@@ -665,6 +674,13 @@ fn legend_and_buttons_sit_at_the_bottom() {
     };
     assert_eq!(labels(&quads), 13, "New  Open  Copy  ?  !");
     assert!(glyphs(&quads, l.buttons, theme::CURSOR_RGB).is_empty());
+    // Quit, and Sketch only with a sketchpad hub configured.
+    assert_eq!(glyphs(&quads, l.buttons, theme::DANGER_RGB).len(), 1);
+    assert!(glyphs(&quads, l.buttons, theme::PIN_RGB).is_empty());
+    let mut with_hub = view(&[], None, false);
+    with_hub.sketch = true;
+    let (hub_quads, ..) = built(&with_hub, &list, &theme);
+    assert_eq!(glyphs(&hub_quads, l.buttons, theme::PIN_RGB).len(), 6);
     // With alerts not looked at yet the bell has their count, in the accent colour, and
     // still ends inside the sidebar.
     let mut unread = view(&[], None, false);

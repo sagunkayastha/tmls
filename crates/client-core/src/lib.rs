@@ -9,7 +9,7 @@ pub mod tmux;
 
 pub use config::{Config, HostColor, default_color};
 pub use listing::{
-    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command,
+    HostSnapshot, KITTY, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command,
     parse_listing,
 };
 pub use poll::Poller;

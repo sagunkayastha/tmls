@@ -5,6 +5,13 @@
 //! `Gap` between sections. A host has its header from the start; one that is offline keeps it
 //! and loses its sessions.
 //!
+//! **Claude outside tmux.** This machine's Claude sessions that run in no tmux pane (the
+//! listing has them under the host `KITTY`) get a section of their own right under this
+//! machine's tmux sessions, for as long as there is one: a rule (`Row::Host` of `KITTY`),
+//! then the sessions. They have a status and can be selected, but there is nothing to attach,
+//! pin, rename or kill: Enter or a click brings their terminal window to the front (the
+//! app's part). Those of other hosts are not shown, as in tmls.
+//!
 //! **Selection is by identity.** The cursor is on a *session*, not on a row number: when a
 //! listing moves rows (a session started above, one renamed or killed elsewhere, a host gone
 //! offline) the cursor stays on its session. When that session itself is gone, the cursor goes
@@ -29,7 +36,7 @@ use std::path::PathBuf;
 
 use client_core::config::tmls_slug;
 use client_core::{
-    Config, HostColor, HostSnapshot, Seen, SessionInfo, SessionKey, Status, default_color,
+    Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, default_color,
 };
 
 /// One row of the list.
@@ -142,8 +149,70 @@ impl Sidebar {
     }
 
     /// A host's new listing replaces that host's rows; the selection stays on its session
-    /// (see the module comment). A host that is not in the configuration is ignored.
-    pub fn apply(&mut self, snap: HostSnapshot) {
+    /// (see the module comment). A host that is not in the configuration is ignored. This
+    /// machine's listing also sets the section of its Claude sessions outside tmux.
+    pub fn apply(&mut self, mut snap: HostSnapshot) {
+        if snap.host == KITTY {
+            return;
+        }
+        let (outside, tmux) = std::mem::take(&mut snap.sessions)
+            .into_iter()
+            .partition(|info| info.key.host == KITTY);
+        snap.sessions = tmux;
+        let local = snap.host == self.local_name && self.section(&snap.host).is_some();
+        let online = snap.online;
+        self.apply_section(snap);
+        if local {
+            self.apply_outside(if online { outside } else { Vec::new() });
+        }
+    }
+
+    /// Makes the section of Claude sessions outside tmux what `outside` says: there with a
+    /// rule above it when there is one, gone otherwise.
+    fn apply_outside(&mut self, outside: Vec<SessionInfo>) {
+        let selected = self.selected().cloned();
+        let mut at = self.cursor;
+        match (self.section(KITTY), outside.is_empty()) {
+            (None, true) => return,
+            (Some(section), true) => {
+                // A cursor in the section goes to the session above it.
+                if at.is_some_and(|at| section.contains(&at)) {
+                    at = Some(section.start.saturating_sub(1));
+                }
+                self.rows.drain(section);
+                self.listed.retain(|key, _| key.host != KITTY);
+            }
+            (None, false) => {
+                let Some(local) = self.section(&self.local_name) else {
+                    return;
+                };
+                self.rows.insert(
+                    local.end,
+                    Row::Host {
+                        host: KITTY.to_string(),
+                        online: true,
+                        color: default_color(KITTY),
+                    },
+                );
+            }
+            (Some(_), false) => {}
+        }
+        // The rows moved: the cursor goes back to its session, else to the nearest one.
+        self.cursor = match (selected, at) {
+            (Some(key), Some(at)) => self.position(&key).or_else(|| self.nearest_session(at)),
+            _ => self.cursor.and_then(|at| self.nearest_session(at)),
+        };
+        if !outside.is_empty() {
+            self.apply_section(HostSnapshot {
+                host: KITTY.to_string(),
+                online: true,
+                error: None,
+                sessions: outside,
+            });
+        }
+    }
+
+    fn apply_section(&mut self, snap: HostSnapshot) {
         let Some(section) = self.section(&snap.host) else {
             return;
         };
@@ -248,6 +317,14 @@ impl Sidebar {
         })
     }
 
+    /// Claude's process, for a listed session outside tmux.
+    pub fn pid(&self, key: &SessionKey) -> Option<u32> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Session(info) if info.key == *key => info.pid,
+            _ => None,
+        })
+    }
+
     pub fn is_pinned(&self, key: &SessionKey) -> bool {
         self.listed.get(key).is_some_and(|(_, pinned)| *pinned)
     }
@@ -293,16 +370,21 @@ impl Sidebar {
                 self.set_cursor(row);
                 Some(Action::Attach(key))
             }
+            // The rule above the sessions outside tmux is no host.
             Row::Host {
                 host, online: true, ..
-            } => Some(Action::NewSessionOn(host.clone())),
+            } if host != KITTY => Some(Action::NewSessionOn(host.clone())),
             Row::Host { .. } | Row::Gap => None,
         }
     }
 
     /// A right-click on a row: a session is selected and its menu asked for.
+    /// A session outside tmux has none.
     pub fn menu(&mut self, row: usize) -> Option<Action> {
         let key = self.key_at(row)?.clone();
+        if key.host == KITTY {
+            return None;
+        }
         self.set_cursor(row);
         Some(Action::Menu(key))
     }
@@ -319,6 +401,10 @@ impl Sidebar {
         let Some(key) = self.selected().cloned() else {
             return false;
         };
+        if key.host == KITTY {
+            // Nothing to attach: it is in no ring of sessions to walk.
+            return false;
+        }
         let slug = tmls_slug(&key, &self.local_name);
         let mut pins = self.pins.clone();
         let pinned = !pins.remove(&slug);
@@ -341,7 +427,25 @@ impl Sidebar {
         pinned
     }
 
-    /// What went wrong at the last `toggle_pin`, once; `Ok` when nothing did.
+    /// A session was renamed here: its pin goes to the new name (tmls does the same), in the
+    /// `pins` file too. Returns whether there was a pin to move. When the file cannot be
+    /// written the old name stays pinned and `take_pin_error` has the reason.
+    pub fn renamed(&mut self, old: &SessionKey, new: &SessionKey) -> bool {
+        let mut pins = self.pins.clone();
+        if !pins.remove(&tmls_slug(old, &self.local_name)) {
+            return false;
+        }
+        pins.insert(tmls_slug(new, &self.local_name));
+        if let Err(e) = Config::save_pins(&self.config_dir, &pins) {
+            self.pin_error = Some(e.context(format!("pin of {} not moved", new.name)));
+            return false;
+        }
+        // The row still has the old name and its ★: the next listing brings the new one, pinned.
+        self.pins = pins;
+        true
+    }
+
+    /// What went wrong at the last `toggle_pin` or `renamed`, once; `Ok` when nothing did.
     pub fn take_pin_error(&mut self) -> anyhow::Result<()> {
         self.pin_error.take().map_or(Ok(()), Err)
     }
@@ -364,6 +468,39 @@ impl Sidebar {
                 .map(|info| info.key.clone())
         };
         next(Status::Waiting).or_else(|| next(Status::Unseen))
+    }
+
+    /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places
+    /// on in the pinned (★) sessions listed now, in the list's order, wrapping round; the first
+    /// of them when `from` is not pinned. `None` when no listed session is pinned — then the
+    /// keys walk the open tabs, or every session (`list_step`).
+    pub fn pin_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
+        self.ring_step(from, step, |key| self.is_pinned(key))
+    }
+
+    /// The same among all the sessions listed now: where the keys go while nothing is pinned
+    /// and fewer than two tabs are open. `None` with an empty list.
+    pub fn list_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
+        self.ring_step(from, step, |_| true)
+    }
+
+    fn ring_step(
+        &self,
+        from: Option<&SessionKey>,
+        step: i32,
+        in_ring: impl Fn(&SessionKey) -> bool,
+    ) -> Option<SessionKey> {
+        let ring: Vec<&SessionKey> = self
+            .rows
+            .iter()
+            .filter_map(Row::key)
+            .filter(|key| key.host != KITTY && in_ring(key))
+            .collect();
+        let at = match from.and_then(|key| ring.iter().position(|member| *member == key)) {
+            Some(at) => (at as i64 + step as i64).rem_euclid(ring.len() as i64) as usize,
+            None => 0,
+        };
+        ring.get(at).map(|key| (*key).clone())
     }
 
     /// The wheel: moves the view `rows` rows down (up when negative), not the cursor.

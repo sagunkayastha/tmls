@@ -230,3 +230,14 @@ fn presets_keep_file_order_and_skip_bad_entries() {
     assert!(Config::load(&d, &[]).presets.is_empty());
     done(d);
 }
+
+#[test]
+fn sketchpad_is_the_first_usable_line() {
+    let d = dir("sketchpad");
+    assert_eq!(Config::sketchpad(&d), None, "no file: no Sketch");
+    std::fs::write(d.join("sketchpad"), "# the hub\n\n  http://10.0.0.5:8790  # home\nhttps://away.example\n").unwrap();
+    assert_eq!(Config::sketchpad(&d).as_deref(), Some("http://10.0.0.5:8790"));
+    std::fs::write(d.join("sketchpad"), "\n# nothing\n").unwrap();
+    assert_eq!(Config::sketchpad(&d), None);
+    done(d);
+}

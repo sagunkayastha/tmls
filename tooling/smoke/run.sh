@@ -28,6 +28,6 @@ exec docker run --rm --network none --hostname smoke \
   -v "$ROOT":/work:ro \
   -v "$OUT":/out \
   --tmpfs /scratch:mode=1777 \
-  -e SMOKE_OUT=/out -e SMOKE_SCRATCH=/scratch \
+  -e SMOKE_OUT=/out -e SMOKE_SCRATCH=/scratch -e SMOKE_OUTSIDE="${SMOKE_OUTSIDE:-}" \
   -w /work \
   "$IMAGE" timeout --kill-after=10 "${SMOKE_TIMEOUT:-480}" bash /work/tooling/smoke/e2e.sh

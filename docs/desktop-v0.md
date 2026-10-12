@@ -65,6 +65,7 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `agent-presets.json` | agent commands for a new session: the form's Start choices after `shell` and `claude` | read |
 | `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
+| `sketchpad` | the sketchpad hub's address, first line | read |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.
 
@@ -80,7 +81,7 @@ Everywhere:
 | Ctrl+Q | quit (sessions keep running) |
 | Ctrl+= or Ctrl++ | larger font |
 | Ctrl+- | smaller font |
-| Alt+Shift+Right / Left | next / previous tab |
+| Alt+Shift+Right / Left | next / previous pinned (★) session, opening its tab if needed; with nothing pinned, next / previous tab, or next / previous session while fewer than two tabs are open |
 | Alt+Shift+Up | focus to the session list |
 | Alt+Shift+N | open the next session that waits for you |
 | Alt+Shift+W | close the front tab (the session lives on) |
@@ -191,14 +192,28 @@ of its own. tmls's `sound` switch is ignored: the app plays no sound.
 Not built: approvals (tmls's Yes / No on a Claude permission prompt). Nothing in the alerts
 sends a key to a session.
 
+## Claude outside tmux
+
+This machine's Claude Code sessions that run in no tmux pane (started straight in a terminal
+window) are listed under a rule `── not in tmux ──`, right below this machine's tmux sessions,
+with their status mark and what they wait for. The section is there only while there is such a
+session. They cannot be attached, pinned, renamed or killed from here and have no menu; Enter
+or a click asks kitty to bring their window to the front (kitty needs `allow_remote_control`
+and `listen_on` — the same as tmls). In another terminal the status line says the window was
+not found. Other hosts' sessions outside tmux are not shown, as in tmls. They raise no alert.
+
 ## Mouse
 
 | Action | Does |
 | --- | --- |
 | click a session in the list | attach it |
+| click a session under `── not in tmux ──` | bring its kitty window to the front (it cannot be attached) |
 | middle-click a session | pin or unpin it |
 | click a tab | bring it to the front |
 | click the `×` of a tab | close the tab (the session lives on) |
+| click the red `✕` at the foot of the list | quit (sessions keep running) |
+| drag the line right of the list | make the list wider or narrower (20 columns to half the window; not kept across a restart) |
+| click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
 | `+` on a host's header | new-session form for that host |
@@ -242,7 +257,6 @@ Not built yet:
 
 - the `⋯` at the end of a session row that tmls has (use right-click or `m`);
 - window and pane actions of tmls's menu (new window, split, kill pane);
-- a renamed session keeps its pin only if you pin it again;
 - the `?` button (key help);
 - file paths and `file:line` as links, and tmls's quick select (Alt+Shift+S);
 - right-click paste in the terminal;

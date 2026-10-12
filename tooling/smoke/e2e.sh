@@ -164,6 +164,14 @@ fi
 # --- tmux sessions ----------------------------------------------------------------------------
 tmux new-session -d -s "$ONE" -x 100 -y 30
 tmux new-session -d -s "$ODD" -x 100 -y 30
+# SMOKE_OUTSIDE=1: also two Claude status files that name no tmux pane (this script's own
+# process is "Claude"), to look at the list's section for sessions outside tmux. Off by
+# default: the rows it adds are not what the checks below count on.
+if [ "${SMOKE_OUTSIDE:-}" = 1 ]; then
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"kind":"interactive","status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":1,"name":"notes outside","cwd":"/work"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
+  printf '{"pid":%s,"kind":"interactive","status":"busy","statusUpdatedAt":1,"cwd":"/work/some-folder"}\n' "$PPID" >"$HOME/.claude/sessions/$PPID.json"
+fi
 check "tmux has both test sessions" bash -c \
   '[ "$(tmux list-sessions -F "#{session_name}" | sort | tr "\n" "|")" = "$0|$1|" ]' "$ODD" "$ONE"
 

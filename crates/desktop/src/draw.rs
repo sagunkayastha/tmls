@@ -9,7 +9,7 @@
 //! |                       |a|                                        |
 //! | ● running  ? waiting  |t|                                        |
 //! | ◆ done     ✕ error    |o+----------------------------------------+
-//! | New  Open  Copy  ?    |r| status line (1 row)                    |
+//! | ?  !                 ✕ |r| status line (1 row)                    |
 //! +-----------------------+-+----------------------------------------+
 //! ```
 //!
@@ -18,7 +18,7 @@
 //! tabs' scenes and `Layout::grid` the size the sessions are resized to.
 //!
 //! **The sidebar** is tmls's (its pane mode): the session list on the cell grid, one line per
-//! row and two for a session with a summary, then a legend of the marks and a row of buttons
+//! row and two for a session with a summary, then a legend of the marks and two rows of buttons
 //! at the foot. Which rows are in view and which row a line belongs to is the model's
 //! (`sidebar::Sidebar::view`, `row_at`); what a row says is `session_spans` and
 //! `header_spans`, text on the list's columns that the tests read without a font.
@@ -36,7 +36,7 @@
 
 use std::borrow::Cow;
 
-use client_core::{SessionInfo, SessionKey};
+use client_core::{KITTY, SessionInfo, SessionKey, Tool};
 use s2_wgpu::gfx::atlas::{Atlas, CellMetrics, FontStyle};
 use s2_wgpu::gfx::grid::{self, Instance, Scene, clusters, push_text, solid};
 use s2_wgpu::ui::draw::fit;
@@ -47,8 +47,8 @@ use crate::sidebar::{Row, Sidebar, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
-    OFFLINE, PIN, PIN_RGB, SIDEBAR_COLS, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph,
-    mark_rgb, tool_letter,
+    OFFLINE, PIN, PIN_RGB, TAB_MAX_COLS, Theme, context_rgb, host_rgb, mark_glyph, mark_rgb,
+    tool_letter,
 };
 
 /// What a tab whose session ended shows over its last screen.
@@ -64,8 +64,17 @@ const TAB_CLOSE_COLS: usize = 3;
 /// Cells at the right end of a host's header that are its `+` when clicked: the `+` and one
 /// cell either side.
 const ADD_COLS: usize = 3;
-/// Lines of the legend: two marks a line, as in tmls.
-const LEGEND_LINES: usize = LEGEND.len().div_ceil(2);
+/// Lines of the legend, as in tmls: the marks and the ★ two a line, then the agents' letters
+/// on two lines.
+const LEGEND_LINES: usize = (LEGEND.len() + 1).div_ceil(2) + TOOL_LINES;
+/// The legend's lines for the agents' letters: `C Claude  O opencode`, `X Codex`.
+const TOOL_LINES: usize = 2;
+/// The agents of the legend, in tmls's order.
+const LEGEND_TOOLS: [(Tool, &str); 3] = [
+    (Tool::Claude, "Claude"),
+    (Tool::Opencode, "opencode"),
+    (Tool::Codex, "Codex"),
+];
 /// Columns from one legend entry to the next: the mark, a space, the word padded to nine
 /// (tmls line 96).
 const LEGEND_ENTRY_COLS: usize = 11;
@@ -81,32 +90,51 @@ pub enum Button {
     Open,
     /// Copy the command that attaches the selected session.
     Copy,
+    /// Opens the sketchpad hub in the browser; drawn only when one is configured.
+    Sketch,
     /// The keys.
     Help,
     /// The bell: the list of alerts. Its label is followed by how many are new.
     Alerts,
+    /// Quit (tmls's red ✕). The sessions keep running.
+    Quit,
 }
 
 /// The bell. tmls draws 🔔, which the terminal's font need not have; this is in every font.
 pub const BELL: &str = "!";
 
-/// The buttons from left to right with their labels, two columns apart.
-pub const BUTTONS: [(Button, &str); 5] = [
-    (Button::New, "New"),
-    (Button::Open, "Open"),
-    (Button::Copy, "Copy"),
-    (Button::Help, "?"),
-    (Button::Alerts, BELL),
+/// The buttons' two rows, each from left to right with the labels two columns apart: the
+/// app's own, then what acts on a session. Quit is apart, at its row's right end.
+pub const BUTTONS: [&[(Button, &str)]; 2] = [
+    &[
+        (Button::Help, "?"),
+        (Button::Alerts, BELL),
+        (Button::Quit, "✕"),
+    ],
+    &[
+        (Button::New, "New"),
+        (Button::Open, "Open"),
+        (Button::Copy, "Copy"),
+        (Button::Sketch, "Sketch"),
+    ],
 ];
 
-/// Each button with its label, the column the label starts at and how many columns are the
-/// button's: its label's, and for the bell two more for the count (at most `MAX_ALERTS`).
-fn button_columns() -> impl Iterator<Item = (Button, &'static str, usize, usize)> {
-    BUTTONS.iter().scan(1, |col, (button, label)| {
-        let start = *col;
-        let cols = label.len() + if *button == Button::Alerts { 2 } else { 0 };
-        *col += cols + 2;
-        Some((*button, *label, start, cols))
+/// Each button with its label, its row, the column the label starts at and how many columns
+/// are the button's: its label's, and for the bell two more for the count (at most
+/// `MAX_ALERTS`).
+fn button_cells(
+    list_cols: usize,
+) -> impl Iterator<Item = (Button, &'static str, usize, usize, usize)> {
+    BUTTONS.iter().enumerate().flat_map(move |(row, buttons)| {
+        buttons.iter().scan(1, move |col, (button, label)| {
+            let cols = label.chars().count() + if *button == Button::Alerts { 2 } else { 0 };
+            let start = match button {
+                Button::Quit => list_cols.saturating_sub(2),
+                _ => *col,
+            };
+            *col += cols + 2;
+            Some((*button, *label, row, start, cols))
+        })
     })
 }
 
@@ -126,12 +154,15 @@ pub struct Layout {
     pub sidebar: Rect,
     /// The line between the sidebar and the rest.
     pub separator: Rect,
+    /// Pixels right of the separator that are still its handle for dragging: the padding
+    /// left of the terminal's text, six logical pixels at most.
+    pub grab: f32,
     /// The session list: `list_lines` lines of a cell's height.
     pub list: Rect,
     pub list_lines: usize,
     /// Columns of the sidebar. A row's text leaves one free at either end.
     pub list_cols: usize,
-    /// The legend of the marks and, under it, the row of buttons; both empty when the window
+    /// The legend of the marks and, under it, the rows of buttons; both empty when the window
     /// is too low for them.
     pub legend: Rect,
     pub buttons: Rect,
@@ -157,8 +188,11 @@ pub enum Hit {
     },
     /// A button at the foot of the sidebar.
     Button(Button),
-    /// The sidebar or the separator, where nothing is to click.
+    /// The sidebar, where nothing is to click.
     Sidebar,
+    /// The line right of the list and a few pixels right of it: dragging it makes the list
+    /// wider or narrower.
+    Separator,
     /// A tab, anywhere but its `×`.
     Tab(usize),
     /// The `×` of a tab.
@@ -185,7 +219,7 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
     let line = px(theme.border).max(1.0);
 
     // The sidebar never takes more than half the window.
-    let side_w = (SIDEBAR_COLS as f32 * cell_w).min((win_w / 2.0).floor());
+    let side_w = (theme.sidebar_cols as f32 * cell_w).min((win_w / 2.0).floor());
     let sep_w = line.min((win_w - side_w).max(0.0));
     let right_x = side_w + sep_w;
     let right_w = (win_w - right_x).max(0.0);
@@ -200,9 +234,13 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
         w: right_w - pad,
         h: (win_h - 2.0 * bar_h).max(0.0),
     };
-    // The foot of the sidebar, from the bottom up: the inset, the buttons, the legend, a line.
-    let foot_h = line + (LEGEND_LINES + 1) as f32 * cell_h + inset;
-    let foot = win_h >= inset + MIN_LIST_LINES as f32 * cell_h + foot_h;
+    // The foot of the sidebar: a line, the legend, the buttons. The buttons' last row is
+    // level with the terminal's last row, not with the window's bottom edge: a desktop panel
+    // that slides in from that edge would cover them. The space under them stays empty.
+    let term_rows = (terminal.h / cell_h).floor().max(BUTTONS.len() as f32);
+    let buttons_y = terminal.y + (term_rows - BUTTONS.len() as f32) * cell_h;
+    let legend_y = buttons_y - LEGEND_LINES as f32 * cell_h;
+    let foot = legend_y - line - inset >= MIN_LIST_LINES as f32 * cell_h;
     let across = Rect {
         x: 0.0,
         y: win_h,
@@ -212,19 +250,19 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
     let (legend, buttons) = match foot {
         true => (
             Rect {
-                y: win_h - foot_h + line,
+                y: legend_y,
                 h: LEGEND_LINES as f32 * cell_h,
                 ..across
             },
             Rect {
-                y: win_h - inset - cell_h,
-                h: cell_h,
+                y: buttons_y,
+                h: BUTTONS.len() as f32 * cell_h,
                 ..across
             },
         ),
         false => (across, across),
     };
-    let list_bottom = if foot { win_h - foot_h } else { win_h };
+    let list_bottom = if foot { legend_y - line } else { win_h };
     let list_lines = ((list_bottom - inset).max(0.0) / cell_h).floor() as usize;
     Layout {
         window: (win_w, win_h),
@@ -235,6 +273,8 @@ pub fn layout(window: (u32, u32), scale: f32, m: &CellMetrics, theme: &Theme) ->
             w: side_w,
             h: win_h,
         },
+        // Not into the terminal's cells: the padding left of them at most.
+        grab: px(6.0).min(pad),
         separator: Rect {
             x: side_w,
             y: 0.0,
@@ -337,14 +377,18 @@ impl Layout {
         if !window.contains(x, y) {
             return Hit::Outside;
         }
+        if x >= self.separator.x && x < self.separator.x + self.separator.w + self.grab {
+            return Hit::Separator;
+        }
         if x < self.tab_bar.x {
             let col = (x / self.cell.0).floor() as usize;
             if self.list.contains(x, y) {
                 let line = ((y - self.list.y) / self.cell.1).floor() as usize;
                 return Hit::List { line, col };
             }
-            let button = button_columns()
-                .find(|(.., start, cols)| (*start..start + cols).contains(&col))
+            let row = ((y - self.buttons.y) / self.cell.1).floor() as usize;
+            let button = button_cells(self.list_cols)
+                .find(|(_, _, at, start, cols)| *at == row && (*start..start + cols).contains(&col))
                 .filter(|_| self.buttons.contains(x, y));
             return button.map_or(Hit::Sidebar, |(button, ..)| Hit::Button(button));
         }
@@ -395,6 +439,8 @@ pub struct View {
     pub notice: Option<String>,
     /// The open form or menu, and the window pixel a menu was opened at.
     pub panel: Option<(Panel, Option<(u32, u32)>)>,
+    /// A sketchpad hub is configured: the Sketch button is drawn.
+    pub sketch: bool,
     /// Alerts not looked at yet, for the bell.
     pub unread: usize,
 }
@@ -562,6 +608,24 @@ pub fn header_spans(host: &str, online: bool, cols: usize, theme: &Theme) -> Vec
     ]
 }
 
+/// What the rule above the sessions outside tmux says.
+pub const OUTSIDE_LABEL: &str = "not in tmux";
+
+/// A dim rule across the list with `label` in it: `── label ─────────`.
+pub fn rule_spans(label: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let end = cols.saturating_sub(1);
+    let label_col = 4;
+    let after = label_col + columns(label) + 1;
+    if after >= end {
+        return vec![Span::whole(0, 1, "─".repeat(end.saturating_sub(1))).colour(theme.dim_fg)];
+    }
+    vec![
+        Span::whole(0, 1, "──").colour(theme.dim_fg),
+        Span::whole(0, label_col, label.to_string()).colour(theme.dim_fg),
+        Span::whole(0, after, "─".repeat(end - after)).colour(theme.dim_fg),
+    ]
+}
+
 fn opaque(c: [u8; 3]) -> [u8; 4] {
     [c[0], c[1], c[2], 255]
 }
@@ -719,6 +783,13 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                 online,
                 color,
             } => {
+                if host == KITTY {
+                    // No machine: a rule above this machine's Claude sessions outside tmux.
+                    for span in rule_spans(OUTSIDE_LABEL, l.list_cols, theme) {
+                        p.span((r.x, r.y), &span);
+                    }
+                    continue;
+                }
                 // tmls: a full-width line in the host's colour above each machine (line 908).
                 p.rect(
                     Rect {
@@ -782,24 +853,40 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         theme.sidebar_rule,
     );
     let entry_cols = LEGEND_ENTRY_COLS.min(l.list_cols.saturating_sub(2) / 2);
-    for (n, (status, word)) in LEGEND.iter().enumerate() {
+    // The marks, then the ★, then the agents' letters from a line of their own on.
+    let marks = LEGEND
+        .iter()
+        .map(|(status, word)| (mark_glyph(*status), mark_rgb(*status), *word))
+        .chain([(PIN, PIN_RGB, "pinned")]);
+    let tools_from = (LEGEND.len() + 1).div_ceil(2) * 2;
+    let tools = LEGEND_TOOLS.iter().filter_map(|(tool, word)| {
+        let (letter, colour) = tool_letter(*tool)?;
+        Some((letter, colour, *word))
+    });
+    let entries = marks
+        .enumerate()
+        .chain(tools.enumerate().map(|(n, entry)| (tools_from + n, entry)));
+    for (n, (mark, colour, word)) in entries {
         let col = 1 + (n % 2) * entry_cols;
         let origin = (l.legend.x, l.legend.y + (n / 2) as f32 * p.m.height);
-        let mark = Span::whole(0, col, mark_glyph(*status))
-            .colour(mark_rgb(*status))
-            .bold();
-        p.span(origin, &mark);
-        let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), *word);
+        p.span(origin, &Span::whole(0, col, mark).colour(colour).bold());
+        let word = Span::new(0, col + 2, entry_cols.saturating_sub(3), word);
         p.span(origin, &word.colour(theme.muted_fg));
     }
-    for (button, label, col, cols) in button_columns() {
+    for (button, label, row, col, cols) in button_cells(l.list_cols) {
+        if button == Button::Sketch && !view.sketch {
+            continue;
+        }
         let colour = match button {
             Button::New | Button::Open => ADD_RGB,
             Button::Copy => COPY_RGB,
+            // tmls's "warning" button.
+            Button::Sketch => PIN_RGB,
             Button::Help => theme.muted_fg,
             // tmls's accent while something is new.
             Button::Alerts if view.unread > 0 => CURSOR_RGB,
             Button::Alerts => theme.muted_fg,
+            Button::Quit => DANGER_RGB,
         };
         let fits = col + cols < l.list_cols;
         let label = match button {
@@ -808,7 +895,7 @@ fn foot(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
         };
         let span = Span::whole(0, col, label).colour(colour).bold();
         if fits {
-            p.span((l.buttons.x, l.buttons.y), &span);
+            p.span((l.buttons.x, l.buttons.y + row as f32 * p.m.height), &span);
         }
     }
 }

@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use client_core::{Config, HostSnapshot, Poller, Seen, SessionKey, default_color};
+use client_core::{Config, HostSnapshot, KITTY, Poller, Seen, SessionKey, default_color};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -61,17 +61,18 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
 use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
+use crate::kitty;
 use crate::links;
 use crate::mouse::{self, Effect, Pointer};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
-use crate::theme::{Theme, host_rgb, mark_rgb};
+use crate::theme::{SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
 
 /// How often the device is polled while a frame's work-done callback is outstanding; the
 /// resolution of `t_work_done_ns`.
@@ -111,6 +112,8 @@ pub enum UserEvent {
     },
     /// What runs in a session the user is asked about killing.
     Running(SessionKey, Vec<String>),
+    /// Something done off the window's thread ended: a line for the status line, or why not.
+    Said(Result<String, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -174,6 +177,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Snapshot(snapshot) => running.snapshot(snapshot),
             UserEvent::Done(request, result) => running.done(request, result),
+            UserEvent::Said(said) => running.say(said),
             UserEvent::Derived { host, folder, name } => {
                 if let Some((Modal::Form(Form::New(new)), _)) = &mut running.modal {
                     new.derived(&host, &folder, &name);
@@ -229,7 +233,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Ime(ime) => running.ime(t_event_ns, &ime),
             WindowEvent::CursorMoved { position, .. } => running.pointer_moved(position),
-            WindowEvent::MouseInput { state, button, .. } => running.button(state, button),
+            WindowEvent::MouseInput { state, button, .. } => {
+                running.button(state, button);
+                if running.quit {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => running.wheel(&delta),
             _ => {}
         }
@@ -359,6 +368,14 @@ struct Running {
     ime_allowed: bool,
     /// A redraw got no texture and is to be tried again at this time.
     retry_at: Option<Instant>,
+    /// The ✕ at the foot of the list was clicked: the event loop is to stop.
+    quit: bool,
+    /// The list's right edge is being dragged.
+    dragging_separator: bool,
+    /// The pointer is drawn as the resize arrows.
+    resize_cursor: bool,
+    /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
+    sketchpad: Option<String>,
 }
 
 impl Running {
@@ -512,6 +529,10 @@ impl Running {
             window_focused: false,
             ime_allowed: false,
             retry_at: None,
+            quit: false,
+            dragging_separator: false,
+            resize_cursor: false,
+            sketchpad: Config::sketchpad(config_dir),
         })
     }
 
@@ -547,8 +568,21 @@ impl Running {
         }
     }
 
-    /// Window size, scale factor or font size changed: lays the window out again and tells
-    /// the tabs how many cells fit now.
+    /// The list's right edge follows the pointer, a whole column at a time, between
+    /// `SIDEBAR_MIN_COLS` and half the window. The terminals get their new size at once.
+    fn drag_separator(&mut self, x: f32) {
+        let cell_w = self.layout.cell.0.max(1.0);
+        let most = ((self.config.width as f32 / 2.0) / cell_w).floor() as usize;
+        let cols = ((x / cell_w).round().max(0.0) as usize)
+            .clamp(SIDEBAR_MIN_COLS, most.max(SIDEBAR_MIN_COLS));
+        if cols != self.theme.sidebar_cols {
+            self.theme.sidebar_cols = cols;
+            self.relayout();
+        }
+    }
+
+    /// Window size, scale factor, font size or the list's width changed: lays the window out
+    /// again and tells the tabs how many cells fit now.
     fn relayout(&mut self) {
         self.layout = draw::layout(
             (self.config.width, self.config.height),
@@ -629,6 +663,7 @@ impl Running {
             status,
             notice: ended.then(|| ENDED_NOTICE.to_string()),
             panel,
+            sketch: self.sketchpad.is_some(),
             unread: self.alerts.unread(),
         }
     }
@@ -871,13 +906,19 @@ impl Running {
                 self.open(&key);
             }
             Request::Rename(old, name) => {
+                let key = SessionKey {
+                    host: old.host.clone(),
+                    name,
+                };
+                // The ★ follows the name. A `pins` file that cannot be written is not worth
+                // hiding that the rename worked: it goes to stderr only.
+                self.sidebar.renamed(&old, &key);
+                if let Err(e) = self.sidebar.take_pin_error() {
+                    crate::errln(format_args!("tmls-rs: {e:#}"));
+                }
                 if let Some(index) = self.tabs.index_of(&old) {
                     let front = self.tabs.active() == Some(index);
                     self.close_tab(index);
-                    let key = SessionKey {
-                        host: old.host,
-                        name,
-                    };
                     let back = self.tabs.active();
                     self.select_when_listed = Some(key.clone());
                     // Also with a form or menu open: the tab is never left closed.
@@ -925,6 +966,12 @@ impl Running {
 
     /// Copies the command that attaches `key`.
     fn copy_attach(&mut self, key: &SessionKey) {
+        if key.host == KITTY {
+            return self.say(Err(format!(
+                "{} runs outside tmux: nothing attaches it",
+                key.name
+            )));
+        }
         let local = self.cfg.local_name.clone();
         let said = match self.clipboard() {
             Some(clipboard) => forms::copy_attach(key, &local, &mut |text| {
@@ -992,14 +1039,8 @@ impl Running {
     /// One of the window's own bindings (`Quit` is the event loop's).
     fn global(&mut self, global: Global) {
         match global {
-            Global::NextTab => {
-                self.tabs.next();
-                self.tab_changed();
-            }
-            Global::PrevTab => {
-                self.tabs.prev();
-                self.tab_changed();
-            }
+            Global::NextTab => self.switch_tab(1),
+            Global::PrevTab => self.switch_tab(-1),
             Global::FocusSidebar => self.set_focus(Focus::Sidebar),
             Global::FocusTerminal => {
                 // With no tab open there is no terminal to give the keys to.
@@ -1027,6 +1068,28 @@ impl Running {
     }
 
     /// Opens the next session after the front tab's that needs the user.
+    /// Alt+Shift+Right / Left, as in tmls: among the pinned (★) sessions when any is listed —
+    /// one without a tab gets one — else among the open tabs, and with fewer than two of
+    /// those among all the sessions.
+    fn switch_tab(&mut self, step: i32) {
+        let front = self.tabs.active().map(|index| self.tabs.key(index));
+        let pinned = self.sidebar.pin_step(front, step);
+        let few_tabs = || match self.tabs.len() {
+            0 | 1 => self.sidebar.list_step(front, step),
+            _ => None,
+        };
+        if let Some(key) = pinned.or_else(few_tabs) {
+            self.open(&key);
+            return;
+        }
+        if step > 0 {
+            self.tabs.next();
+        } else {
+            self.tabs.prev();
+        }
+        self.tab_changed();
+    }
+
     fn next_waiting(&mut self) {
         let front = self.tabs.active().map(|index| self.tabs.key(index));
         if let Some(key) = self.sidebar.next_waiting(front) {
@@ -1049,7 +1112,9 @@ impl Running {
             ListKey::New => self.foot_button(Button::New),
             ListKey::Alerts => self.open_alerts(),
             ListKey::Menu => {
-                if let Some(key) = self.sidebar.selected().cloned() {
+                // A session outside tmux has no menu: nothing in it applies.
+                let selected = self.sidebar.selected().filter(|key| key.host != KITTY);
+                if let Some(key) = selected.cloned() {
                     self.open_modal(Modal::Menu(RowMenu::new(key)), None);
                 }
             }
@@ -1102,10 +1167,21 @@ impl Running {
         let selected = self.sidebar.selected().cloned();
         match (button, selected) {
             (Button::Alerts, _) => self.open_alerts(),
+            (Button::Quit, _) => self.quit = true,
+            (Button::Sketch, _) => {
+                // Without a hub the button is not drawn and its place does nothing.
+                if let Some(url) = self.sketchpad.clone() {
+                    self.say(links::open(&url).map(|()| format!("opened {url}")));
+                }
+            }
             (Button::Open, Some(key)) => self.open(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
-                let host = selected.map(|key| key.host);
+                // From a session outside tmux: on this machine.
+                let host = selected.map(|key| match key.host == KITTY {
+                    true => self.cfg.local_name.clone(),
+                    false => key.host,
+                });
                 if let Some(host) = host.or_else(|| self.cfg.hosts.first().cloned()) {
                     self.act(sidebar::Action::NewSessionOn(host));
                 }
@@ -1115,8 +1191,31 @@ impl Running {
         }
     }
 
+    /// A Claude session outside tmux has no tab: its kitty window is brought to the front
+    /// (`kitty::focus`, on a thread of its own; the status line says how it went).
+    fn focus_outside(&mut self, key: &SessionKey) {
+        let Some(pid) = self.sidebar.pid(key) else {
+            return self.say(Err(format!("{} is not listed any more", key.name)));
+        };
+        // Looked at: its ◆ goes, as a tab's does when it comes to the front.
+        if self.sidebar.opened(&mut self.seen, key) {
+            self.invalidate();
+        }
+        let (proxy, name) = (self.proxy.clone(), key.name.clone());
+        std::thread::spawn(move || {
+            let said = match kitty::focus(pid) {
+                Ok(()) => Ok(format!("{name}: its window is in front")),
+                Err(e) => Err(format!("{name} runs outside tmux; {e}")),
+            };
+            let _ = proxy.send_event(UserEvent::Said(said));
+        });
+    }
+
     /// Opens the session's tab (or brings it to the front) and gives it the keys.
     fn open(&mut self, key: &SessionKey) {
+        if key.host == KITTY {
+            return self.focus_outside(key);
+        }
         let result = self.tabs.open(key, self.layout.grid);
         let opened = result.is_ok();
         self.report(result.map(|_| ()));
@@ -1336,8 +1435,22 @@ impl Running {
             }
         }
         let (x, y) = self.pointer;
-        let over_terminal =
-            self.modal.is_none() && self.layout.hit(x, y, self.tabs.len()) == Hit::Terminal;
+        let hit = self.layout.hit(x, y, self.tabs.len());
+        if self.dragging_separator {
+            self.drag_separator(x);
+        }
+        let resize = self.dragging_separator || (self.modal.is_none() && hit == Hit::Separator);
+        if resize != self.resize_cursor {
+            self.resize_cursor = resize;
+            self.window.set_cursor(match resize {
+                true => CursorIcon::ColResize,
+                false => CursorIcon::Default,
+            });
+        }
+        if self.dragging_separator {
+            return;
+        }
+        let over_terminal = self.modal.is_none() && hit == Hit::Terminal;
         if !(self.mouse.held() || over_terminal) {
             return;
         }
@@ -1357,6 +1470,9 @@ impl Running {
             _ => None,
         };
         if state == ElementState::Released {
+            if std::mem::take(&mut self.dragging_separator) {
+                return;
+            }
             if let Some(button) = terminal_button {
                 let acts = self
                     .mouse
@@ -1387,6 +1503,7 @@ impl Running {
             return;
         }
         match hit {
+            Hit::Separator => self.dragging_separator = true,
             Hit::Button(button) => self.foot_button(button),
             Hit::Tab(index) => {
                 self.tabs.select(index);

@@ -145,7 +145,7 @@ Known gaps in what was built:
   attach again.
 - A session renamed outside the app keeps its old tab label; reattach then fails. Close the tab.
 - A failed "new session" closes the form; what you typed is lost. The status line says why it failed.
-- After a rename the session loses its pin, and its tab moves to the end of the tab bar.
+- After a rename the session's tab moves to the end of the tab bar.
 - Forms take no fcitx5 input (paste works).
 - `$TERMINAL` with arguments (e.g. `kitty -1`) does not work for "Open in new terminal".
 - With more tabs than fit, the tab bar cannot be clicked (the keys still work).

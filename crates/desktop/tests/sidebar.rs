@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use client_core::config::tmls_slug;
 use client_core::{
-    Config, HostColor, HostSnapshot, Seen, SessionInfo, SessionKey, Status, Tool, default_color,
+    Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, Tool,
+    default_color,
 };
 use desktop::sidebar::{Action, Row, Sidebar};
 
@@ -53,6 +54,7 @@ fn session(host: &str, name: &str, status: Status) -> SessionInfo {
         context_pct: None,
         attached: 0,
         last_output_age_s: None,
+        pid: None,
     }
 }
 
@@ -444,6 +446,90 @@ fn a_pin_that_cannot_be_saved_is_not_shown() {
 }
 
 #[test]
+fn pin_step_walks_the_pinned_sessions() {
+    let dir = scratch("pin-step");
+    let mut cfg = config(&[LOCAL, "nas"]);
+    cfg.pins.insert("gone-session-0a0b0c0d".to_string());
+    let mut s = Sidebar::new(&cfg, dir.clone());
+    s.apply(idle(LOCAL, &["a", "b", "c"]));
+    s.apply(idle("nas", &["x", "y"]));
+    // Nothing listed is pinned: the keys are the tabs'.
+    assert_eq!(s.pin_step(None, 1), None);
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "a")), 1), None);
+    for pinned in [key(LOCAL, "c"), key(LOCAL, "a"), key("nas", "y")] {
+        s.select_key(&pinned);
+        assert!(s.toggle_pin());
+    }
+    // The ring is the list's order (a, c, y), not the order of pinning.
+    let ring = [key(LOCAL, "a"), key(LOCAL, "c"), key("nas", "y")];
+    for (at, from) in ring.iter().enumerate() {
+        assert_eq!(
+            s.pin_step(Some(from), 1).as_ref(),
+            Some(&ring[(at + 1) % 3])
+        );
+        assert_eq!(
+            s.pin_step(Some(from), -1).as_ref(),
+            Some(&ring[(at + 2) % 3])
+        );
+    }
+    // From a session that is not pinned, or from no tab: the first pinned one, either way.
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "b")), 1), Some(key(LOCAL, "a")));
+    assert_eq!(
+        s.pin_step(Some(&key(LOCAL, "b")), -1),
+        Some(key(LOCAL, "a"))
+    );
+    assert_eq!(s.pin_step(None, -1), Some(key(LOCAL, "a")));
+    // All the sessions in the list's order (a c b, y x: the pinned first in each host), for
+    // when nothing is pinned and fewer than two tabs are open.
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "c")), 1),
+        Some(key(LOCAL, "b"))
+    );
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "b")), 1),
+        Some(key("nas", "y"))
+    );
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "a")), -1),
+        Some(key("nas", "x"))
+    );
+    assert_eq!(s.list_step(None, 1), Some(key(LOCAL, "a")));
+    assert_eq!(sidebar(&[LOCAL]).list_step(None, 1), None);
+    // A pinned session whose host went away is not in the ring.
+    s.apply(HostSnapshot {
+        host: "nas".to_string(),
+        online: false,
+        error: None,
+        sessions: Vec::new(),
+    });
+    assert_eq!(s.pin_step(Some(&key(LOCAL, "c")), 1), Some(key(LOCAL, "a")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_rename_takes_the_pin_along() {
+    let dir = scratch("pin-rename");
+    let mut s = Sidebar::new(&config(&[LOCAL]), dir.clone());
+    s.apply(idle(LOCAL, &["a", "b"]));
+    s.select_key(&key(LOCAL, "b"));
+    assert!(s.toggle_pin());
+    // Not pinned: nothing to move, nothing written.
+    let before = std::fs::read_to_string(dir.join("pins")).unwrap();
+    assert!(!s.renamed(&key(LOCAL, "a"), &key(LOCAL, "a2")));
+    assert_eq!(std::fs::read_to_string(dir.join("pins")).unwrap(), before);
+    // Pinned: the file has the new name's slug only, and the next listing shows the ★.
+    assert!(s.renamed(&key(LOCAL, "b"), &key(LOCAL, "b2")));
+    assert!(s.take_pin_error().is_ok());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("pins")).unwrap(),
+        format!("{}\n", tmls_slug(&key(LOCAL, "b2"), LOCAL))
+    );
+    s.apply(idle(LOCAL, &["a", "b2"]));
+    assert!(s.is_pinned(&key(LOCAL, "b2")) && !s.is_pinned(&key(LOCAL, "a")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn next_waiting_order() {
     let mut s = sidebar(&[LOCAL, "nas"]);
     assert_eq!(s.next_waiting(None), None);
@@ -655,4 +741,101 @@ fn the_session_in_front_never_gets_the_done_mark() {
     s.deliver(&mut seen, listing(Status::Idle, Status::Idle), None);
     assert_eq!(s.status(&key(LOCAL, "b")), Some(Status::Idle));
     assert_eq!(s.status(&key("nas", "none")), None);
+}
+
+/// A Claude session outside tmux, as the listing has it.
+fn outside(name: &str, pid: u32, status: Status) -> SessionInfo {
+    SessionInfo {
+        tool: Tool::Claude,
+        pid: Some(pid),
+        ..session(KITTY, name, status)
+    }
+}
+
+fn kinds(s: &Sidebar) -> Vec<String> {
+    s.rows()
+        .iter()
+        .map(|row| match row {
+            Row::Host { host, .. } => format!("[{host}]"),
+            Row::Session(info) => info.key.name.clone(),
+            Row::Gap => "-".to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn claude_outside_tmux_has_a_section_under_this_machine() {
+    let dir = scratch("outside");
+    let mut s = Sidebar::new(&config(&[LOCAL, "nas"]), dir.clone());
+    s.apply(idle(LOCAL, &["a", "b"]));
+    s.apply(idle("nas", &["x"]));
+    assert_eq!(kinds(&s), ["[laptop]", "a", "b", "-", "[nas]", "x"]);
+
+    // This machine lists two: a rule and the two, right under its tmux sessions.
+    let mut local = idle(LOCAL, &["a", "b"]);
+    local.sessions.push(outside("notes", 21, Status::Waiting));
+    local.sessions.push(outside("thing", 22, Status::Running));
+    s.apply(local.clone());
+    assert_eq!(
+        kinds(&s),
+        [
+            "[laptop]", "a", "b", "[kitty]", "notes", "thing", "-", "[nas]", "x"
+        ]
+    );
+    assert_eq!(s.pid(&key(KITTY, "thing")), Some(22));
+    assert_eq!(s.pid(&key(LOCAL, "a")), None);
+    assert_eq!(s.status(&key(KITTY, "notes")), Some(Status::Waiting));
+
+    // They can be selected and activated; they have no menu, no pin, no `+`, and the arrows'
+    // rings pass them by.
+    s.select_key(&key(KITTY, "thing"));
+    assert_eq!(s.selected(), Some(&key(KITTY, "thing")));
+    assert_eq!(s.activate(), Some(Action::Attach(key(KITTY, "thing"))));
+    assert_eq!(s.click(4), Some(Action::Attach(key(KITTY, "notes"))));
+    assert_eq!(s.menu(4), None);
+    assert_eq!(s.click(3), None, "the rule is no host");
+    assert!(!s.toggle_pin());
+    assert!(s.take_pin_error().is_ok());
+    assert!(!dir.join("pins").exists());
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "b")), 1),
+        Some(key("nas", "x"))
+    );
+    assert_eq!(s.next_waiting(None), Some(key(KITTY, "notes")));
+
+    // Another host's are not shown.
+    let mut nas = idle("nas", &["x"]);
+    nas.sessions.push(outside("far", 31, Status::Idle));
+    s.apply(nas);
+    assert!(!kinds(&s).contains(&"far".to_string()));
+
+    // The same listing again changes nothing; the cursor stays on its session.
+    s.select_key(&key(KITTY, "thing"));
+    s.apply(local.clone());
+    assert_eq!(s.selected(), Some(&key(KITTY, "thing")));
+    assert_eq!(kinds(&s).iter().filter(|k| *k == "[kitty]").count(), 1);
+
+    // One ends: the cursor goes to what is left. Both gone: the section goes, the cursor to
+    // the nearest session.
+    local.sessions.pop();
+    s.apply(local.clone());
+    assert_eq!(s.selected(), Some(&key(KITTY, "notes")));
+    local.sessions.pop();
+    s.apply(local);
+    assert_eq!(kinds(&s), ["[laptop]", "a", "b", "-", "[nas]", "x"]);
+    assert_eq!(s.selected(), Some(&key(LOCAL, "b")));
+
+    // This machine offline: its section goes too.
+    let mut local = idle(LOCAL, &["a"]);
+    local.sessions.push(outside("notes", 21, Status::Idle));
+    s.apply(local);
+    assert!(kinds(&s).contains(&"[kitty]".to_string()));
+    s.apply(HostSnapshot {
+        host: LOCAL.to_string(),
+        online: false,
+        error: None,
+        sessions: Vec::new(),
+    });
+    assert_eq!(kinds(&s), ["[laptop]", "-", "[nas]", "x"]);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
