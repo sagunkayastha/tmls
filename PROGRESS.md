@@ -2,7 +2,21 @@
 
 Quick session log. Newest entry first.
 
-## 2026-10-12 (night) — attention loop round built, reviewed, fix-waved on `feat/attention-loop` @ `745ba5b`; NOT on the PC yet (PC unreachable) ⚠️
+## 2026-10-12 (morning) — PC built `f2f442a`; local re-test in progress before merge
+
+- PC back online. `game-mode status` = off (own command, 10:08). Built `f2f442a` (= `745ba5b` code + docs) on the
+  PC: `tooling/docker/build.sh build --release -p desktop`, warm cache, `target-docker/release/tmls-rs` 20 MB at
+  10:09 MDT (log `/data/scratch/tmls-rs-v0/night2/pc-build-f2f442a.log`). **Restart `tmls-rs` to get it.** `s`
+  is safe on this build.
+- Local re-test first attempt failed before tests ran: `libghostty-vt-sys` build.rs → `failed to execute zig build:
+  No such file or directory` — zig is not on PATH in a fresh shell. Zig 0.15.2 lives at
+  `/data/scratch/zig/y/zig-x86_64-linux-0.15.2/` (PROGRESS S1 prep note); prefix PATH with it for local
+  `cargo test`/`clippy`. Also: `cargo fmt --all --check` flags `crates/client-core/src/config.rs` — pre-existing
+  style, not from this branch; the gate stays `cargo fmt -p desktop --check` as verified last night.
+- Next here: rerun client-core/desktop tests + clippy with zig on PATH, then merge `feat/attention-loop` → `main`
+  (`--no-ff`, as before). No remote on archbox; the PC's `origin` is this checkout, so no push step.
+
+## 2026-10-12 (night) — attention loop round built, reviewed, fix-waved on `feat/attention-loop` @ `745ba5b`; PC build done the next morning (see above)
 
 Unattended run of `docs/superpowers/plans/2026-10-12-tmls-rs-attention-loop.md` (spec
 `docs/superpowers/specs/2026-10-12-tmls-rs-attention-loop-design.md`, F1–F8, D1–D10 + departures). One Fable
@@ -49,8 +63,9 @@ main agent, Opus implementers/reviewers, SDD ledger `.superpowers/sdd/2026-10-12
   `fix/pin-ring`, `feat/viewer-panel`, `wip/viewer-panel`, `feat/desktop-v0`.
 
 ### NEXT
-1. **"build it"** → PC build of `745ba5b` (game mode checked first) + restart `tmls-rs`; then `docs/NIGHT-TEST.md`.
-2. Fix what the sheet finds; then merge `feat/attention-loop` → `main` (your yes), push (your yes).
+1. ~~"build it"~~ done 10:09 (`f2f442a`) → restart `tmls-rs`; then `docs/NIGHT-TEST.md`.
+2. Local re-test with zig on PATH → merge `feat/attention-loop` → `main` (user said "commit" 10:05). Fix what the
+   sheet finds afterwards.
 3. Round 2 (`2026-10-12-tmls-rs-parity-round2.md`) on `feat/parity-round2` — say go; add there: host-side pane check
    before a paste, Claude's other permission-question texts, deferred minors the ledger marks.
 4. Cleanup list above needs your yes.
