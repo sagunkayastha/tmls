@@ -24,6 +24,7 @@ PUSH='tmlsrs-test-2push'
 PUSH_SID='3b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 ASK='tmlsrs-test-1ask'
 ASK_SID='2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
+ASK2='tmlsrs-test-1asked'
 # The stand-ins for Claude processes, by session id: their status files are named after them.
 declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
@@ -146,6 +147,7 @@ cleanup() {
   tmux kill-session -t "=$APPROVE" 2>/dev/null
   tmux kill-session -t "=$PUSH" 2>/dev/null
   tmux kill-session -t "=$ASK" 2>/dev/null
+  tmux kill-session -t "=$ASK2" 2>/dev/null
   for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
@@ -1309,6 +1311,23 @@ if wait_for 12 pane_has_line "$ASK" "tmls-queued-$NONCE"; then
 else
   fail "when its turn ends the queued message is sent" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
 fi
+
+# --- a session renamed outside the app keeps its tab (F8) ---------------------------------------------
+key_enter
+if wait_for 8 attached_to "$ASK"; then pass "Enter attaches $ASK"; else fail "Enter attaches $ASK" "clients: $(attached | tr '\n' '|')"; fi
+tmux rename-session -t "=$ASK" "$ASK2"
+# Claude writes its status file again under the new name (here: the stand-in does).
+fake_claude "$ASK2" "$ASK_SID" idle
+titled() { sway_msg -t get_tree | grep -qF -- "$ASK2"; }
+if wait_for 12 titled; then
+  pass "a session renamed outside the app keeps its tab: the window is titled $ASK2"
+else
+  fail "a session renamed outside the app keeps its tab: the window is titled $ASK2" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 41-renamed-outside" shot 41-renamed-outside
+check_typed "the renamed session's tab still takes the keys" "$ASK2" renamedout
+key_close_tab
+check_typed "its tab closed: the keys go to \"$ODD\"" "$ODD" afterrename
 
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7

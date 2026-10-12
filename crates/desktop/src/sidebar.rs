@@ -99,6 +99,30 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
         .map(|title| (title, false))
 }
 
+/// The sessions of `snap`'s host renamed outside the app since `before` (that host's rows as
+/// the list had them): a name the listing no longer has whose Claude conversation
+/// (`session_id`) it lists under another name. Pairs (old, new). Sessions without a Claude id
+/// are not followed: nothing says which new name is theirs.
+pub fn renamed_outside(
+    before: &[SessionInfo],
+    snap: &HostSnapshot,
+) -> Vec<(SessionKey, SessionKey)> {
+    if !snap.online {
+        return Vec::new();
+    }
+    before
+        .iter()
+        .filter(|old| old.key.host == snap.host && !snap.sessions.iter().any(|s| s.key == old.key))
+        .filter_map(|old| {
+            let id = old.session_id.as_ref()?;
+            let new = snap.sessions.iter().find(|s| {
+                s.key.host == snap.host && s.session_id.as_ref() == Some(id) && s.key != old.key
+            })?;
+            Some((old.key.clone(), new.key.clone()))
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub struct Sidebar {
     local_name: String,

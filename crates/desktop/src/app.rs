@@ -68,7 +68,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use client_core::push::{self, Applied, PushLine};
-use client_core::{Config, HostSnapshot, KITTY, Poller, Seen, SessionKey, Status, default_color};
+use client_core::{
+    Config, HostSnapshot, KITTY, Poller, Seen, SessionInfo, SessionKey, Status, default_color,
+};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -832,6 +834,19 @@ impl Running {
         self.listings
             .insert(snapshot.host.clone(), snapshot.clone());
         self.follow_push(&snapshot.host, snapshot.online);
+        // Sessions renamed outside the app: their tabs, pins and queues follow the new name.
+        let before: Vec<SessionInfo> = self
+            .sidebar
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                sidebar::Row::Session(info) if info.key.host == snapshot.host => Some(info.clone()),
+                _ => None,
+            })
+            .collect();
+        for (old, new) in sidebar::renamed_outside(&before, &snapshot) {
+            self.follow_rename(&old, &new);
+        }
         let queued: Vec<(SessionKey, Option<Status>)> = self
             .queue
             .keys()
@@ -924,6 +939,31 @@ impl Running {
             Err(e) if left > 0 => Err(format!("{e}; {left} queued message(s) kept")),
             Err(e) => Err(e),
         });
+    }
+
+    /// A session with a tab was renamed elsewhere: the tab, its ★ and its queue take the new
+    /// name; the window's title too when it is in front.
+    fn follow_rename(&mut self, old: &SessionKey, new: &SessionKey) {
+        let Some(index) = self.tabs.index_of(old) else {
+            return;
+        };
+        if self.tabs.index_of(new).is_some() {
+            return;
+        }
+        self.tabs.rekey(index, new.clone());
+        self.sidebar.renamed(old, new);
+        if let Err(e) = self.sidebar.take_pin_error() {
+            crate::errln(format_args!("tmls-rs: {e:#}"));
+        }
+        self.queue.renamed(old, new);
+        if self.tabs.active() == Some(index) {
+            self.window
+                .set_title(&format!("{} · {}", new.name, new.host));
+        }
+        self.say(Ok(format!(
+            "{} is now {} (renamed outside tmls-rs)",
+            old.name, new.name
+        )));
     }
 
     /// Starts the reader of `host`'s events.jsonl when the host answers; stops it when not.
@@ -1440,6 +1480,16 @@ impl Running {
     /// A rename or kill asked from the list leaves the keys in the list
     /// (`keys::list_keeps_keys`).
     fn done(&mut self, request: Request, result: Result<String, String>) {
+        if let (Request::New(new), Err(why)) = (&request, &result) {
+            // What was typed is not lost: the form comes back with it and the reason.
+            let form =
+                Form::new_session_again(&self.cfg.hosts, &self.cfg.presets, new, why.clone());
+            self.say(result);
+            if self.modal.is_none() {
+                self.open_modal(Modal::Form(form), None);
+            }
+            return;
+        }
         let ok = result.is_ok();
         self.say(result);
         if !ok {

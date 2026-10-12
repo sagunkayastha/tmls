@@ -9,7 +9,7 @@ use client_core::{
     Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, Tool,
     default_color,
 };
-use desktop::sidebar::{Action, Row, Sidebar, summary};
+use desktop::sidebar::{Action, Row, Sidebar, renamed_outside, summary};
 
 const LOCAL: &str = "laptop";
 
@@ -943,4 +943,25 @@ fn the_dim_line_is_the_reason_else_the_last_reply_else_the_title() {
     info.status = Status::Waiting;
     info.reason = Some("permission prompt".to_string());
     assert_eq!(summary(&info), Some(("permission prompt", true)));
+}
+
+#[test]
+fn renamed_outside_follows_claudes_session_id() {
+    let id = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let with = |name: &str, id: Option<&str>| SessionInfo {
+        session_id: id.map(str::to_string),
+        ..session("nas", name, Status::Idle)
+    };
+    let before = vec![with("old", Some(id)), with("plain", None)];
+    let after = snapshot("nas", vec![with("new", Some(id)), with("plain2", None)]);
+    assert_eq!(
+        renamed_outside(&before, &after),
+        [(key("nas", "old"), key("nas", "new"))]
+    );
+    // Still listed under its name: no rename. A host away says nothing. Another host's
+    // listing is not this one's.
+    let both = snapshot("nas", vec![with("old", Some(id)), with("new", Some(id))]);
+    assert!(renamed_outside(&before, &both).is_empty());
+    assert!(renamed_outside(&before, &offline("nas")).is_empty());
+    assert!(renamed_outside(&before, &snapshot("ph", vec![with("new", Some(id))])).is_empty());
 }

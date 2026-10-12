@@ -996,3 +996,40 @@ fn claude_sessions_get_send_in_their_menu() {
         Some(&MenuItem::Send)
     );
 }
+
+#[test]
+fn a_failed_new_session_reopens_the_form_with_what_was_typed() {
+    let failed = NewSession {
+        host: "ph".to_string(),
+        folder: "~/src/app".to_string(),
+        name: "app-2".to_string(),
+        start: Start::Preset(vec!["codex".to_string()]),
+        size: Some((100, 30)),
+    };
+    let why = "couldn't create app-2 on ph: no such folder: ~/src/app".to_string();
+    let mut form = Form::new_session_again(&hosts(), &presets(), &failed, why.clone());
+    assert_eq!(form.error(), Some(why.as_str()));
+    assert_eq!(form.focus(), Stop::Name);
+    let Form::New(new) = &form else {
+        panic!("a new-session form")
+    };
+    assert_eq!(
+        (new.host_name(), new.folder.text(), new.name.text()),
+        ("ph", "~/src/app", "app-2")
+    );
+    assert_eq!(new.starts()[new.start].0, "codex");
+    assert!(
+        new.name_edited,
+        "the name is the user's: no lookup replaces it"
+    );
+    match form.key(&named(Named::Enter)) {
+        FormResult::Submit(Request::New(again)) => assert_eq!(
+            again,
+            NewSession {
+                size: None,
+                ..failed
+            }
+        ),
+        other => panic!("{other:?}"),
+    }
+}

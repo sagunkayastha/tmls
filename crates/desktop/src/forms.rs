@@ -635,6 +635,31 @@ impl Form {
         Form::New(NewForm::new(hosts, host, presets))
     }
 
+    /// The new-session form again after Create failed: the host, folder, name and start that
+    /// were asked for, and why it failed; the focus on the name.
+    pub fn new_session_again(
+        hosts: &[String],
+        presets: &[(String, Vec<String>)],
+        failed: &NewSession,
+        error: String,
+    ) -> Form {
+        let mut form = NewForm::new(hosts, &failed.host, presets);
+        set_text(&mut form.folder, &failed.folder);
+        set_text(&mut form.name, &failed.name);
+        form.name_edited = true;
+        form.looked_up = (form.host, failed.folder.clone());
+        if let Some(index) = form
+            .starts
+            .iter()
+            .position(|(_, start)| *start == failed.start)
+        {
+            form.start = index;
+        }
+        form.focus_on(Stop::Name);
+        form.error = Some(error);
+        Form::New(form)
+    }
+
     /// The rename field for a session: its name, selected.
     pub fn rename(key: SessionKey) -> Form {
         let mut field = TextField::new();
