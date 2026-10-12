@@ -864,6 +864,22 @@ fn a_dialog_that_comes_back_after_the_user_moved_on_opens_no_form() {
 }
 
 #[test]
+fn a_failed_create_reopens_its_form_only_if_the_user_did_nothing_since() {
+    use forms::FailedCreate::{Keep, Reopen};
+    // Create number 3, asked at 5 key presses; nothing since, no other form open.
+    assert_eq!(forms::failed_create_fate(3, 3, 5, 5, true, false), Reopen);
+    // A key since (a create can take 10 s: the user typed on): the form would take the keys,
+    // and its focus is on Name, where Enter is Create.
+    assert_eq!(forms::failed_create_fate(3, 3, 5, 6, true, false), Keep);
+    // The focus moved (a click on the terminal).
+    assert_eq!(forms::failed_create_fate(3, 3, 5, 5, false, false), Keep);
+    // Another form or menu is open.
+    assert_eq!(forms::failed_create_fate(3, 3, 5, 5, true, true), Keep);
+    // A newer create was asked since.
+    assert_eq!(forms::failed_create_fate(2, 3, 5, 5, true, false), Keep);
+}
+
+#[test]
 fn ask_sends_the_typed_text_or_a_saved_prompt() {
     let k = key(LOCAL, "w");
     let mut form = Form::ask(k.clone(), vec!["What's the progress?".into()], 0);

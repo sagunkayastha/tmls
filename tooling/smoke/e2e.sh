@@ -211,10 +211,12 @@ cat >"$OUT/bin/notify-send" <<EOF
 EOF
 chmod +x "$OUT/bin/notify-send"
 # tmux as it is, but while $OUT/slow-capture is there a capture-pane takes a second first, as
-# on a slow host (the approval check that keys typed on win over a late dialog read).
+# on a slow host (the approval check that keys typed on win over a late dialog read); while
+# $OUT/slow-create is there a has-session takes three (a create that fails late).
 cat >"$OUT/bin/tmux" <<EOF
 #!/bin/sh
 [ "\$1" = capture-pane ] && [ -e "$OUT/slow-capture" ] && sleep 1
+[ "\$1" = has-session ] && [ -e "$OUT/slow-create" ] && sleep 3
 exec /usr/bin/tmux "\$@"
 EOF
 chmod +x "$OUT/bin/tmux"
@@ -921,6 +923,78 @@ fi
 keys -k Escape
 keys -k Escape
 check_typed "Esc closes the form and then leaves the list: typing goes to $NEW" "$NEW" afterform
+
+# A create that fails while the user waits: the form comes back with what was typed.
+NOFOLDER="/nonexistent-$NONCE"
+nofolder_lines() { grep -cF -- "no such folder: $NOFOLDER" "$OUT/app.stderr"; }
+nofolder_lines_are() { [ "$(nofolder_lines)" -eq "$1" ]; }
+key_focus_list
+keys -k c
+keys -k Tab
+keys "$NOFOLDER"
+keys -k Tab
+keys "tmlsrs-test-nofolder"
+key_enter
+if wait_for 8 nofolder_lines_are 1; then
+  pass "a create in a folder that does not exist fails and says why"
+else
+  fail "a create in a folder that does not exist fails and says why" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+check "screenshot 22b-new-form-failed (the form again, with the folder and the reason)" shot 22b-new-form-failed
+# Enter on the form that came back creates again with the same values: the same failure.
+key_enter
+if wait_for 8 nofolder_lines_are 2; then
+  pass "the failed form comes back with its values when nothing was typed (Enter tries again)"
+else
+  fail "the failed form comes back with its values when nothing was typed (Enter tries again)" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+keys -k Escape
+keys -k Escape
+check_typed "Esc closes the failed form and leaves the list: typing goes to $NEW" "$NEW" afterfailed
+
+# A create that fails late, after the user typed on: no form over what they typed into; the
+# reason is in the status line, and c brings the form back with the values.
+exists_lines() { grep -cF -- "a session named $ONE already exists" "$OUT/app.stderr"; }
+exists_lines_are() { [ "$(exists_lines)" -eq "$1" ]; }
+key_focus_list
+keys -k c
+keys -k Tab -k Tab
+keys "$ONE"
+: >"$OUT/slow-create"
+key_enter
+keys -k Escape
+keys "echo typed-on-$NONCE"
+key_enter
+if wait_for 8 exists_lines_are 1; then
+  pass "a create that fails late says why in the status line"
+else
+  fail "a create that fails late says why in the status line" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+rm -f "$OUT/slow-create"
+sleep 0.5
+keys "echo after-failed-$NONCE"
+key_enter
+if wait_for 5 pane_has_line "$NEW" "after-failed-$NONCE"; then
+  pass "a create that fails after the user typed on opens no form: the keys stay with the terminal"
+else
+  fail "a create that fails after the user typed on opens no form: the keys stay with the terminal" \
+    "pane: $(pane_text "$NEW" | grep -v '^$' | tail -3 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 22c-late-failure (no form; the reason in the status line)" shot 22c-late-failure
+key_focus_list
+keys -k c
+key_enter
+if wait_for 8 exists_lines_are 2; then
+  pass "c after a late failure brings the form back with its values (Enter tries again)"
+else
+  fail "c after a late failure brings the form back with its values (Enter tries again)" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+sleep 0.5
+keys -k Escape
+keys -k Escape
+check_typed "Esc closes that form and leaves the list: typing goes to $NEW" "$NEW" afterlate
 
 # m in the list: the session's menu; Enter on its first row: rename.
 key_menu

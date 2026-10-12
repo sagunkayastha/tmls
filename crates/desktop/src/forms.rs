@@ -1512,6 +1512,34 @@ pub fn approval_fate(
     }
 }
 
+/// What becomes of the new-session form when its Create failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailedCreate {
+    /// It opens again, with what was typed and why it failed.
+    Reopen,
+    /// It does not: the reason goes to the status line and the values are kept for the next
+    /// new-session form (`c`).
+    Keep,
+}
+
+/// The fate of a failed Create: `approval_fate`'s rule (create `request` of `latest`, the key
+/// presses at the Create and now, the focus kept since), and no other form or menu open. A
+/// create can take `REQUEST_TIMEOUT`: a form that came back after the user typed on would take
+/// the keys with its focus on Name, where Enter is Create.
+pub fn failed_create_fate(
+    request: u64,
+    latest: u64,
+    keys_then: u64,
+    keys_now: u64,
+    focus_kept: bool,
+    modal_open: bool,
+) -> FailedCreate {
+    match approval_fate(request, latest, keys_then, keys_now, focus_kept) {
+        ApprovalFate::Open if !modal_open => FailedCreate::Reopen,
+        _ => FailedCreate::Keep,
+    }
+}
+
 /// The command that opens `attach` in a new terminal window (tmls `launch_window`):
 /// `$TERMINAL`, else kitty when it is installed, else `x-terminal-emulator`. kitty takes the
 /// command as its arguments, the others after `-e`.
