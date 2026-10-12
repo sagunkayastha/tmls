@@ -706,13 +706,13 @@ fn s_in_the_list_and_alt_shift_a_send_a_message() {
     assert_eq!(global(&ch('a', ALT_SHIFT), Focus::Form), None);
 }
 
-/// Ctrl+Alt+Right / Left walk the open tabs (not the pinned sessions, which Alt+Shift+Right /
-/// Left do), and nothing else with Ctrl+Alt is taken from the terminal.
+/// Ctrl+Alt+Right / Left are the tab keys too, and nothing else with Ctrl+Alt is taken from the
+/// terminal.
 #[test]
-fn ctrl_alt_arrows_walk_the_open_tabs() {
+fn ctrl_alt_arrows_are_the_tab_keys_too() {
     let bound = [
-        (named(Named::Right, CTRL_ALT), Global::NextOpenTab),
-        (named(Named::Left, CTRL_ALT), Global::PrevOpenTab),
+        (named(Named::Right, CTRL_ALT), Global::NextTab),
+        (named(Named::Left, CTRL_ALT), Global::PrevTab),
     ];
     for (ev, expected) in bound {
         for focus in [Focus::Terminal, Focus::Sidebar] {

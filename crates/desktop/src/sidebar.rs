@@ -575,16 +575,15 @@ impl Sidebar {
             .cloned()
     }
 
-    /// Where Alt+Shift+Left / Right go from `from` (tmls `action_switch_tab`): `step` places
-    /// on in the pinned (★) sessions listed now, in the list's order, wrapping round; the first
-    /// of them when `from` is not pinned. `None` when no listed session is pinned — then the
-    /// keys walk the open tabs, or every session (`list_step`).
+    /// `step` places on from `from` in the pinned (★) sessions listed now, in the list's order,
+    /// wrapping round; the first of them when `from` is not pinned. `None` when no listed
+    /// session is pinned. No key uses it now: the tab keys walk the open tabs.
     pub fn pin_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
         self.ring_step(from, step, |key| self.is_pinned(key))
     }
 
-    /// The same among all the sessions listed now: where the keys go while nothing is pinned
-    /// and fewer than two tabs are open. `None` with an empty list.
+    /// The same among all the sessions listed now: where the tab keys go while fewer than two
+    /// tabs are open. `None` with an empty list.
     pub fn list_step(&self, from: Option<&SessionKey>, step: i32) -> Option<SessionKey> {
         self.ring_step(from, step, |_| true)
     }

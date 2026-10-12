@@ -1,10 +1,9 @@
 //! The window's own key bindings, and where every other key goes.
 //!
 //! Bindings (`global`), all on the press:
-//! - Alt+Shift+Right / Left — next / previous pinned (★) session; when none is pinned, tab,
-//!   or session while fewer than two tabs are open (repeats while held)
-//! - Ctrl+Alt+Right / Left — the open tab to the right / left, wrapping round, pinned or not:
-//!   with one pinned session the Alt+Shift keys only ever reach that one
+//! - Alt+Shift+Right / Left, and Ctrl+Alt+Right / Left — the open tab to the right / left,
+//!   wrapping round, pinned or not; a session of the list while fewer than two tabs are open
+//!   (repeats while held)
 //! - Alt+Shift+Up — keyboard focus to the session list; Esc in the list — back to the terminal
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the
@@ -60,12 +59,9 @@ pub enum Focus {
 /// What a bound key asks the window to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Global {
-    /// Alt+Shift+Right / Left: the next / previous pinned session, or tab (`App::switch_tab`).
+    /// Alt+Shift+Right / Left and Ctrl+Alt+Right / Left: the open tab to the right / left.
     NextTab,
     PrevTab,
-    /// Ctrl+Alt+Right / Left: the open tab to the right / left, pinned or not.
-    NextOpenTab,
-    PrevOpenTab,
     FocusSidebar,
     FocusTerminal,
     CloseTab,
@@ -88,12 +84,7 @@ impl Global {
     fn repeats(self) -> bool {
         matches!(
             self,
-            Global::NextTab
-                | Global::PrevTab
-                | Global::NextOpenTab
-                | Global::PrevOpenTab
-                | Global::ZoomIn
-                | Global::ZoomOut
+            Global::NextTab | Global::PrevTab | Global::ZoomIn | Global::ZoomOut
         )
     }
 }
@@ -146,12 +137,12 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
     if focus == Focus::Form {
         return None;
     }
-    // The arrows under Ctrl+Alt walk the open tabs, and only those two keys: the rest of
+    // The arrows under Ctrl+Alt are the tab keys too, and only those two keys: the rest of
     // Ctrl+Alt is the terminal's.
     if ev.mods == CTRL_ALT {
         return match ev.key {
-            Key::Named(Named::Right) => Some(Global::NextOpenTab),
-            Key::Named(Named::Left) => Some(Global::PrevOpenTab),
+            Key::Named(Named::Right) => Some(Global::NextTab),
+            Key::Named(Named::Left) => Some(Global::PrevTab),
             _ => None,
         };
     }
@@ -436,8 +427,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+Q", "quit; the sessions keep running"),
             ("Ctrl+= / Ctrl+−", "font size"),
-            ("Alt+Shift+→ / ←", "next / previous pinned or tab"),
-            ("Ctrl+Alt+→ / ←", "next / previous open tab"),
+            ("Alt+Shift+→ / ←", "next / previous tab"),
+            ("Ctrl+Alt+→ / ←", "the same"),
             ("Alt+Shift+↑", "the keys to the session list"),
             ("Alt+Shift+N", "next that waits, else unread"),
             ("Alt+Shift+A", "send a message to this tab"),

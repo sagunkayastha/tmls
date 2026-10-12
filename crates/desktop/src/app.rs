@@ -2059,8 +2059,6 @@ impl Running {
         match global {
             Global::NextTab => self.switch_tab(1),
             Global::PrevTab => self.switch_tab(-1),
-            Global::NextOpenTab => self.step_tab(1),
-            Global::PrevOpenTab => self.step_tab(-1),
             Global::FocusSidebar => self.set_focus(Focus::Sidebar),
             Global::FocusTerminal => {
                 // With no tab open there is no terminal to give the keys to.
@@ -2096,27 +2094,16 @@ impl Running {
     }
 
     /// Opens the next session after the front tab's that needs the user.
-    /// Alt+Shift+Right / Left, as in tmls: among the pinned (★) sessions when any is listed —
-    /// one without a tab gets one — else among the open tabs, and with fewer than two of
-    /// those among all the sessions.
+    /// Alt+Shift+Right / Left and Ctrl+Alt+Right / Left, as in tmls: the open tab to the right
+    /// or left of the one in front, wrapping round. A pin (★) plays no part: with one pinned
+    /// session a walk among the pinned only ever reached that one. With fewer than two tabs
+    /// there is no tab to go to, and the keys walk the sessions of the list instead.
     fn switch_tab(&mut self, step: i32) {
-        let front = self.tabs.active().map(|index| self.tabs.key(index));
-        let pinned = self.sidebar.pin_step(front, step);
-        let few_tabs = || match self.tabs.len() {
-            0 | 1 => self.sidebar.list_step(front, step),
-            _ => None,
-        };
-        if let Some(key) = pinned.or_else(few_tabs) {
-            self.open(&key);
-            return;
-        }
-        self.step_tab(step);
-    }
-
-    /// Ctrl+Alt+Right / Left: the open tab to the right or left of the one in front, wrapping
-    /// round, whatever is pinned. Nothing with fewer than two tabs.
-    fn step_tab(&mut self, step: i32) {
         if self.tabs.len() < 2 {
+            let front = self.tabs.active().map(|index| self.tabs.key(index));
+            if let Some(key) = self.sidebar.list_step(front, step) {
+                self.open(&key);
+            }
             return;
         }
         if step > 0 {
