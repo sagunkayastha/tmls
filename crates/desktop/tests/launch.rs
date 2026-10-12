@@ -49,6 +49,22 @@ fn a_subcommand_stays_in_the_foreground() {
 }
 
 #[test]
+fn a_subcommand_takes_no_more_words() {
+    assert_eq!(launch::subcommand(&args(&["keys"])), Some(Ok("keys")));
+    assert_eq!(
+        launch::subcommand(&args(&["keys", "--fg"])),
+        Some(Ok("keys"))
+    );
+    // Not the app with the hosts `keys` and `extra`: a usage error.
+    assert!(matches!(
+        launch::subcommand(&args(&["keys", "extra"])),
+        Some(Err(e)) if e.contains("extra")
+    ));
+    assert_eq!(launch::subcommand(&args(&["ph", "keys"])), None);
+    assert_eq!(launch::subcommand(&args(&[])), None);
+}
+
+#[test]
 fn hosts_detach() {
     assert!(!wants_foreground(&args(&["ph"]), None));
     assert!(!wants_foreground(&args(&["archbox", "ph"]), None));

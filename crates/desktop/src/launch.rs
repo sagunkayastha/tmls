@@ -17,6 +17,24 @@ pub fn is_foreground_flag(arg: &str) -> bool {
 /// host (`tmls-rs HOST…`).
 const SUBCOMMANDS: &[&str] = &["keys"];
 
+/// The subcommand the arguments ask for: `None` when the first word is none; its name when it
+/// stands alone (foreground flags aside); an error, for the usage, when other words follow it
+/// — `tmls-rs keys extra` is not the app with the hosts `keys` and `extra`.
+pub fn subcommand(args: &[String]) -> Option<Result<&str, String>> {
+    let first = args
+        .first()
+        .filter(|first| SUBCOMMANDS.contains(&first.as_str()))?;
+    let extra: Vec<&str> = args[1..]
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !is_foreground_flag(arg))
+        .collect();
+    Some(match extra.is_empty() {
+        true => Ok(first.as_str()),
+        false => Err(format!("{first} takes no arguments, got {extra:?}")),
+    })
+}
+
 /// Whether to run in this process rather than detach. `env_fg` is `$TMLS_RS_FOREGROUND`.
 ///
 /// Stays: with `--bench` (the e2e and bench scripts read its stderr), `--foreground`/`--fg`,

@@ -64,11 +64,18 @@ fn main() -> ExitCode {
     unsafe { std::env::remove_var("TMUX") };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args == ["keys"] {
-        use std::io::Write;
-        // Not `print!`: a closed pipe (`tmls-rs keys | head`) must not panic.
-        let _ = std::io::stdout().write_all(desktop::keys::help_text().as_bytes());
-        return ExitCode::SUCCESS;
+    match desktop::launch::subcommand(&args) {
+        Some(Ok(_keys)) => {
+            use std::io::Write;
+            // Not `print!`: a closed pipe (`tmls-rs keys | head`) must not panic.
+            let _ = std::io::stdout().write_all(desktop::keys::help_text().as_bytes());
+            return ExitCode::SUCCESS;
+        }
+        Some(Err(e)) => {
+            desktop::errln(format_args!("tmls-rs: {e}\n{USAGE}"));
+            return ExitCode::from(2);
+        }
+        None => {}
     }
     let args = match parse(args) {
         Ok(args) => args,
