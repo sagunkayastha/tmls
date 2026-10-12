@@ -1889,6 +1889,17 @@ impl Running {
         });
     }
 
+    /// `Folder` in the panel's header: the folder the panel's file is in goes to the desktop's
+    /// file manager.
+    fn open_side_folder(&mut self) {
+        let Some(side) = self.side.as_ref() else {
+            return;
+        };
+        let said = viewer::folder_target(&side.host, &side.path, &self.cfg.local_name)
+            .and_then(|(target, said)| links::open_folder(&target).map(|()| said));
+        self.say(Ok(said.unwrap_or_else(|problem| problem)));
+    }
+
     /// Runs `work` (this machine's name, the cache directory, whether its answer is still
     /// waited for) on a thread of its own and delivers what it gives as the answer to a new
     /// click. Work that a newer click overtook can stop early: its answer is dropped anyway.
@@ -2730,6 +2741,10 @@ impl Running {
                 self.focus_panel();
                 self.open_side_in_app();
             }
+            Hit::SideFolder => {
+                self.focus_panel();
+                self.open_side_folder();
+            }
             Hit::SideRefresh => {
                 self.focus_panel();
                 self.show_made();
@@ -2800,6 +2815,7 @@ impl Running {
             Hit::Side
             | Hit::SideDivider
             | Hit::SideOpen
+            | Hit::SideFolder
             | Hit::SideRefresh
             | Hit::SideBack
             | Hit::SideClose => {

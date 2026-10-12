@@ -410,6 +410,30 @@ pub fn open_path_with(
     spawn("xdg-open", &[path]).map_err(|e| format!("xdg-open failed: {e}"))
 }
 
+/// Opens a folder with `spawn(program, arguments)`: an absolute path on this machine, or the
+/// `sftp://` address of one on another host (`viewer::folder_target`). Anything else is
+/// refused and nothing is run.
+pub fn open_folder_with(
+    target: &str,
+    spawn: &mut dyn FnMut(&str, &[&str]) -> io::Result<()>,
+) -> Result<(), String> {
+    let remote = target
+        .strip_prefix("sftp://")
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with(['/', '-']));
+    if !remote {
+        return open_path_with(target, spawn);
+    }
+    if target.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("not opened (not an address): {target}"));
+    }
+    spawn("xdg-open", &[target]).map_err(|e| format!("xdg-open failed: {e}"))
+}
+
+/// Opens a folder in the desktop's file manager (`open_folder_with`).
+pub fn open_folder(target: &str) -> Result<(), String> {
+    open_folder_with(target, &mut detached)
+}
+
 /// Opens the file or folder at `path` in the desktop's app for it, as `open` does a URL.
 pub fn open_path(path: &str) -> Result<(), String> {
     open_path_with(path, &mut detached)

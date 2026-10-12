@@ -299,7 +299,7 @@ fn without_a_panel_nothing_is_laid_out_for_one() {
         for (x, y) in [(width as f32 - 1.0, 30.0), (width as f32 - 1.0, 60.0)] {
             assert!(!matches!(
                 l.hit(x, y, 1),
-                Hit::Side | Hit::SideOpen | Hit::SideClose | Hit::SideDivider
+                Hit::Side | Hit::SideOpen | Hit::SideFolder | Hit::SideClose | Hit::SideDivider
             ));
         }
     }
@@ -369,12 +369,23 @@ fn the_header_has_the_path_then_open_in_app_then_the_close_mark() {
     let header = |title_cols, open, close| SideHeader {
         title_col: 0,
         title_cols,
+        folder: None,
         open,
         close,
         back: None,
     };
-    // 49 columns: × on 47 (cells 46-48), a column, `Open in app` on 34-44, two columns.
-    assert_eq!(side_header(49), header(32, Some(34), Some(47)));
+    // 49 columns: × on 47 (cells 46-48), a column, `Open in app` on 34-44, two columns,
+    // `Folder` on 26-31, two columns.
+    assert_eq!(
+        side_header(49),
+        SideHeader {
+            folder: Some(26),
+            ..header(24, Some(34), Some(47))
+        }
+    );
+    // `Folder` goes first, when the path would have fewer than sixteen columns beside it.
+    assert_eq!(side_header(41).folder, Some(18));
+    assert_eq!(side_header(40), header(23, Some(25), Some(38)));
     // The label goes when the path would have fewer than eight columns beside it.
     assert_eq!(side_header(25), header(8, Some(10), Some(23)));
     assert_eq!(side_header(24), header(19, None, Some(22)));
@@ -398,6 +409,10 @@ fn clicks_hit_the_panels_close_mark_and_open_in_app() {
         (785.0, Hit::SideDivider),
         (790.0, Hit::SideDivider),
         (col(0), Hit::Side),
+        (col(25) + 9.0, Hit::Side),
+        (col(26), Hit::SideFolder),
+        (col(31) + 9.0, Hit::SideFolder),
+        (col(32), Hit::Side),
         (col(33) + 9.0, Hit::Side),
         (col(34), Hit::SideOpen),
         (col(44) + 9.0, Hit::SideOpen),
@@ -795,6 +810,7 @@ fn the_lists_header_has_refresh_and_a_picture_from_the_list_a_way_back() {
         SideHeader {
             title_col: 0,
             title_cols: 36,
+            folder: None,
             open: Some(38),
             close: Some(47),
             back: None,
@@ -808,7 +824,8 @@ fn the_lists_header_has_refresh_and_a_picture_from_the_list_a_way_back() {
         side_header_with(49, FROM_LIST),
         SideHeader {
             title_col: 2,
-            title_cols: 30,
+            title_cols: 22,
+            folder: Some(26),
             open: Some(34),
             close: Some(47),
             back: Some(0),
@@ -855,6 +872,7 @@ fn clicks_hit_refresh_and_the_way_back() {
         (col(0), Hit::SideBack),
         (col(1) + 9.0, Hit::SideBack),
         (col(2), Hit::Side),
+        (col(26), Hit::SideFolder),
         (col(34), Hit::SideOpen),
         (col(46), Hit::SideClose),
     ] {

@@ -540,6 +540,38 @@ pub fn open_in_app(
     outside(host, &located, local_name, cache, None, run, &|| true)
 }
 
+/// What `links::open_folder` is to be given for the folder the absolute `path` on `host` is
+/// in, and the line for the status line: the folder itself on this machine, else its
+/// `sftp://` address, which the desktop's file manager reads the folder through (as tmls
+/// does; nothing is copied).
+pub fn folder_target(host: &str, path: &str, local_name: &str) -> Result<(String, String), String> {
+    let name = named(host, path, local_name);
+    if !path.starts_with('/') {
+        return Err(format!("{name}: no folder to open"));
+    }
+    let folder = match path.trim_end_matches('/').rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((folder, _)) => folder,
+    };
+    if host == local_name {
+        return Ok((folder.to_string(), format!("opened {folder}")));
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    if host.is_empty() || host.starts_with('-') || !host.chars().all(plain) {
+        return Err(format!("{name}: no sftp address for the host"));
+    }
+    let mut target = format!("sftp://{host}");
+    for byte in folder.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
+                target.push(byte as char)
+            }
+            other => target.push_str(&format!("%{other:02X}")),
+        }
+    }
+    Ok((target, format!("opened {folder} on {host}")))
+}
+
 /// What `xdg-open` is to be given for `located`: the path itself on this machine, else a
 /// copy in `cache`. `have`: the file's bytes, when they were read already. `wanted`: see
 /// `open_link_while`; asked before the copy is written.

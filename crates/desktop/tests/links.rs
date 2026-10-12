@@ -405,3 +405,37 @@ fn open_path_runs_xdg_open_with_an_absolute_path_as_one_argument() {
     let said = links::open_path_with("/x", &mut fails);
     assert!(said.unwrap_err().starts_with("xdg-open failed"));
 }
+
+#[test]
+fn a_folder_is_opened_where_it_is_or_by_its_sftp_address() {
+    let mut ran: Vec<String> = Vec::new();
+    let mut spawn = |program: &str, args: &[&str]| {
+        assert_eq!((program, args.len()), ("xdg-open", 1));
+        ran.push(args[0].to_string());
+        Ok(())
+    };
+    for good in ["/home/u/a b", "sftp://archbox/home/u/a%20b", "sftp://nas"] {
+        assert_eq!(links::open_folder_with(good, &mut spawn), Ok(()), "{good}");
+    }
+    for bad in [
+        "",
+        "-h",
+        "x",
+        "sftp://",
+        "sftp:///etc",
+        "sftp://-oProxyCommand=x/",
+        "sftp://h/a b",
+        "sftp://h/a\nb",
+        "http://a.io/",
+        "file:///etc",
+    ] {
+        assert!(
+            links::open_folder_with(bad, &mut spawn).is_err(),
+            "{bad:?} must be refused"
+        );
+    }
+    assert_eq!(
+        ran,
+        ["/home/u/a b", "sftp://archbox/home/u/a%20b", "sftp://nas"]
+    );
+}

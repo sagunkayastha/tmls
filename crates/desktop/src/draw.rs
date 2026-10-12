@@ -22,7 +22,7 @@
 //!
 //! With a file open (`viewer::SidePanel`) the area right of the list is split: the terminal
 //! and its tab bar keep the left part, a line divides, and the panel has the right part — a
-//! header (the path, `Open in app`, `×`) in the tab bar's band over the file's text with its
+//! header (the path, `Folder`, `Open in app`, `×`) in the tab bar's band over the file's text with its
 //! line numbers, whose rows are the terminal's. `layout_with` lays
 //! that out, and `Layout::grid` is then the smaller terminal. The panel opens with half the
 //! columns (`default_panel_cols`); dragging the divider gives it more or fewer, never under
@@ -125,6 +125,8 @@ const MIN_LIST_LINES: usize = 4;
 
 /// The label in the file panel's header that opens the file in the desktop's app.
 pub const OPEN_IN_APP: &str = "Open in app";
+/// The label left of it that opens the file's folder in the desktop's file manager.
+pub const OPEN_FOLDER: &str = "Folder";
 /// The label in the header of the list of a session's images that reads the list again.
 pub const REFRESH: &str = "Refresh";
 /// At the start of the header of a picture opened from that list: back to the list.
@@ -143,6 +145,9 @@ const SIDE_CLOSE_COLS: usize = 3;
 /// The file panel's header has `Open in app` only when this many columns are left for the
 /// path beside it.
 const SIDE_TITLE_MIN_COLS: usize = 8;
+/// It has `Folder` too only when this many are left then: a picture's title says its size
+/// after the path.
+const SIDE_FOLDER_MIN_COLS: usize = 16;
 
 /// A button at the foot of the sidebar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +295,8 @@ pub enum Hit {
     SideDivider,
     /// `Open in app` in the file panel's header.
     SideOpen,
+    /// `Folder` in the file panel's header.
+    SideFolder,
     /// `Refresh` in the header of the list of a session's images.
     SideRefresh,
     /// `‹` in the header of a picture opened from that list.
@@ -303,7 +310,8 @@ pub enum Hit {
 }
 
 /// The columns of the file panel's header, of `cols` in all: the path from the first one,
-/// then `Open in app` and the `×` at the right end. A narrow panel has no `Open in app`.
+/// then `Folder`, `Open in app` and the `×` at the right end. A narrow panel has no `Folder`,
+/// a narrower one no `Open in app` either.
 /// The list of a session's images has `Refresh` for `Open in app`; a picture opened from it
 /// has `‹` first and its path after that (`SideLook`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +320,8 @@ pub struct SideHeader {
     pub title_col: usize,
     /// Columns the path may take.
     pub title_cols: usize,
+    /// The column `Folder` starts at. A list has none.
+    pub folder: Option<usize>,
     /// The column `Open in app` (or `Refresh`) starts at.
     pub open: Option<usize>,
     /// The column of the `×`.
@@ -338,13 +348,22 @@ pub fn side_header_with(cols: usize, look: SideLook) -> SideHeader {
     let open = cols
         .checked_sub(SIDE_CLOSE_COLS + 1 + label)
         .filter(|open| *open >= SIDE_TITLE_MIN_COLS + 2);
-    let title_end = open.or(close.map(|close| close - 1)).unwrap_or(cols);
+    // Two columns left of that label, if the path keeps enough columns then.
+    let folder = open
+        .filter(|_| !look.refresh)
+        .and_then(|open| open.checked_sub(2 + OPEN_FOLDER.chars().count()))
+        .filter(|folder| *folder >= SIDE_FOLDER_MIN_COLS + 2);
+    let title_end = folder
+        .or(open)
+        .or(close.map(|close| close - 1))
+        .unwrap_or(cols);
     // The `‹` never shares a cell with the `×`.
     let back = (look.back && cols >= SIDE_CLOSE_COLS + SIDE_BACK_COLS).then_some(0);
     let title_col = back.map_or(0, |back| back + SIDE_BACK_COLS);
     SideHeader {
         title_col,
         title_cols: title_end.saturating_sub(2 + title_col),
+        folder,
         open,
         close,
         back,
@@ -702,6 +721,11 @@ impl Layout {
                 true => Hit::SideRefresh,
                 false => Hit::SideOpen,
             }
+        } else if header
+            .folder
+            .is_some_and(|at| (at..at + OPEN_FOLDER.chars().count()).contains(&col))
+        {
+            Hit::SideFolder
         } else if header
             .back
             .is_some_and(|back| (back..back + SIDE_BACK_COLS).contains(&col))
@@ -1108,7 +1132,7 @@ pub fn side_header_spans_focused(
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let header = side_header_with(cols, look);
-    let mut out = Vec::with_capacity(4);
+    let mut out = Vec::with_capacity(5);
     if let Some(back) = header.back {
         out.push(Span::whole(0, back, BACK_MARK).colour(COPY_RGB).bold());
     }
@@ -1118,6 +1142,9 @@ pub fn side_header_spans_focused(
         true => title.colour(CURSOR_RGB).bold(),
         false => title.colour(theme.sidebar_fg),
     });
+    if let Some(folder) = header.folder {
+        out.push(Span::whole(0, folder, OPEN_FOLDER).colour(COPY_RGB).bold());
+    }
     if let Some(open) = header.open {
         let label = side_label(look);
         out.push(Span::whole(0, open, label).colour(COPY_RGB).bold());

@@ -1858,3 +1858,32 @@ fn a_list_that_is_no_longer_waited_for_asks_no_host() {
     assert!(matches!(wanted, Ok(Opened::Made { files, .. }) if files.len() == 1));
     assert_eq!(*calls.borrow(), 1);
 }
+
+#[test]
+fn the_folder_of_a_file_is_itself_here_and_an_sftp_address_elsewhere() {
+    use desktop::viewer::folder_target;
+    let here = |path: &str| folder_target("pc", path, "pc").map(|(target, _)| target);
+    assert_eq!(here("/w/src/main.rs").as_deref(), Ok("/w/src"));
+    assert_eq!(here("/w/a b/").as_deref(), Ok("/w"));
+    assert_eq!(here("/main.rs").as_deref(), Ok("/"));
+    assert!(here("").is_err() && here("main.rs").is_err());
+    assert_eq!(
+        folder_target("pc", "/w/src/main.rs", "pc").unwrap().1,
+        "opened /w/src"
+    );
+    // Another host: nothing is copied, every byte that is not plain is escaped.
+    assert_eq!(
+        folder_target("archbox", "/home/u/a b/é;$x/f.png", "pc"),
+        Ok((
+            "sftp://archbox/home/u/a%20b/%C3%A9%3B%24x".to_string(),
+            "opened /home/u/a b/é;$x on archbox".to_string()
+        ))
+    );
+    assert_eq!(
+        folder_target("nas.lan", "/f.png", "pc").unwrap().0,
+        "sftp://nas.lan/"
+    );
+    for host in ["", "-oProxyCommand=x", "a b", "u@h", "h/x"] {
+        assert!(folder_target(host, "/w/f", "pc").is_err(), "{host:?}");
+    }
+}
