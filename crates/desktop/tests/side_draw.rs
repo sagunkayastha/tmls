@@ -410,7 +410,17 @@ fn a_pictures_header_says_its_size_and_how_large_it_is_drawn() {
         w: 550.0,
         h: 400.0,
     };
-    let panel = SidePanel::image(LOCAL, "/w/shots/screen.png", (1280, 800), LOCAL);
+    // A photo of 6000 x 4000 pixels kept as 4096 x 2731: the header says the file's size,
+    // and how large a pixel of the file is drawn (550 for 6000).
+    let photo = SidePanel::image(LOCAL, "/w/p.jpg", (4096, 2731), (6000, 4000), LOCAL);
+    assert_eq!(photo.view(20, 60, body).title, "/w/p.jpg 6000×4000 · 9 %");
+    let panel = SidePanel::image(
+        LOCAL,
+        "/w/shots/screen.png",
+        (1280, 800),
+        (1280, 800),
+        LOCAL,
+    );
     let view = panel.view(20, 60, body);
     assert_eq!(view.title, "/w/shots/screen.png 1280×800 · 43 %");
     let spans = side_header_spans(&view.title, 60, &theme);

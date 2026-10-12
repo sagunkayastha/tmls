@@ -10,8 +10,8 @@
 //!    relative path is under the directory of the session's pane, `~/` under the host's home.
 //! 2. **A picture** goes to the panel: an extension in `IMAGES`, at most `MAX_IMAGE_BYTES`
 //!    bytes, read and decoded here (`decode`) to RGBA of at most `MAX_SIDE` pixels a side
-//!    (`Opened::Image`). One that is too large or cannot be decoded is said in the status line
-//!    and opens nowhere.
+//!    (`Opened::Image`). One that is too large or no picture after all goes to the desktop's
+//!    app like the rest, and the status line says why; one that is broken opens nowhere.
 //! 3. **Text** goes to the panel: an extension that is in neither list, at most `MAX_BYTES`
 //!    bytes, valid UTF-8 and no NUL byte (`Opened::Text`).
 //! 4. **Everything else** — a folder, a PDF, an archive, a picture of another kind, a file
@@ -132,73 +132,123 @@ impl std::fmt::Debug for Picture {
     }
 }
 
-/// The first line of what the decoder says is wrong.
-fn broken(error: image::ImageError) -> String {
-    use image::error::{ImageError, LimitErrorKind};
-    match &error {
-        ImageError::Limits(limit)
-            if !matches!(limit.kind(), LimitErrorKind::Unsupported { .. }) =>
-        {
-            return "image too large".to_string();
+/// Why a file's bytes are no picture for the panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// More pixels than `MAX_IMAGE_PIXELS`, or more bytes of them than a decode may ask for.
+    TooLarge,
+    /// No picture by its first bytes, or one of a kind that is not decoded here.
+    NotAnImage,
+    /// A picture that is cut off or damaged: what the decoder says of it.
+    Broken(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::TooLarge => f.write_str("image too large"),
+            Refused::NotAnImage => f.write_str("not an image"),
+            Refused::Broken(why) => write!(f, "broken image: {why}"),
         }
-        ImageError::Unsupported(_) => return "not an image the panel shows".to_string(),
-        _ => {}
     }
-    let all = error.to_string();
-    let line = all.lines().map(str::trim).find(|line| !line.is_empty());
-    format!("broken image: {}", line.unwrap_or("it cannot be decoded"))
+}
+
+impl From<image::ImageError> for Refused {
+    fn from(error: image::ImageError) -> Refused {
+        use image::error::{ImageError, LimitErrorKind};
+        match &error {
+            ImageError::Limits(limit)
+                if !matches!(limit.kind(), LimitErrorKind::Unsupported { .. }) =>
+            {
+                return Refused::TooLarge;
+            }
+            ImageError::Unsupported(_) => return Refused::NotAnImage,
+            _ => {}
+        }
+        // The first line of what the decoder says is wrong.
+        let all = error.to_string();
+        let line = all.lines().map(str::trim).find(|line| !line.is_empty());
+        Refused::Broken(line.unwrap_or("it cannot be decoded").to_string())
+    }
+}
+
+/// A picture file, decoded: the pixels kept, and the file's own size in pixels (as it is
+/// seen, turned by its orientation), which is larger when the picture was made smaller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoded {
+    pub picture: Picture,
+    pub file: (u32, u32),
+}
+
+/// `decode_file` for callers that want the pixels and a line to show.
+pub fn decode(bytes: &[u8], max_side: u32) -> Result<Picture, String> {
+    match decode_file(bytes, max_side) {
+        Ok(decoded) => Ok(decoded.picture),
+        Err(refused) => Err(refused.to_string()),
+    }
 }
 
 /// Decodes a picture file's bytes (PNG, JPEG, GIF, WebP or BMP, told by its first bytes, not
 /// its name) to RGBA, turned as its EXIF orientation says and made smaller, its shape kept,
 /// if a side is longer than `max_side`. A GIF gives its first frame.
 ///
-/// The error is for the status line: "not an image" for bytes that are no picture, "image too
-/// large" for more than `MAX_IMAGE_PIXELS` pixels — by the header alone, before a buffer for
-/// them is asked for — and "broken image: …" for one that is cut off or damaged. Decoding
-/// allocates at most four bytes a pixel of `MAX_IMAGE_PIXELS` at a time. Never panics on bad
-/// bytes. Takes as long as the picture is large: not for the UI thread.
-pub fn decode(bytes: &[u8], max_side: u32) -> Result<Picture, String> {
+/// Refused by the header alone, before a buffer for the pixels is asked for: more than
+/// `MAX_IMAGE_PIXELS` pixels, or pixels that take more than four bytes each of that many as
+/// the file has them (16 bits a channel count double). So the decoded picture is at most
+/// 200 MB; on top of it come what the decoder keeps of its own and, at the end, the RGBA
+/// copy of at most `max_side` squared pixels — a quarter of a gigabyte at the peak for the
+/// largest picture taken, not a multiple of it. Never panics on bad bytes by intent; the
+/// caller guards against a decoder that does (`guarded`). Takes as long as the picture is
+/// large: not for the UI thread.
+pub fn decode_file(bytes: &[u8], max_side: u32) -> Result<Decoded, Refused> {
     use image::ImageDecoder;
-    let not_an_image = || "not an image".to_string();
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|_| not_an_image())?;
+        .map_err(|_| Refused::NotAnImage)?;
     if reader.format().is_none() {
-        return Err(not_an_image());
+        return Err(Refused::NotAnImage);
     }
     // Reads the header only.
-    let mut decoder = reader.into_decoder().map_err(|error| match error {
-        image::ImageError::Unsupported(_) => not_an_image(),
-        error => broken(error),
-    })?;
+    let mut decoder = reader.into_decoder()?;
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 {
-        return Err("broken image: it has no pixels".to_string());
+        return Err(Refused::Broken("it has no pixels".to_string()));
     }
     if width as u64 * height as u64 > MAX_IMAGE_PIXELS {
-        return Err("image too large".to_string());
+        return Err(Refused::TooLarge);
     }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(4 * MAX_IMAGE_PIXELS);
-    decoder.set_limits(limits).map_err(broken)?;
+    // The buffer `from_decoder` is about to ask for; nothing else checks it on this path.
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
     // Before the pixels: a decoder that cannot say gives none.
     let orientation = decoder.orientation().ok();
-    let mut image = image::DynamicImage::from_decoder(decoder).map_err(broken)?;
+    let mut image = image::DynamicImage::from_decoder(decoder)?;
     if let Some(orientation) = orientation {
         image.apply_orientation(orientation);
     }
+    let file = (image.width(), image.height());
     let max_side = max_side.max(1);
     if image.width() > max_side || image.height() > max_side {
-        // Fits it into the square with its shape kept; a side never comes to nothing.
-        image = image.resize(max_side, max_side, image::imageops::FilterType::Triangle);
+        // Fits it into the square with its shape kept; a side never comes to nothing. In
+        // the pixels' own kind: no copy of the whole picture as floats.
+        image = image.thumbnail(max_side, max_side);
     }
     let image = image.into_rgba8();
-    Ok(Picture {
+    let picture = Picture {
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
-    })
+    };
+    Ok(Decoded { picture, file })
+}
+
+/// Runs `work` and gives its answer; work that panics (a decoder's bug on bytes it did not
+/// expect) answers too, so the status line does not stay on "opening …".
+pub fn guarded(work: impl FnOnce() -> Result<Opened, String>) -> Result<Opened, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Err("broken image".to_string()))
 }
 
 /// A text file, read.
@@ -217,10 +267,12 @@ pub struct Document {
 pub enum Opened {
     /// For the panel.
     Text(Document),
-    /// A picture for the panel, decoded. `path` is absolute, on `host`.
+    /// A picture for the panel, decoded. `path` is absolute, on `host`; `file` is the
+    /// file's size in pixels, which `picture` may be smaller than.
     Image {
         host: String,
         path: String,
+        file: (u32, u32),
         picture: Picture,
     },
     /// For the desktop's app: the file or folder on this machine to give to `xdg-open`, and
@@ -278,11 +330,25 @@ pub fn open_link(
     cache: Option<&Path>,
     run: Runner,
 ) -> Result<Opened, String> {
+    open_link_while(key, link, local_name, cache, run, &|| true)
+}
+
+/// `open_link` for a click that may be overtaken: `wanted` says whether its answer is still
+/// waited for. Asked once a picture is read, before it is decoded — the decode of a large one
+/// takes a quarter of a gigabyte for a moment, which a click nobody waits for is not given.
+pub fn open_link_while(
+    key: &SessionKey,
+    link: &FileLink,
+    local_name: &str,
+    cache: Option<&Path>,
+    run: Runner,
+    wanted: &dyn Fn() -> bool,
+) -> Result<Opened, String> {
     let located = locate(key, &link.path, local_name, run)?;
     let host = key.host.as_str();
     let name = named(host, &located.path, local_name);
     if located.kind == Kind::File && is_image(&located.path) {
-        return image(host, &located, local_name, run);
+        return image(host, &located, local_name, cache, run, wanted);
     }
     let text_sized = located.size <= MAX_BYTES as u64;
     if located.kind != Kind::File || opens_outside(&located.path, false) || !text_sized {
@@ -306,26 +372,55 @@ pub fn open_link(
     }
 }
 
-/// Reads the picture `located` on `host` and decodes it for the panel. One that is larger
-/// than `MAX_IMAGE_BYTES` is not read, or not decoded if it grew since it was located.
-fn image(host: &str, located: &Located, local_name: &str, run: Runner) -> Result<Opened, String> {
+/// Reads the picture `located` on `host` and decodes it for the panel.
+///
+/// One the panel does not take goes to the desktop's app as any other file does (`outside`),
+/// and the line says why: larger than `MAX_IMAGE_BYTES` (not read, or not decoded if it grew
+/// since it was located), too many pixels, or no picture of a kind decoded here. One that is
+/// broken opens nowhere. `wanted`: see `open_link_while`.
+fn image(
+    host: &str,
+    located: &Located,
+    local_name: &str,
+    cache: Option<&Path>,
+    run: Runner,
+    wanted: &dyn Fn() -> bool,
+) -> Result<Opened, String> {
     let path = located.path.as_str();
     let name = named(host, path, local_name);
-    let too_large = || format!("{name}: too large for the panel: Open in app");
+    // `have`: the file's bytes, when they were read already.
+    let instead = |why: &str, have: Option<Vec<u8>>| match outside(
+        host, located, local_name, cache, have, run,
+    )? {
+        Opened::Outside { target, said } => Ok(Opened::Outside {
+            target,
+            said: format!("{why}; {said}"),
+        }),
+        other => Ok(other),
+    };
+    const TOO_LARGE: &str = "too large for the panel";
     if located.size > MAX_IMAGE_BYTES {
-        return Err(too_large());
+        return instead(TOO_LARGE, None);
     }
     let argv = files::read_argv(host, path, MAX_IMAGE_BYTES + 1, local_name);
     let bytes = run(&argv, IMAGE_TIMEOUT).map_err(|e| format!("{name}: {}", why(&e)))?;
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
-        return Err(too_large());
+        return instead(TOO_LARGE, Some(bytes));
     }
-    let picture = decode(&bytes, MAX_SIDE).map_err(|e| format!("{name}: {e}"))?;
-    Ok(Opened::Image {
-        host: host.to_string(),
-        path: located.path.clone(),
-        picture,
-    })
+    if !wanted() {
+        return Err(format!("{name}: a newer click took its place"));
+    }
+    match decode_file(&bytes, MAX_SIDE) {
+        Ok(Decoded { picture, file }) => Ok(Opened::Image {
+            host: host.to_string(),
+            path: located.path.clone(),
+            file,
+            picture,
+        }),
+        Err(Refused::TooLarge) => instead(TOO_LARGE, Some(bytes)),
+        Err(Refused::NotAnImage) => instead("not a picture the panel shows", Some(bytes)),
+        Err(broken @ Refused::Broken(_)) => Err(format!("{name}: {broken}")),
+    }
 }
 
 /// Gets the file at the absolute `path` on `host` ready for the desktop's app: the panel's
@@ -648,20 +743,23 @@ pub fn place(image: (u32, u32), area: Rect, actual: bool, scroll: (f32, f32)) ->
     (centred(w, h), whole)
 }
 
-/// A picture in the panel: its size in pixels (the texture's), whether it is shown at its own
-/// size and not fitted, and how far it is scrolled then, in texels.
+/// A picture in the panel: its size in pixels as it is kept (the texture's) and as the file
+/// has it (larger, if it was made smaller to be kept), whether it is shown at the texture's
+/// own size and not fitted, and how far it is scrolled then, in texels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageBody {
     pub size: (u32, u32),
+    pub file: (u32, u32),
     pub actual: bool,
     pub scroll: (f32, f32),
 }
 
 impl ImageBody {
     /// Just opened: fitted.
-    pub fn new(size: (u32, u32)) -> ImageBody {
+    pub fn new(size: (u32, u32), file: (u32, u32)) -> ImageBody {
         ImageBody {
             size,
+            file,
             actual: false,
             scroll: (0.0, 0.0),
         }
@@ -689,13 +787,15 @@ impl ImageBody {
         to != from
     }
 
-    /// How large it is drawn in a body of `area`, in hundredths of its own size.
+    /// How large it is drawn in a body of `area`, in hundredths of the file's size: a
+    /// picture that was made smaller to be kept never comes to 100.
     pub fn percent(&self, area: Rect) -> u32 {
         let (dest, source) = place(self.size, area, self.actual, self.scroll);
-        match source.w > 0.0 {
-            true => (100.0 * dest.w / source.w).round() as u32,
-            false => 0,
+        if source.w <= 0.0 || self.file.0 == 0 {
+            return 0;
         }
+        let kept = self.size.0 as f32 / self.file.0 as f32;
+        (100.0 * kept * dest.w / source.w).round() as u32
     }
 }
 
@@ -736,13 +836,20 @@ impl SidePanel {
         }
     }
 
-    /// A panel for the picture of `size` pixels at the absolute `path` on `host`, fitted.
-    pub fn image(host: &str, path: &str, size: (u32, u32), local_name: &str) -> SidePanel {
+    /// A panel for the picture at the absolute `path` on `host`, fitted: `size` pixels as it
+    /// is kept, `file` as the file has it.
+    pub fn image(
+        host: &str,
+        path: &str,
+        size: (u32, u32),
+        file: (u32, u32),
+        local_name: &str,
+    ) -> SidePanel {
         SidePanel {
             host: host.to_string(),
             path: path.to_string(),
             title: titled(host, path, local_name),
-            body: Body::Image(ImageBody::new(size)),
+            body: Body::Image(ImageBody::new(size, file)),
         }
     }
 
@@ -801,7 +908,7 @@ impl SidePanel {
                 (self.title.clone(), SideBody::Text { gutter, rows })
             }
             Body::Image(image) => {
-                let (width, height) = image.size;
+                let (width, height) = image.file;
                 let percent = image.percent(area);
                 let title = format!("{} {width}×{height} · {percent} %", self.title);
                 (title, SideBody::Image)

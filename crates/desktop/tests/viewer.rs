@@ -686,6 +686,11 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// A PNG file that is only its header, which says `width` x `height`, and the start of its
 /// data: 60 bytes, whatever the size it claims.
 fn png_header_only(width: u32, height: u32) -> Vec<u8> {
+    png_header(width, height, 8)
+}
+
+/// The same with `depth` bits a channel (8 or 16).
+fn png_header(width: u32, height: u32, depth: u8) -> Vec<u8> {
     let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut chunk = |kind: &[u8; 4], data: &[u8]| {
         out.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -697,8 +702,8 @@ fn png_header_only(width: u32, height: u32) -> Vec<u8> {
     let mut header = Vec::new();
     header.extend_from_slice(&width.to_be_bytes());
     header.extend_from_slice(&height.to_be_bytes());
-    // 8 bits a channel, RGBA, deflate, no filter, not interlaced.
-    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    // RGBA, deflate, no filter, not interlaced.
+    header.extend_from_slice(&[depth, 6, 0, 0, 0]);
     chunk(b"IHDR", &header);
     chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]);
     out
@@ -925,12 +930,14 @@ fn a_png_of_this_machine_is_read_and_decoded_for_the_panel() {
     let Ok(Opened::Image {
         host: on,
         path,
+        file,
         picture,
     }) = opened
     else {
         panic!("not a picture: {opened:?}");
     };
     assert_eq!((on.as_str(), path.as_str()), (LOCAL, "/w/shot.png"));
+    assert_eq!(file, (3, 2));
     assert_eq!((picture.width, picture.height), (3, 2));
     assert_eq!(at(&picture, 2, 1), WHITE);
     // One byte more than the limit is asked for, with the time a copy gets.
@@ -959,34 +966,64 @@ fn a_png_of_this_machine_is_read_and_decoded_for_the_panel() {
 }
 
 #[test]
-fn a_picture_too_large_or_broken_is_said_in_one_line() {
-    // 100 MB by what the host says: nothing is read.
+fn a_picture_the_panel_refuses_goes_to_the_desktops_app_and_the_line_says_why() {
+    let outside = |opened: Result<Opened, String>| match opened {
+        Ok(Opened::Outside { target, said }) => (target, said),
+        other => panic!("not for the desktop's app: {other:?}"),
+    };
+    // 100 MB by what the host says: nothing is read, and it opens where it is.
     let host = Host::new("f\n100000000\n/w/huge.png", b"");
     assert_eq!(
-        host.open(LOCAL, &link("/w/huge.png", None), None),
-        Err("/w/huge.png: too large for the panel: Open in app".to_string())
+        outside(host.open(LOCAL, &link("/w/huge.png", None), None)),
+        (
+            "/w/huge.png".to_string(),
+            "too large for the panel; opened /w/huge.png in its app".to_string()
+        )
     );
     assert_eq!(host.calls().len(), 1, "located, not read");
+    // On another host it is too large to copy as well: the line there was before.
+    let host = Host::new("f\n100000000\n/w/huge.png", b"");
+    assert_eq!(
+        host.open("nas", &link("/w/huge.png", None), None),
+        Err("/w/huge.png on nas: too large to copy (100.0 MB, the limit is 25 MB)".to_string())
+    );
+    assert_eq!(host.calls().len(), 1);
     // It grew since it was located: read up to the limit and a byte, not decoded.
     let grown = vec![0u8; MAX_IMAGE_BYTES as usize + 5];
     let host = Host::new("f\n10\n/w/grown.png", &grown);
     assert_eq!(
-        host.open("nas", &link("/w/grown.png", None), None),
-        Err("/w/grown.png on nas: too large for the panel: Open in app".to_string())
+        outside(host.open(LOCAL, &link("/w/grown.png", None), None)).1,
+        "too large for the panel; opened /w/grown.png in its app"
     );
     // Text called .png.
     let host = Host::new("f\n6\n/w/notes.png", b"hello\n");
     assert_eq!(
-        host.open(LOCAL, &link("/w/notes.png", None), None),
-        Err("/w/notes.png: not an image".to_string())
+        outside(host.open(LOCAL, &link("/w/notes.png", None), None)),
+        (
+            "/w/notes.png".to_string(),
+            "not a picture the panel shows; opened /w/notes.png in its app".to_string()
+        )
     );
-    // A header that claims 20000 x 20000.
-    let bytes = png_header_only(20_000, 20_000);
-    let host = Host::new(&format!("f\n{}\n/w/big.png", bytes.len()), &bytes);
-    assert_eq!(
-        host.open(LOCAL, &link("/w/big.png", None), None),
-        Err("/w/big.png: image too large".to_string())
+    // The same from another host: the bytes read for the panel are the copy.
+    let cache = scratch("refused-picture");
+    let host = Host::new("f\n6\n/w/notes.png", b"hello\n");
+    let (target, said) = outside(host.open("nas", &link("/w/notes.png", None), Some(&cache)));
+    assert_eq!(target, cache.join("nas/notes.png").to_str().unwrap());
+    assert_eq!(std::fs::read(&target).unwrap(), b"hello\n");
+    assert!(
+        said.starts_with("not a picture the panel shows; copied /w/notes.png on nas to "),
+        "{said}"
     );
+    assert_eq!(host.calls().len(), 2, "not fetched a second time");
+    let _ = std::fs::remove_dir_all(&cache);
+    // A header that claims 20000 x 20000, and one whose 16 bits a channel are too many bytes.
+    for bytes in [png_header_only(20_000, 20_000), png_header(5100, 5000, 16)] {
+        let host = Host::new(&format!("f\n{}\n/w/big.png", bytes.len()), &bytes);
+        assert_eq!(
+            outside(host.open(LOCAL, &link("/w/big.png", None), None)).1,
+            "too large for the panel; opened /w/big.png in its app"
+        );
+    }
     // A JPEG cut off.
     let whole = encoded(image::ImageFormat::Jpeg, 64, 48, |_, _| RED);
     let host = Host::new("f\n40\n/w/cut.jpeg", &whole[..40]);
@@ -1030,7 +1067,7 @@ fn what_the_panel_does_not_show_still_goes_to_the_desktops_app() {
 
 #[test]
 fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() {
-    let mut panel = SidePanel::image("nas", "/w/shot.png", (1000, 900), LOCAL);
+    let mut panel = SidePanel::image("nas", "/w/shot.png", (1000, 900), (1000, 900), LOCAL);
     assert_eq!(
         (panel.host.as_str(), panel.path.as_str()),
         ("nas", "/w/shot.png")
@@ -1042,6 +1079,7 @@ fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() 
         panel.image_body(),
         Some(&ImageBody {
             size: (1000, 900),
+            file: (1000, 900),
             actual: false,
             scroll: (0.0, 0.0)
         })
@@ -1075,6 +1113,7 @@ fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() 
         panel.image_body().unwrap(),
         &ImageBody {
             size: (1000, 900),
+            file: (1000, 900),
             actual: false,
             scroll: (0.0, 0.0)
         }
@@ -1093,7 +1132,7 @@ fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() 
     assert!(!text.click() && !text.pan((0.0, 40.0), AREA) && text.image_body().is_none());
 
     // A picture smaller than the panel is at full size already.
-    let small = SidePanel::image(LOCAL, "/w/dot.png", (40, 30), LOCAL);
+    let small = SidePanel::image(LOCAL, "/w/dot.png", (40, 30), (40, 30), LOCAL);
     assert_eq!(small.view(10, 40, AREA).title, "/w/dot.png 40×30 · 100 %");
     // A panel of no size: no division by zero.
     let none = rect(0.0, 0.0, 0.0, 0.0);
@@ -1101,4 +1140,129 @@ fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() 
         panel.view(0, 0, none).title,
         "nas:/w/shot.png 1000×900 · 0 %"
     );
+}
+
+#[test]
+fn sixteen_bits_a_channel_count_as_the_bytes_they_take() {
+    // 25.5 million pixels are allowed; as RGBA of 16 bits they are 204 MB, more than the
+    // 200 MB a decode may ask for. Refused by the header, before the buffer.
+    assert_eq!(
+        decode(&png_header(5100, 5000, 16), MAX_SIDE),
+        Err("image too large".to_string())
+    );
+    // With 8 bits it gets as far as the data, which is not there.
+    let said = decode(&png_header(5100, 5000, 8), MAX_SIDE).unwrap_err();
+    assert!(said.starts_with("broken image"), "{said}");
+    assert_eq!(
+        viewer::decode_file(&png_header(5100, 5000, 16), MAX_SIDE).map(|_| ()),
+        Err(viewer::Refused::TooLarge)
+    );
+    assert_eq!(
+        viewer::decode_file(b"text", MAX_SIDE).map(|_| ()),
+        Err(viewer::Refused::NotAnImage)
+    );
+}
+
+#[test]
+fn small_pictures_of_other_pixel_kinds_come_out_as_rgba_bytes() {
+    let file = |picture: image::DynamicImage| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        picture
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("encoding the test's picture");
+        out.into_inner()
+    };
+    // 16 bits a channel, with alpha.
+    let deep = image::ImageBuffer::from_pixel(3, 2, image::Rgba([0xffffu16, 0, 0x8080, 0x8080]));
+    let picture = decode(&file(image::DynamicImage::ImageRgba16(deep)), MAX_SIDE).unwrap();
+    assert_eq!((picture.width, picture.height), (3, 2));
+    assert_eq!(picture.rgba.len(), 3 * 2 * 4);
+    assert_eq!(at(&picture, 2, 1), [255, 0, 128, 128]);
+    // No alpha: opaque.
+    let plain = image::ImageBuffer::from_pixel(2, 2, image::Rgb([1u8, 2, 3]));
+    let picture = decode(&file(image::DynamicImage::ImageRgb8(plain)), MAX_SIDE).unwrap();
+    assert_eq!(picture.rgba.len(), 2 * 2 * 4);
+    assert_eq!(at(&picture, 1, 1), [1, 2, 3, 255]);
+    // Grey of 16 bits.
+    let grey = image::ImageBuffer::from_pixel(2, 2, image::Luma([0x4040u16]));
+    let picture = decode(&file(image::DynamicImage::ImageLuma16(grey)), MAX_SIDE).unwrap();
+    assert_eq!(at(&picture, 0, 0), [64, 64, 64, 255]);
+    // 16 bits made smaller: still four bytes a pixel.
+    let wide = image::ImageBuffer::from_pixel(300, 10, image::Rgba([0u16, 0xffff, 0, 0xffff]));
+    let picture = decode(&file(image::DynamicImage::ImageRgba16(wide)), 100).unwrap();
+    assert_eq!((picture.width, picture.height), (100, 3));
+    assert_eq!(at(&picture, 50, 1), GREEN);
+}
+
+#[test]
+fn a_picture_made_smaller_is_still_called_by_the_files_size() {
+    let decoded = viewer::decode_file(&png(6000, 10, |_, _| BLUE), MAX_SIDE).expect("a png");
+    assert_eq!(decoded.file, (6000, 10));
+    assert_eq!((decoded.picture.width, decoded.picture.height), (4096, 7));
+    // Through a click: the panel's header says the file's pixels, and how large one of those
+    // is drawn. 400 of the body's pixels for 6000: 7 %. At the texture's own size: 68 %.
+    let bytes = png(6000, 10, |_, _| BLUE);
+    let host = Host::new(&format!("f\n{}\n/w/wide.png", bytes.len()), &bytes);
+    let Ok(Opened::Image { file, picture, .. }) =
+        host.open(LOCAL, &link("/w/wide.png", None), None)
+    else {
+        panic!("not a picture");
+    };
+    assert_eq!(file, (6000, 10));
+    let size = (picture.width, picture.height);
+    let mut panel = SidePanel::image(LOCAL, "/w/wide.png", size, file, LOCAL);
+    assert_eq!(panel.view(10, 40, AREA).title, "/w/wide.png 6000×10 · 7 %");
+    assert!(panel.click());
+    assert_eq!(panel.view(10, 40, AREA).title, "/w/wide.png 6000×10 · 68 %");
+    // What is placed and scrolled is the texture.
+    assert_eq!(panel.image_body().unwrap().size, (4096, 7));
+    assert!(panel.pan((1e9, 0.0), AREA));
+    assert_eq!(panel.image_body().unwrap().scroll, (3696.0, 0.0));
+}
+
+#[test]
+fn a_click_that_is_no_longer_the_latest_is_not_decoded() {
+    let bytes = png(3, 2, corners);
+    let host = Host::new(&format!("f\n{}\n/w/shot.png", bytes.len()), &bytes);
+    let run = |argv: &[String], timeout: Duration| host.run(argv, timeout);
+    let asked = std::cell::Cell::new(0);
+    let stale = || {
+        asked.set(asked.get() + 1);
+        false
+    };
+    let opened = viewer::open_link_while(
+        &key(LOCAL),
+        &link("/w/shot.png", None),
+        LOCAL,
+        None,
+        &run,
+        &stale,
+    );
+    assert_eq!(
+        opened,
+        Err("/w/shot.png: a newer click took its place".to_string())
+    );
+    assert_eq!(host.calls().len(), 2, "read, then asked");
+    assert_eq!(asked.get(), 1);
+    // Still the latest: decoded.
+    let opened = viewer::open_link_while(
+        &key(LOCAL),
+        &link("/w/shot.png", None),
+        LOCAL,
+        None,
+        &run,
+        &|| true,
+    );
+    assert!(matches!(opened, Ok(Opened::Image { .. })), "{opened:?}");
+}
+
+#[test]
+fn work_that_panics_is_an_answer_too() {
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let answer = viewer::guarded(|| panic!("a decoder gave up"));
+    std::panic::set_hook(quiet);
+    assert_eq!(answer, Err("broken image".to_string()));
+    let fine = viewer::guarded(|| Err("as it was".to_string()));
+    assert_eq!(fine, Err("as it was".to_string()));
 }

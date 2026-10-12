@@ -1088,7 +1088,9 @@ impl Running {
             return;
         };
         self.say(Ok(format!("opening {} on {} …", link.path, key.host)));
-        self.view(move |local, cache| viewer::open_link(&key, &link, local, cache, &viewer::run));
+        self.view(move |local, cache, wanted| {
+            viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
+        });
     }
 
     /// `Open in app` in the panel's header: the panel's file goes to the desktop's app.
@@ -1101,22 +1103,27 @@ impl Running {
             return;
         };
         self.say(Ok(format!("opening {path} in its app …")));
-        self.view(move |local, cache| {
+        self.view(move |local, cache, _| {
             viewer::open_in_app(&host, &path, local, cache, &viewer::run)
         });
     }
 
-    /// Runs `work` (this machine's name, the cache directory) on a thread of its own and
-    /// delivers what it gives as the answer to a new click.
+    /// Runs `work` (this machine's name, the cache directory, whether its answer is still
+    /// waited for) on a thread of its own and delivers what it gives as the answer to a new
+    /// click. Work that a newer click overtook can stop early: its answer is dropped anyway.
+    /// Work that panics answers as a broken picture.
     fn view(
         &mut self,
-        work: impl FnOnce(&str, Option<&std::path::Path>) -> Result<Opened, String> + Send + 'static,
+        work: impl FnOnce(&str, Option<&std::path::Path>, &dyn Fn() -> bool) -> Result<Opened, String>
+        + Send
+        + 'static,
     ) {
         let click = self.views.fetch_add(1, Ordering::SeqCst) + 1;
         let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
-        let cache = self.view_cache.clone();
+        let (cache, views) = (self.view_cache.clone(), self.views.clone());
         std::thread::spawn(move || {
-            let result = work(&local, cache.as_deref());
+            let wanted = || views.load(Ordering::SeqCst) == click;
+            let result = viewer::guarded(|| work(&local, cache.as_deref(), &wanted));
             let _ = proxy.send_event(UserEvent::Viewed(click, result));
         });
     }
@@ -1166,10 +1173,11 @@ impl Running {
             Ok(Opened::Image {
                 host,
                 path,
+                file,
                 picture,
             }) => {
                 let size = (picture.width, picture.height);
-                let panel = SidePanel::image(&host, &path, size, &self.cfg.local_name);
+                let panel = SidePanel::image(&host, &path, size, file, &self.cfg.local_name);
                 let said = match self.show_side(panel) {
                     // Uploaded once, in place of the picture before. The pixels are not kept
                     // here: `picture` is dropped when this arm ends.
@@ -1181,7 +1189,7 @@ impl Running {
                             true => format!("opened {path}"),
                             false => {
                                 self.close_side();
-                                format!("{path}: too large for this GPU: Open in app")
+                                format!("{path}: too large a picture for this GPU")
                             }
                         }
                     }
