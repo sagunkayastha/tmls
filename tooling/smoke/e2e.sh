@@ -208,6 +208,14 @@ cat >"$OUT/bin/notify-send" <<EOF
 { printf '%s|' "\$@"; echo; } >>"$NOTIFY_LOG"
 EOF
 chmod +x "$OUT/bin/notify-send"
+# tmux as it is, but while $OUT/slow-capture is there a capture-pane takes a second first, as
+# on a slow host (the approval check that keys typed on win over a late dialog read).
+cat >"$OUT/bin/tmux" <<EOF
+#!/bin/sh
+[ "\$1" = capture-pane ] && [ -e "$OUT/slow-capture" ] && sleep 1
+exec /usr/bin/tmux "\$@"
+EOF
+chmod +x "$OUT/bin/tmux"
 export PATH="$OUT/bin:$PATH"
 # How often the stand-in was asked to say that $ONE is done.
 notified() { grep -cxF -- "--|tmls · $(hostname)|◆ $ONE · done|" "$NOTIFY_LOG"; }
@@ -1175,6 +1183,29 @@ fake_claude() {
 }
 # top_of_list  — the list's cursor to its first session (pins are empty here).
 top_of_list() { keys -k k -k k -k k -k k -k k -k k -k k -k k; }
+# said_lines — what the app wrote on stderr, but its focus reports.
+said_lines() { grep -v '^tmls-rs: focus ' "$OUT/app.stderr"; }
+said_count() { said_lines | wc -l; }
+said_since() { [ "$(said_count)" -gt "$1" ]; }
+# select_row NAME — the list's cursor (the list has the keys) to the row of the session NAME,
+# found by its name, not its place, so a session another block left behind moves nothing: y on
+# a row that is not asking says "NAME isn't asking anything" at once; a row that asks opens its
+# form instead and says nothing, and Esc closes that.
+select_row() {
+  local name=$1 n before
+  top_of_list
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    before=$(said_count)
+    keys y
+    if wait_for 2 said_since "$before"; then
+      [ "$(said_lines | tail -1)" = "tmls-rs: $name isn't asking anything" ] && return 0
+    else
+      keys -k Escape
+    fi
+    keys -k j
+  done
+  return 1
+}
 
 # --- approvals from the list (F5) ----------------------------------------------------------------
 # A stand-in for Claude asking: the dialog of client-core's fixture, then one key read and shown.
@@ -1223,7 +1254,10 @@ wait_for 5 pane_has_line "$APPROVE" " Do you want to proceed?"
 key_focus_list
 top_of_list
 # One burst (1 ms between keys; wtype refuses 0): Esc and the text are handled before the
-# capture (a tmux process) is back, as when a slow host answers late.
+# capture is back, as when a slow host answers late. The capture is made slow (the tmux
+# stand-in): an idle machine's took a few ms and sometimes came back before the Esc, and then
+# the form opened and the Esc closed it, leaving the text to the list.
+: >"$OUT/slow-capture"
 timeout 10 wtype -s 250 -d 1 y -k Escape "echo moved-on-$NONCE"
 sleep 0.3
 key_enter
@@ -1241,16 +1275,16 @@ if pane_text "$APPROVE" | grep -q '^GOT\['; then
 else
   pass "a dialog read that comes back after the user typed on answers nothing"
 fi
+rm -f "$OUT/slow-capture"
 
 # --- send or queue a message (F7) ----------------------------------------------------------------
-# $ASK is a shell that a status file calls Claude's; it sorts second.
+# $ASK is a shell that a status file calls Claude's.
 tmux new-session -d -s "$ASK" -x 100 -y 30
 fake_claude "$ASK" "$ASK_SID" idle
 sleep 6
 # The F5 block left the keys with the terminal.
 key_focus_list
-top_of_list
-keys -k j
+check "the list's cursor finds $ASK by its name" select_row "$ASK"
 keys s
 check "screenshot 37-ask (Send to $ASK, the default saved prompt)" shot 37-ask
 keys "echo tmls-ask-ok-$NONCE"

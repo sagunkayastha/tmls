@@ -95,7 +95,7 @@ use crate::kitty;
 use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
 use crate::picture::PictureRenderer;
-use crate::queue::Queue;
+use crate::queue::{Queue, SendId};
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
@@ -151,8 +151,9 @@ pub enum UserEvent {
     Approval(u64, SessionKey, Option<String>, Result<Vec<String>, String>),
     /// A line of a host's events.jsonl reader.
     Push(String, PushLine),
-    /// A queued message was sent (its session, its text), or not.
-    Sent(SessionKey, String, Result<String, String>),
+    /// A message of the queue was sent, or not: the send's id and the session it was for
+    /// when it started (`Queue::sent` knows its name now).
+    Sent(SendId, SessionKey, Result<String, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -237,7 +238,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Approval(request, key, pane, result) => {
                 running.approval(request, key, pane, result)
             }
-            UserEvent::Sent(key, text, result) => running.sent(key, text, result),
+            UserEvent::Sent(id, key, result) => running.sent(id, key, result),
         }
     }
 
@@ -876,8 +877,9 @@ impl Running {
         // A turn that ended sends the head of its session's queue.
         for (key, before) in queued {
             let after = self.sidebar.status(&key);
-            if let Some(text) = self.queue.due(&key, before, after) {
-                self.deliver_queued(key, text);
+            if let Some((id, text)) = self.queue.due(&key, before, after) {
+                let pane = self.sidebar.info(&key).and_then(|info| info.pane.clone());
+                self.deliver_queued(key, pane, id, text);
             }
         }
         self.invalidate();
@@ -899,27 +901,28 @@ impl Running {
         self.open_modal(Modal::Form(Form::ask(key, pane, saved, queued)), None);
     }
 
-    /// The head of a session's queue, sent on a thread; the answer is `UserEvent::Sent`.
-    fn deliver_queued(&mut self, key: SessionKey, text: String) {
-        let pane = self.sidebar.info(&key).and_then(|info| info.pane.clone());
+    /// A message the queue started (`due` or `start`), sent to Claude's `pane` of the session
+    /// on a thread; the answer is `UserEvent::Sent`.
+    fn deliver_queued(&mut self, key: SessionKey, pane: Option<String>, id: SendId, text: String) {
         let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
         std::thread::spawn(move || {
             let result =
                 forms::send_text(&key, pane.as_deref(), &text, &local, &forms::run_tmux_with);
-            let _ = proxy.send_event(UserEvent::Sent(key, text, result));
+            let _ = proxy.send_event(UserEvent::Sent(id, key, result));
         });
     }
 
-    fn sent(&mut self, key: SessionKey, text: String, result: Result<String, String>) {
-        self.queue.sent(&key, &text, result.is_ok());
-        let left = self.queue.count(&key);
+    /// A send is over: its message leaves the queue if it went; the status line says so.
+    fn sent(&mut self, id: SendId, then: SessionKey, result: Result<String, String>) {
+        // Killed or cleared since: nothing of the queue is left to speak of.
+        let key = self.queue.sent(id, result.is_ok());
+        let left = key.as_ref().map_or(0, |key| self.queue.count(key));
+        let name = key.as_ref().unwrap_or(&then).name.clone();
         self.say(match result {
-            Ok(_) if left > 0 => Ok(format!(
-                "sent a queued message to {} ({left} waiting)",
-                key.name
-            )),
-            Ok(_) => Ok(format!("sent the queued message to {}", key.name)),
-            Err(e) => Err(format!("{e}; {left} queued message(s) kept")),
+            Ok(_) if left > 0 => Ok(format!("sent to {name} ({left} waiting)")),
+            Ok(_) => Ok(format!("sent to {name}")),
+            Err(e) if left > 0 => Err(format!("{e}; {left} queued message(s) kept")),
+            Err(e) => Err(e),
         });
     }
 
@@ -1390,21 +1393,13 @@ impl Running {
             }
             FormResult::Ask { key, pane, text } => {
                 self.close_modal();
-                if Queue::busy(self.sidebar.status(&key)) {
-                    let waiting = self.queue.add(&key, text);
-                    self.say(Ok(format!("queued for {} ({waiting} waiting)", key.name)));
-                } else {
-                    let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
-                    std::thread::spawn(move || {
-                        let said = forms::send_text(
-                            &key,
-                            pane.as_deref(),
-                            &text,
-                            &local,
-                            &forms::run_tmux_with,
-                        );
-                        let _ = proxy.send_event(UserEvent::Said(said));
-                    });
+                // At once only to an idle session with nothing waiting or on its way; and then
+                // through the queue as well, so the next message waits for this one.
+                let now = self.queue.goes_now(&key, self.sidebar.status(&key));
+                let waiting = self.queue.add(&key, text);
+                match now.then(|| self.queue.start(&key)).flatten() {
+                    Some((id, text)) => self.deliver_queued(key, pane, id, text),
+                    None => self.say(Ok(format!("queued for {} ({waiting} waiting)", key.name))),
                 }
             }
             FormResult::ClearQueue(key) => {
