@@ -965,3 +965,38 @@ fn renamed_outside_follows_claudes_session_id() {
     assert!(renamed_outside(&before, &offline("nas")).is_empty());
     assert!(renamed_outside(&before, &snapshot("ph", vec![with("new", Some(id))])).is_empty());
 }
+
+#[test]
+fn renamed_outside_never_guesses_between_sessions() {
+    let x = "0b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e";
+    let with = |name: &str, id: Option<&str>| SessionInfo {
+        session_id: id.map(str::to_string),
+        ..session("nas", name, Status::Idle)
+    };
+    // A and B share a conversation (one resumed in two sessions); A is renamed to A2. The new
+    // name is the one the list did not have: never B, which was there all along.
+    let shared = vec![with("a", Some(x)), with("b", Some(x))];
+    let after = snapshot("nas", vec![with("b", Some(x)), with("a2", Some(x))]);
+    assert_eq!(
+        renamed_outside(&shared, &after),
+        [(key("nas", "a"), key("nas", "a2"))]
+    );
+    // Both renamed: which new name is whose is not known, so neither is followed.
+    let both = snapshot("nas", vec![with("a2", Some(x)), with("b2", Some(x))]);
+    assert!(renamed_outside(&shared, &both).is_empty());
+    // Two old names, one new name with their id: ambiguous, nothing is followed.
+    let one = snapshot("nas", vec![with("n", Some(x))]);
+    assert!(renamed_outside(&shared, &one).is_empty());
+    // Renamed onto a name the list already had (its session gone at the same time): that
+    // name is another session's, not this one's.
+    let before = vec![with("a", Some(x)), with("b", None)];
+    let onto = snapshot("nas", vec![with("b", Some(x))]);
+    assert!(renamed_outside(&before, &onto).is_empty());
+    // Renamed, and the old name taken by a new session in the same listing: the old name is
+    // still listed, so whatever has that name keeps it.
+    let reused = snapshot(
+        "nas",
+        vec![with("a", None), with("a2", Some(x)), with("b", None)],
+    );
+    assert!(renamed_outside(&before, &reused).is_empty());
+}

@@ -101,8 +101,10 @@ pub fn summary(info: &SessionInfo) -> Option<(&str, bool)> {
 
 /// The sessions of `snap`'s host renamed outside the app since `before` (that host's rows as
 /// the list had them): a name the listing no longer has whose Claude conversation
-/// (`session_id`) it lists under another name. Pairs (old, new). Sessions without a Claude id
-/// are not followed: nothing says which new name is theirs.
+/// (`session_id`) it lists under a name the list did not have. Pairs (old, new). Only a
+/// rename nothing else could explain is followed: one name gone and one name new with that
+/// id. Sessions without a Claude id are not followed, nor are two gone or two new with one id
+/// (a conversation resumed in two sessions): nothing says which new name is whose.
 pub fn renamed_outside(
     before: &[SessionInfo],
     snap: &HostSnapshot,
@@ -110,15 +112,34 @@ pub fn renamed_outside(
     if !snap.online {
         return Vec::new();
     }
+    let ours = |s: &&SessionInfo| s.key.host == snap.host;
+    let listed = |key: &SessionKey| snap.sessions.iter().any(|s| &s.key == key);
+    let had = |key: &SessionKey| before.iter().any(|s| &s.key == key);
+    // The names gone since `before`, and the names new in `snap`, that carry this id.
+    let gone = |id: &String| {
+        before
+            .iter()
+            .filter(ours)
+            .filter(|s| s.session_id.as_ref() == Some(id) && !listed(&s.key))
+            .count()
+    };
+    let new = |id: &String| -> Vec<&SessionInfo> {
+        snap.sessions
+            .iter()
+            .filter(ours)
+            .filter(|s| s.session_id.as_ref() == Some(id) && !had(&s.key))
+            .collect()
+    };
     before
         .iter()
-        .filter(|old| old.key.host == snap.host && !snap.sessions.iter().any(|s| s.key == old.key))
+        .filter(ours)
+        .filter(|old| !listed(&old.key))
         .filter_map(|old| {
             let id = old.session_id.as_ref()?;
-            let new = snap.sessions.iter().find(|s| {
-                s.key.host == snap.host && s.session_id.as_ref() == Some(id) && s.key != old.key
-            })?;
-            Some((old.key.clone(), new.key.clone()))
+            match new(id)[..] {
+                [new] if gone(id) == 1 => Some((old.key.clone(), new.key.clone())),
+                _ => None,
+            }
         })
         .collect()
 }

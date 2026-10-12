@@ -952,18 +952,23 @@ impl Running {
         }
         self.tabs.rekey(index, new.clone());
         self.sidebar.renamed(old, new);
-        if let Err(e) = self.sidebar.take_pin_error() {
-            crate::errln(format_args!("tmls-rs: {e:#}"));
-        }
+        let pinned = self.sidebar.take_pin_error();
         self.queue.renamed(old, new);
         if self.tabs.active() == Some(index) {
             self.window
                 .set_title(&format!("{} · {}", new.name, new.host));
         }
-        self.say(Ok(format!(
-            "{} is now {} (renamed outside tmls-rs)",
-            old.name, new.name
-        )));
+        // A ★ that could not be moved is what the user needs to hear; `say` also logs it.
+        self.say(match pinned {
+            Ok(()) => Ok(format!(
+                "{} is now {} (renamed outside tmls-rs)",
+                old.name, new.name
+            )),
+            Err(e) => Err(format!(
+                "{} is now {} (renamed outside tmls-rs), but its ★ stayed on the old name: {e:#}",
+                old.name, new.name
+            )),
+        });
     }
 
     /// Starts the reader of `host`'s events.jsonl when the host answers; stops it when not.
@@ -1482,12 +1487,17 @@ impl Running {
     fn done(&mut self, request: Request, result: Result<String, String>) {
         if let (Request::New(new), Err(why)) = (&request, &result) {
             // What was typed is not lost: the form comes back with it and the reason.
+            // The reason is said once, in the form; the status line has it only when another
+            // form or menu is open and this one cannot come back.
+            if self.modal.is_some() {
+                self.say(result);
+                return;
+            }
             let form =
                 Form::new_session_again(&self.cfg.hosts, &self.cfg.presets, new, why.clone());
-            self.say(result);
-            if self.modal.is_none() {
-                self.open_modal(Modal::Form(form), None);
-            }
+            crate::errln(format_args!("tmls-rs: {why}"));
+            (self.note, self.problem) = (None, None);
+            self.open_modal(Modal::Form(form), None);
             return;
         }
         let ok = result.is_ok();
