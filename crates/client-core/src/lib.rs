@@ -6,6 +6,7 @@
 pub mod approve;
 pub mod config;
 pub mod files;
+pub mod imagedrop;
 pub mod listing;
 pub mod poll;
 pub mod push;

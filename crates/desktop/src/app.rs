@@ -72,6 +72,7 @@ use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
     default_color,
 };
+use client_core::{imagedrop, tmux};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -158,6 +159,9 @@ pub enum UserEvent {
     /// A message of the queue was sent, or not: the send's id and the session it was for
     /// when it started (`Queue::sent` knows its name now).
     Sent(SendId, SessionKey, Result<String, String>),
+    /// An image dropped on (or pasted into) a tab of another host was copied there, or not:
+    /// the tab's session, the file's name, and the path to paste on that host.
+    Dropped(SessionKey, String, Result<String, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -243,6 +247,7 @@ impl ApplicationHandler<UserEvent> for App {
                 running.approval(request, key, pane, result)
             }
             UserEvent::Sent(id, key, result) => running.sent(id, key, result),
+            UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
         }
     }
 
@@ -2460,11 +2465,79 @@ impl Running {
             return self.say(Ok("no live session to paste into".to_string()));
         }
         let got = self.clip.get();
+        self.paste_text(got);
+    }
+
+    /// Text for the tab in front, from the clipboard or a drop, and what the status line says
+    /// of it. One image file for a session on another host is copied there first
+    /// (`copy_image`), and the path there is pasted when the copy is done.
+    fn paste_text(&mut self, got: Result<String, String>) {
+        if let Ok(text) = &got
+            && self.copy_image(text)
+        {
+            return;
+        }
         let said = clip::paste_with(got, |text| {
             if let Some(session) = self.tabs.live_mut() {
                 session.paste(text);
             }
         });
+        self.say(said);
+    }
+
+    /// `text` names one image file of this machine and the tab in front is a session on
+    /// another host (tmls `_paste_input`): the file is copied to that host on a thread, and
+    /// `dropped` pastes the path it has there. `false`: `text` is to be pasted as it is — a
+    /// session here reads the file where it lies.
+    fn copy_image(&mut self, text: &str) -> bool {
+        let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
+            return false;
+        };
+        if key.host == self.cfg.local_name || key.host == KITTY {
+            return false;
+        }
+        let Some(path) = imagedrop::dropped_image(text) else {
+            return false;
+        };
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        self.say(Ok(format!("copying {name} to {} …", key.host)));
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let run = |argv: &[String], input: &[u8]| {
+                tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)
+            };
+            let result = imagedrop::store(&key.host, &path, std::time::SystemTime::now(), &run);
+            let _ = proxy.send_event(UserEvent::Dropped(key, name, result));
+        });
+        true
+    }
+
+    /// The copy `copy_image` started ended: the path on the host is pasted into the session
+    /// it was for, if its tab is still open and live — in front or not, never somewhere else.
+    fn dropped(&mut self, key: SessionKey, name: String, result: Result<String, String>) {
+        let host = &key.host;
+        let said = match result {
+            Err(why) => Err(format!("{name} was not copied to {host}: {why}")),
+            Ok(path) => {
+                let live = self
+                    .tabs
+                    .index_of(&key)
+                    .filter(|&index| self.tabs.state(index) == TabState::Live);
+                match live {
+                    Some(index) => {
+                        self.tabs.session_mut(index).paste(&path);
+                        Ok(format!("{name} is on {host}: pasted {path}"))
+                    }
+                    None => Err(format!(
+                        "{name} is on {host} as {path}, but the tab of {} is gone",
+                        key.name
+                    )),
+                }
+            }
+        };
         self.say(said);
     }
 
