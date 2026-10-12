@@ -8,10 +8,14 @@
 //!
 //! 1. **Locate** (`locate`): the absolute path, whether it is a file or a folder, its size. A
 //!    relative path is under the directory of the session's pane, `~/` under the host's home.
-//! 2. **Text** goes to the panel: an extension that is not in `OUTSIDE`, at most `MAX_BYTES`
+//! 2. **A picture** goes to the panel: an extension in `IMAGES`, at most `MAX_IMAGE_BYTES`
+//!    bytes, read and decoded here (`decode`) to RGBA of at most `MAX_SIDE` pixels a side
+//!    (`Opened::Image`). One that is too large or cannot be decoded is said in the status line
+//!    and opens nowhere.
+//! 3. **Text** goes to the panel: an extension that is in neither list, at most `MAX_BYTES`
 //!    bytes, valid UTF-8 and no NUL byte (`Opened::Text`).
-//! 3. **Everything else** — a folder, an image, a PDF, an archive, a file that is too large or
-//!    not text — is for the desktop's own app (`Opened::Outside`, which `links::open_path`
+//! 4. **Everything else** — a folder, a PDF, an archive, a picture of another kind, a file
+//!    that is too large or not text — is for the desktop's own app (`Opened::Outside`, which `links::open_path`
 //!    gives to `xdg-open`). A file of this machine is opened where it is. One of another host
 //!    is copied first, to `$XDG_CACHE_HOME/tmls-rs/view/HOST/NAME` (`~/.cache` without the
 //!    variable), if it has at most `MAX_OUTSIDE_BYTES` bytes; a folder of another host is
@@ -19,11 +23,18 @@
 //!    A copy of the same name from the same host replaces the one before.
 //!
 //! **The panel** (`SidePanel`) has the right half of the terminal's area, one at a time for
-//! the window. Its body is one of `Body`'s kinds; text is the only one yet (tmls also has an
-//! image pane). `TextBody` keeps the lines, the line that was asked for and how far it is
-//! scrolled; `rows` gives what is in view. A line longer than the panel is cut, not wrapped
-//! (tmls: `soft_wrap=False`); a tab goes to the next multiple of `TAB_COLS` columns. The panel
-//! never has the keyboard.
+//! the window. Its body is one of `Body`'s kinds. `TextBody` keeps the lines, the line that was
+//! asked for and how far it is scrolled; `rows` gives what is in view. A line longer than the
+//! panel is cut, not wrapped (tmls: `soft_wrap=False`); a tab goes to the next multiple of
+//! `TAB_COLS` columns. The panel never has the keyboard.
+//!
+//! **A picture** in the panel (`ImageBody`) is fitted into the body, never larger than it is;
+//! a click shows it at its own size (one texel a pixel) and the wheel then moves it, a click
+//! again fits it. `place` says where it is drawn and which part of it, from the body's
+//! rectangle as it is now: it is asked again for every frame, so a window, a font size or a
+//! divider that changed never stretches it. The pixels are not kept here: the app uploads
+//! them once (`picture::PictureRenderer`) and the panel remembers the size. The header says
+//! the size and how large it is drawn (`1280×800 · 43 %`).
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -35,18 +46,29 @@ use client_core::files::{self, Kind, Located};
 use client_core::tmux;
 use s2_wgpu::gfx::grid::clusters;
 
+use crate::draw::Rect;
 use crate::links::FileLink;
 
 /// The largest file the panel shows (tmls `MAX_BYTES`).
 pub const MAX_BYTES: usize = 2_000_000;
 /// The largest file copied from another host to be opened here (tmls `MAX_IMAGE_BYTES`).
 pub const MAX_OUTSIDE_BYTES: u64 = 25_000_000;
-/// Extensions the desktop's own apps show instead of the panel: images, PDFs, media,
-/// archives, office files (tmls `OUTSIDE`).
-pub const OUTSIDE: [&str; 35] = [
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tif", "tiff", "ico", "avif", "heic", "pdf",
-    "mp4", "mkv", "webm", "mov", "avi", "mp3", "wav", "ogg", "flac", "m4a", "zip", "tar", "gz",
-    "tgz", "xz", "7z", "docx", "xlsx", "pptx", "odt", "ods", "odp",
+/// Extensions of the pictures the panel shows itself (tmls `IMAGES`, less `svg`). A GIF shows
+/// its first frame.
+pub const IMAGES: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+/// The largest picture file the panel reads (tmls `MAX_IMAGE_BYTES`).
+pub const MAX_IMAGE_BYTES: u64 = 25_000_000;
+/// The most pixels a picture may have to be decoded: 200 MB as RGBA.
+pub const MAX_IMAGE_PIXELS: u64 = 50_000_000;
+/// The longest side a picture keeps; a larger one is made smaller when it is decoded. Every
+/// GPU has textures this large.
+pub const MAX_SIDE: u32 = 4096;
+/// Extensions the desktop's own apps show instead of the panel: the pictures that are not in
+/// `IMAGES`, PDFs, media, archives, office files (tmls `OUTSIDE`).
+pub const OUTSIDE: [&str; 29] = [
+    "svg", "tif", "tiff", "ico", "avif", "heic", "pdf", "mp4", "mkv", "webm", "mov", "avi", "mp3",
+    "wav", "ogg", "flac", "m4a", "zip", "tar", "gz", "tgz", "xz", "7z", "docx", "xlsx", "pptx",
+    "odt", "ods", "odp",
 ];
 /// Columns between tab stops (Textual's `TextArea`, which tmls shows files in).
 pub const TAB_COLS: usize = 4;
@@ -60,6 +82,8 @@ pub const TOO_NARROW: &str = "window too narrow for the file panel";
 pub const LOCATE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 pub const COPY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long reading a picture of up to `MAX_IMAGE_BYTES` may take (tmls: 60 s).
+pub const IMAGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs a command within a time limit and returns the bytes it printed; `run` in the app.
 pub type Runner<'a> = &'a dyn Fn(&[String], Duration) -> anyhow::Result<Vec<u8>>;
@@ -86,6 +110,97 @@ pub fn opens_outside(path: &str, is_dir: bool) -> bool {
     is_dir || OUTSIDE.contains(&extension(path).as_str())
 }
 
+/// Whether the panel shows it as a picture, by what it is called: an extension in `IMAGES`.
+pub fn is_image(path: &str) -> bool {
+    IMAGES.contains(&extension(path).as_str())
+}
+
+/// A picture, decoded: `width * height` pixels of four bytes, top row first — red, green,
+/// blue as sRGB, and alpha that is not multiplied in.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for Picture {
+    /// Without the pixels: megabytes of them say nothing.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (width, height, bytes) = (self.width, self.height, self.rgba.len());
+        write!(f, "Picture({width}x{height}, {bytes} bytes)")
+    }
+}
+
+/// The first line of what the decoder says is wrong.
+fn broken(error: image::ImageError) -> String {
+    use image::error::{ImageError, LimitErrorKind};
+    match &error {
+        ImageError::Limits(limit)
+            if !matches!(limit.kind(), LimitErrorKind::Unsupported { .. }) =>
+        {
+            return "image too large".to_string();
+        }
+        ImageError::Unsupported(_) => return "not an image the panel shows".to_string(),
+        _ => {}
+    }
+    let all = error.to_string();
+    let line = all.lines().map(str::trim).find(|line| !line.is_empty());
+    format!("broken image: {}", line.unwrap_or("it cannot be decoded"))
+}
+
+/// Decodes a picture file's bytes (PNG, JPEG, GIF, WebP or BMP, told by its first bytes, not
+/// its name) to RGBA, turned as its EXIF orientation says and made smaller, its shape kept,
+/// if a side is longer than `max_side`. A GIF gives its first frame.
+///
+/// The error is for the status line: "not an image" for bytes that are no picture, "image too
+/// large" for more than `MAX_IMAGE_PIXELS` pixels — by the header alone, before a buffer for
+/// them is asked for — and "broken image: …" for one that is cut off or damaged. Decoding
+/// allocates at most four bytes a pixel of `MAX_IMAGE_PIXELS` at a time. Never panics on bad
+/// bytes. Takes as long as the picture is large: not for the UI thread.
+pub fn decode(bytes: &[u8], max_side: u32) -> Result<Picture, String> {
+    use image::ImageDecoder;
+    let not_an_image = || "not an image".to_string();
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| not_an_image())?;
+    if reader.format().is_none() {
+        return Err(not_an_image());
+    }
+    // Reads the header only.
+    let mut decoder = reader.into_decoder().map_err(|error| match error {
+        image::ImageError::Unsupported(_) => not_an_image(),
+        error => broken(error),
+    })?;
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 {
+        return Err("broken image: it has no pixels".to_string());
+    }
+    if width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+        return Err("image too large".to_string());
+    }
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(4 * MAX_IMAGE_PIXELS);
+    decoder.set_limits(limits).map_err(broken)?;
+    // Before the pixels: a decoder that cannot say gives none.
+    let orientation = decoder.orientation().ok();
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(broken)?;
+    if let Some(orientation) = orientation {
+        image.apply_orientation(orientation);
+    }
+    let max_side = max_side.max(1);
+    if image.width() > max_side || image.height() > max_side {
+        // Fits it into the square with its shape kept; a side never comes to nothing.
+        image = image.resize(max_side, max_side, image::imageops::FilterType::Triangle);
+    }
+    let image = image.into_rgba8();
+    Ok(Picture {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    })
+}
+
 /// A text file, read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
@@ -102,6 +217,12 @@ pub struct Document {
 pub enum Opened {
     /// For the panel.
     Text(Document),
+    /// A picture for the panel, decoded. `path` is absolute, on `host`.
+    Image {
+        host: String,
+        path: String,
+        picture: Picture,
+    },
     /// For the desktop's app: the file or folder on this machine to give to `xdg-open`, and
     /// the line for the status line once that is started.
     Outside { target: String, said: String },
@@ -160,6 +281,9 @@ pub fn open_link(
     let located = locate(key, &link.path, local_name, run)?;
     let host = key.host.as_str();
     let name = named(host, &located.path, local_name);
+    if located.kind == Kind::File && is_image(&located.path) {
+        return image(host, &located, local_name, run);
+    }
     let text_sized = located.size <= MAX_BYTES as u64;
     if located.kind != Kind::File || opens_outside(&located.path, false) || !text_sized {
         return outside(host, &located, local_name, cache, None, run);
@@ -180,6 +304,28 @@ pub fn open_link(
         // Not text after all: the bytes are the whole file, no need to fetch it again.
         Err(bytes) => outside(host, &located, local_name, cache, Some(bytes), run),
     }
+}
+
+/// Reads the picture `located` on `host` and decodes it for the panel. One that is larger
+/// than `MAX_IMAGE_BYTES` is not read, or not decoded if it grew since it was located.
+fn image(host: &str, located: &Located, local_name: &str, run: Runner) -> Result<Opened, String> {
+    let path = located.path.as_str();
+    let name = named(host, path, local_name);
+    let too_large = || format!("{name}: too large for the panel: Open in app");
+    if located.size > MAX_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    let argv = files::read_argv(host, path, MAX_IMAGE_BYTES + 1, local_name);
+    let bytes = run(&argv, IMAGE_TIMEOUT).map_err(|e| format!("{name}: {}", why(&e)))?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    let picture = decode(&bytes, MAX_SIDE).map_err(|e| format!("{name}: {e}"))?;
+    Ok(Opened::Image {
+        host: host.to_string(),
+        path: located.path.clone(),
+        picture,
+    })
 }
 
 /// Gets the file at the absolute `path` on `host` ready for the desktop's app: the panel's
@@ -326,6 +472,9 @@ pub struct SideView {
 pub enum SideBody {
     /// `gutter`: the columns of the line numbers and the space after them.
     Text { gutter: usize, rows: Vec<TextRow> },
+    /// A picture: the chrome draws the body's background, `picture::PictureRenderer` the
+    /// picture over it.
+    Image,
 }
 
 /// A file's text in the panel: its lines, the one that is marked, and the first one in view.
@@ -433,14 +582,132 @@ pub fn expand(line: &str, cols: usize) -> String {
     out
 }
 
-/// What a panel shows under its header. One kind yet; an image is to be the second.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where a picture of `image` pixels is drawn in the panel's body `area` and which part of
+/// it: the rectangle on the screen in pixels, and the picture's rectangle there in texels.
+///
+/// Fitted (`actual` false): the whole picture, as large as fits with its shape kept and never
+/// larger than it is, in the middle. At its own size (`actual`): one texel a pixel; what does
+/// not fit is cut, and `scroll` — texels from the top-left corner — says where the part shown
+/// starts, held between the picture's ends. Both rectangles are on whole pixels. A body or a
+/// picture of no size gives a rectangle of no size.
+pub fn place(image: (u32, u32), area: Rect, actual: bool, scroll: (f32, f32)) -> (Rect, Rect) {
+    let (iw, ih) = (image.0 as f32, image.1 as f32);
+    let (aw, ah) = (area.w.floor(), area.h.floor());
+    // Not `aw < 1.0`: a size that is no number draws nothing either.
+    if image.0 == 0 || image.1 == 0 || !(aw >= 1.0 && ah >= 1.0) {
+        let nothing = Rect {
+            x: area.x,
+            y: area.y,
+            w: 0.0,
+            h: 0.0,
+        };
+        return (
+            nothing,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                ..nothing
+            },
+        );
+    }
+    // In the middle of the body, on a whole pixel.
+    let centred = |w: f32, h: f32| Rect {
+        x: (area.x + ((area.w - w) / 2.0).floor()).round(),
+        y: (area.y + ((area.h - h) / 2.0).floor()).round(),
+        w,
+        h,
+    };
+    if actual {
+        let (w, h) = (iw.min(aw), ih.min(ah));
+        let start = |scroll: f32, most: f32| match scroll.is_finite() {
+            true => scroll.round().clamp(0.0, most),
+            false => 0.0,
+        };
+        let source = Rect {
+            x: start(scroll.0, iw - w),
+            y: start(scroll.1, ih - h),
+            w,
+            h,
+        };
+        return (centred(w, h), source);
+    }
+    let whole = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: iw,
+        h: ih,
+    };
+    let (w, h) = if iw <= aw && ih <= ah {
+        (iw, ih)
+    } else if aw * ih <= ah * iw {
+        // The width is what stops it.
+        (aw, (aw * ih / iw).round().clamp(1.0, ah))
+    } else {
+        ((ah * iw / ih).round().clamp(1.0, aw), ah)
+    };
+    (centred(w, h), whole)
+}
+
+/// A picture in the panel: its size in pixels (the texture's), whether it is shown at its own
+/// size and not fitted, and how far it is scrolled then, in texels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageBody {
+    pub size: (u32, u32),
+    pub actual: bool,
+    pub scroll: (f32, f32),
+}
+
+impl ImageBody {
+    /// Just opened: fitted.
+    pub fn new(size: (u32, u32)) -> ImageBody {
+        ImageBody {
+            size,
+            actual: false,
+            scroll: (0.0, 0.0),
+        }
+    }
+
+    /// A click: between fitted and its own size, which starts at the top-left corner.
+    pub fn toggle(&mut self) {
+        self.actual = !self.actual;
+        self.scroll = (0.0, 0.0);
+    }
+
+    /// Moves the part shown by `by` texels in a body of `area`, as far as the picture goes.
+    /// Returns whether the picture changed: never while it is fitted.
+    pub fn pan(&mut self, by: (f32, f32), area: Rect) -> bool {
+        if !self.actual {
+            return false;
+        }
+        let at = |scroll| {
+            let (_, source) = place(self.size, area, true, scroll);
+            (source.x, source.y)
+        };
+        let from = at(self.scroll);
+        let to = at((from.0 + by.0, from.1 + by.1));
+        self.scroll = to;
+        to != from
+    }
+
+    /// How large it is drawn in a body of `area`, in hundredths of its own size.
+    pub fn percent(&self, area: Rect) -> u32 {
+        let (dest, source) = place(self.size, area, self.actual, self.scroll);
+        match source.w > 0.0 {
+            true => (100.0 * dest.w / source.w).round() as u32,
+            false => 0,
+        }
+    }
+}
+
+/// What a panel shows under its header.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Text(TextBody),
+    Image(ImageBody),
 }
 
 /// The panel beside the terminal: one file of one host.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SidePanel {
     pub host: String,
     /// Absolute, on `host`: what `Open in app` opens.
@@ -449,19 +716,41 @@ pub struct SidePanel {
     pub body: Body,
 }
 
+/// What a panel's header calls the file: with its host unless that is this machine.
+fn titled(host: &str, path: &str, local_name: &str) -> String {
+    match host == local_name {
+        true => path.to_string(),
+        false => format!("{host}:{path}"),
+    }
+}
+
 impl SidePanel {
     /// A panel for a text file. Its header names the host too unless that is this machine
     /// (tmls: `host:path:line`; the line is marked here instead).
     pub fn text(document: &Document, local_name: &str) -> SidePanel {
-        let title = match document.host == local_name {
-            true => document.path.clone(),
-            false => format!("{}:{}", document.host, document.path),
-        };
         SidePanel {
             host: document.host.clone(),
             path: document.path.clone(),
-            title,
+            title: titled(&document.host, &document.path, local_name),
             body: Body::Text(TextBody::new(&document.text, document.line)),
+        }
+    }
+
+    /// A panel for the picture of `size` pixels at the absolute `path` on `host`, fitted.
+    pub fn image(host: &str, path: &str, size: (u32, u32), local_name: &str) -> SidePanel {
+        SidePanel {
+            host: host.to_string(),
+            path: path.to_string(),
+            title: titled(host, path, local_name),
+            body: Body::Image(ImageBody::new(size)),
+        }
+    }
+
+    /// The picture, if that is what the panel shows.
+    pub fn image_body(&self) -> Option<&ImageBody> {
+        match &self.body {
+            Body::Image(image) => Some(image),
+            Body::Text(_) => None,
         }
     }
 
@@ -469,27 +758,55 @@ impl SidePanel {
     pub fn reveal(&mut self, lines: usize) {
         match &mut self.body {
             Body::Text(text) => text.reveal(lines),
+            Body::Image(_) => {}
         }
     }
 
-    /// The wheel over the panel. Returns whether the picture changed.
+    /// The wheel over a panel of text. Returns whether the picture changed.
     pub fn scroll(&mut self, rows: i32, lines: usize) -> bool {
         match &mut self.body {
             Body::Text(text) => text.scroll(rows, lines),
+            Body::Image(_) => false,
         }
     }
 
-    /// What to draw in a panel of `lines` lines of `cols` columns under its header.
-    pub fn view(&self, lines: usize, cols: usize) -> SideView {
-        let body = match &self.body {
-            Body::Text(text) => SideBody::Text {
-                gutter: text.gutter_cols(),
-                rows: text.rows(lines, cols),
-            },
-        };
-        SideView {
-            title: self.title.clone(),
-            body,
+    /// The wheel over a picture in a body of `area`: `by` pixels across and down
+    /// (`ImageBody::pan`). Returns whether the picture changed.
+    pub fn pan(&mut self, by: (f32, f32), area: Rect) -> bool {
+        match &mut self.body {
+            Body::Image(image) => image.pan(by, area),
+            Body::Text(_) => false,
         }
+    }
+
+    /// A click on the body. Returns whether the picture changed: a picture goes between
+    /// fitted and its own size, text has nothing to click.
+    pub fn click(&mut self) -> bool {
+        match &mut self.body {
+            Body::Image(image) => {
+                image.toggle();
+                true
+            }
+            Body::Text(_) => false,
+        }
+    }
+
+    /// What to draw in a panel of `lines` lines of `cols` columns under its header; `area`
+    /// is that body in pixels (`Layout::side_body`), which a picture's header needs.
+    pub fn view(&self, lines: usize, cols: usize, area: Rect) -> SideView {
+        let (title, body) = match &self.body {
+            Body::Text(text) => {
+                let rows = text.rows(lines, cols);
+                let gutter = text.gutter_cols();
+                (self.title.clone(), SideBody::Text { gutter, rows })
+            }
+            Body::Image(image) => {
+                let (width, height) = image.size;
+                let percent = image.percent(area);
+                let title = format!("{} {width}×{height} · {percent} %", self.title);
+                (title, SideBody::Image)
+            }
+        };
+        SideView { title, body }
     }
 }

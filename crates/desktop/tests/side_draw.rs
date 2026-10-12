@@ -192,7 +192,7 @@ fn panel(text: &str, line: Option<usize>, l: &Layout) -> SideView {
     };
     let mut panel = SidePanel::text(&document, LOCAL);
     panel.reveal(l.side_lines);
-    panel.view(l.side_lines, l.side_cols)
+    panel.view(l.side_lines, l.side_cols, l.side_body)
 }
 
 /// The layout with or without room for the panel, and the chrome's two layers for `side`.
@@ -398,4 +398,41 @@ fn no_panel_no_quads() {
     let mut chrome = Chrome::new();
     chrome.update(&view, &sidebar(), &l, &theme, &mut atlas);
     assert!(chrome.top().is_empty());
+}
+
+#[test]
+fn a_pictures_header_says_its_size_and_how_large_it_is_drawn() {
+    let theme = Theme::default();
+    // 1280 x 800 in a body of 550 x 400 pixels: as wide as the body, 43 % of its size.
+    let body = Rect {
+        x: 700.0,
+        y: 20.0,
+        w: 550.0,
+        h: 400.0,
+    };
+    let panel = SidePanel::image(LOCAL, "/w/shots/screen.png", (1280, 800), LOCAL);
+    let view = panel.view(20, 60, body);
+    assert_eq!(view.title, "/w/shots/screen.png 1280×800 · 43 %");
+    let spans = side_header_spans(&view.title, 60, &theme);
+    assert_eq!(spans[0].shown(), "/w/shots/screen.png 1280×800 · 43 %");
+    assert_within(&spans, 60);
+    // A narrow panel cuts the path, not what is said of the picture.
+    let spans = side_header_spans(&view.title, 34, &theme);
+    let shown = spans[0].shown();
+    assert!(
+        shown.starts_with('…') && shown.ends_with(" 1280×800 · 43 %"),
+        "{shown}"
+    );
+    assert_within(&spans, 34);
+
+    // Drawn: the header's text and the body's background, and no row of text. The picture
+    // itself is not the chrome's (`picture::PictureRenderer` draws it over the body).
+    let (_, top, l) = built(true, |l| {
+        Some(panel.view(l.side_lines, l.side_cols, l.side_body))
+    });
+    assert!(glyphs(&top, l.side_header, theme.sidebar_fg) > 10);
+    assert_eq!(glyphs(&top, l.side_body, theme.sidebar_fg), 0);
+    assert_eq!(glyphs(&top, l.side_body, theme.dim_fg), 0);
+    assert_eq!(solids(&top, l.side, theme.sidebar_bg).len(), 1);
+    assert!(top.iter().all(|quad| inside(quad, l.side)));
 }

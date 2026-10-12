@@ -29,7 +29,7 @@
 //!
 //! File path: a Ctrl+click on a path in the terminal (`mouse::Effect::File`) runs
 //! `viewer::open_link` on a thread of its own, which asks the session's host where the file
-//! is and reads it → `UserEvent::Viewed` → text opens the panel beside the terminal
+//! is and reads it → `UserEvent::Viewed` → text or a picture opens the panel beside the terminal
 //! (`viewer::SidePanel`; the layout is made again and the tabs get the narrower grid, as on a
 //! window resize), anything else goes to `xdg-open`. Only the answer to the newest click
 //! counts. The panel's `Open in app` comes the same way (`viewer::open_in_app`).
@@ -77,6 +77,7 @@ use crate::keys::{self, Focus, Global, ListKey, RepeatGate, Route};
 use crate::kitty;
 use crate::links::{self, FileLink};
 use crate::mouse::{self, Effect, Pointer};
+use crate::picture::PictureRenderer;
 use crate::sidebar::{self, Sidebar};
 use crate::tabs::{TabState, Tabs};
 use crate::theme::{SIDEBAR_COLS, SIDEBAR_MIN_COLS, Theme, host_rgb, mark_rgb};
@@ -316,6 +317,9 @@ struct Running {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     renderer: Renderer,
+    /// The picture of the file panel, while it shows one: its texture, and the pass that
+    /// draws it after the renderer's. Not used at all for a frame without one.
+    picture: PictureRenderer,
     atlas: Atlas,
     theme: Theme,
     /// Where everything is, for the current size, scale and font size.
@@ -484,6 +488,7 @@ impl Running {
             &theme,
         );
         let renderer = Renderer::new(&gpu.device, config.format);
+        let picture = PictureRenderer::new(&gpu.device, config.format);
 
         let log = match &args.bench {
             Some(dir) => {
@@ -531,6 +536,7 @@ impl Running {
             config,
             gpu,
             renderer,
+            picture,
             atlas,
             theme,
             layout,
@@ -772,10 +778,10 @@ impl Running {
             panel,
             sketch: self.sketchpad.is_some(),
             unread: self.alerts.unread(),
-            side: self
-                .side
-                .as_ref()
-                .map(|side| side.view(self.layout.side_lines, self.layout.side_cols)),
+            side: self.side.as_ref().map(|side| {
+                let l = &self.layout;
+                side.view(l.side_lines, l.side_cols, l.side_body)
+            }),
         }
     }
 
@@ -1115,10 +1121,25 @@ impl Running {
         });
     }
 
-    /// The answer to a click on a file: text opens in the panel (in place of what it showed)
-    /// if the window has room for one, anything else is started in the desktop's app. An
-    /// answer to a click that is not the latest is dropped (tmls: a newer click cancels the
-    /// load). What went wrong shows in the status line until the next key.
+    /// Puts `panel` in the file panel, in place of what it showed, and lays the window out
+    /// for it. Returns whether the window has room for one: beside `PANEL_MIN_COLS` columns of
+    /// terminal there may be none, and then none is kept (the layout is the one without).
+    fn show_side(&mut self, panel: SidePanel) -> bool {
+        let was_open = self.side.is_some();
+        self.side = Some(panel);
+        if !was_open {
+            self.relayout();
+        }
+        if self.layout.side.w <= 0.0 {
+            self.side = None;
+        }
+        self.side.is_some()
+    }
+
+    /// The answer to a click on a file: text or a picture opens in the panel (in place of
+    /// what it showed) if the window has room for one, anything else is started in the
+    /// desktop's app. An answer to a click that is not the latest is dropped (tmls: a newer
+    /// click cancels the load). What went wrong shows in the status line until the next key.
     fn viewed(&mut self, click: u64, result: Result<Opened, String>) {
         if click != self.views.load(Ordering::SeqCst) {
             return;
@@ -1129,22 +1150,46 @@ impl Running {
                     Some(line) => format!("opened {} at line {line}", document.path),
                     None => format!("opened {}", document.path),
                 };
-                let was_open = self.side.is_some();
-                self.side = Some(SidePanel::text(&document, &self.cfg.local_name));
-                if !was_open {
-                    self.relayout();
-                }
-                // No room for a panel beside `PANEL_MIN_COLS` columns of terminal: none is
-                // kept (the layout is the one without), and the click is answered. A note
-                // like the other answers here, gone with the next key: nothing is broken.
-                if self.layout.side.w <= 0.0 {
-                    self.side = None;
+                // Whatever the panel showed, it shows no picture now: its texture is freed.
+                self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+                // No room: the click is answered. A note like the other answers here, gone
+                // with the next key: nothing is broken.
+                if !self.show_side(SidePanel::text(&document, &self.cfg.local_name)) {
                     return self.say(Ok(viewer::TOO_NARROW.to_string()));
                 }
                 let lines = self.layout.side_lines;
                 if let Some(side) = &mut self.side {
                     side.reveal(lines);
                 }
+                self.say(Ok(said));
+            }
+            Ok(Opened::Image {
+                host,
+                path,
+                picture,
+            }) => {
+                let size = (picture.width, picture.height);
+                let panel = SidePanel::image(&host, &path, size, &self.cfg.local_name);
+                let said = match self.show_side(panel) {
+                    // Uploaded once, in place of the picture before. The pixels are not kept
+                    // here: `picture` is dropped when this arm ends.
+                    true => {
+                        match self
+                            .picture
+                            .set(&self.gpu.device, &self.gpu.queue, Some(&picture))
+                        {
+                            true => format!("opened {path}"),
+                            false => {
+                                self.close_side();
+                                format!("{path}: too large for this GPU: Open in app")
+                            }
+                        }
+                    }
+                    false => {
+                        self.picture.set(&self.gpu.device, &self.gpu.queue, None);
+                        viewer::TOO_NARROW.to_string()
+                    }
+                };
                 self.say(Ok(said));
             }
             Ok(Opened::Outside { target, said }) => {
@@ -1162,6 +1207,8 @@ impl Running {
     fn close_side(&mut self) {
         // An answer still on its way would open it again.
         self.views.fetch_add(1, Ordering::SeqCst);
+        // A picture's texture is freed.
+        self.picture.set(&self.gpu.device, &self.gpu.queue, None);
         if self.side.take().is_some() {
             self.relayout();
         }
@@ -1724,8 +1771,14 @@ impl Running {
             Hit::TabClose(index) => self.close_tab(index),
             Hit::SideClose => self.close_side(),
             Hit::SideOpen => self.open_side_in_app(),
+            // A picture: between fitted and its own size. Text has nothing to click.
+            Hit::Side => {
+                let on_body = self.layout.side_body.contains(x, y);
+                if on_body && self.side.as_mut().is_some_and(SidePanel::click) {
+                    self.invalidate();
+                }
+            }
             Hit::List { .. }
-            | Hit::Side
             | Hit::Sidebar
             | Hit::TabBar
             | Hit::Terminal
@@ -1758,11 +1811,18 @@ impl Running {
                 self.invalidate();
             }
             Hit::Side | Hit::SideDivider | Hit::SideOpen | Hit::SideClose => {
-                let lines = self.layout.side_lines;
+                let (lines, body) = (self.layout.side_lines, self.layout.side_body);
+                // A picture at its own size moves by as many pixels as text by lines, and
+                // sideways with Shift; text moves by lines.
+                let pixels = rows as f32 * cell_height;
+                let by = match self.mods.shift_key() {
+                    true => (pixels, 0.0),
+                    false => (0.0, pixels),
+                };
                 if self
                     .side
                     .as_mut()
-                    .is_some_and(|side| side.scroll(rows, lines))
+                    .is_some_and(|side| side.scroll(rows, lines) || side.pan(by, body))
                 {
                     self.invalidate();
                 }
@@ -1864,6 +1924,26 @@ impl Running {
             });
         self.renderer
             .draw(&mut encoder, &view, self.theme.terminal.bg);
+        // A picture in the file panel: a second pass over the first one's body, where
+        // `place` puts it in the body as it is for this frame. Without one, nothing.
+        if let Some(image) = self.side.as_ref().and_then(SidePanel::image_body) {
+            let body = self.layout.side_body;
+            let (dest, source) = viewer::place(image.size, body, image.actual, image.scroll);
+            // The pass draws over everything, a form or a menu too: not while one is on it.
+            let covered = self.view.panel.as_ref().is_some_and(|(panel, at)| {
+                let over = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let line = self.layout.separator.w.max(1.0);
+                over.x - line < dest.right()
+                    && dest.x < over.right() + line
+                    && over.y - line < dest.bottom()
+                    && dest.y < over.bottom() + line
+            });
+            if !covered {
+                let viewport = (self.config.width, self.config.height);
+                self.picture
+                    .draw(&mut encoder, &view, viewport, dest, source, body);
+            }
+        }
         drop(view);
 
         self.write_meta(false);

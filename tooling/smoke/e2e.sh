@@ -500,12 +500,97 @@ if click 300 11; then
     fail "dragged back, and pressed on the handle's edge, the pane has its $COLS_DRAGGED columns and ui holds panel_cols=40" \
       "columns $(pane_cols); ui: $(tr '\n' '|' <"$UI" 2>&1)"
   fi
+  # --- a picture in the panel ---------------------------------------------------------------------
+  # 400x300 pixels of one orange, written with python's zlib. The panel is open with its text
+  # and 40 columns: the divider is the pixel column 955, as dragged above, so the panel's text
+  # and the picture have the 320 pixel columns from 960 (1280 - 955 - 5 = 320). The picture is
+  # wider than that: fitted it is 320x240, 80 % of its size.
+  ORANGE="$HOME/orange.png"
+  python3 - "$ORANGE" <<'PY'
+import struct, sys, zlib
+w, h = 400, 300
+def chunk(kind, data):
+    body = kind + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+rows = (b"\x00" + bytes((0xFF, 0x88, 0x00)) * w) * h
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY
+  # orange  — of the pixels on the screen that are exactly #FF8800: how many are in the panel's
+  # pixel columns (from 960), the box around those (WxH+X+Y), and how many are left of them.
+  orange() {
+    timeout 10 grim -t ppm - 2>>"$OUT/grim.log" | python3 -c '
+import sys
+d = sys.stdin.buffer.read()
+# P6\nW H\n255\n then RGB triples
+parts = d.split(b"\n", 3)
+w, h = map(int, parts[1].split())
+px = parts[3]
+row = b"\xff\x88\x00" * w
+inside = outside = 0
+xs, ys = [], []
+for y in range(h):
+    line = px[3 * w * y:3 * w * (y + 1)]
+    if b"\xff\x88\x00" not in line:
+        continue
+    hit = [x for x in range(w) if line[3 * x:3 * x + 3] == b"\xff\x88\x00"]
+    here = [x for x in hit if x >= 960]
+    outside += len(hit) - len(here)
+    if here:
+        inside += len(here)
+        xs += [here[0], here[-1]]
+        ys.append(y)
+box = "%dx%d+%d+%d" % (max(xs) - min(xs) + 1, ys[-1] - ys[0] + 1, min(xs), ys[0]) if xs else "none"
+print(inside, box, outside)
+' 2>/dev/null || echo "0 none 0"
+    return 0
+  }
+  orange_at_least() { [ "$(orange | cut -d' ' -f1)" -ge "$1" ]; }
+  orange_is() { case "$(orange)" in $1) return 0 ;; *) return 1 ;; esac; }
+  tmux send-keys -t "=$ONE:" "clear; for i in \$(seq 1 40); do echo $ORANGE; done" Enter
+  wait_for 5 pane_has_line "$ONE" "$ORANGE"
+  check "before the click on the picture's path no pixel of the screen is its orange" orange_is "0 none 0"
+  timeout 10 wtype -M ctrl -s 4000 -m ctrl &
+  HOLD=$!
+  sleep 0.8
+  click 300 300
+  if wait_for 8 orange_at_least 10000; then
+    pass "Ctrl+click on a picture's path shows it in the panel: $(orange | cut -d' ' -f1) pixels of its orange right of the divider"
+  else
+    fail "Ctrl+click on a picture's path shows it in the panel" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  wait "$HOLD" 2>/dev/null
+  check "screenshot 12f-image-panel" shot 12f-image-panel
+  # Fitted: as wide as the panel's 320 pixels, its shape kept, nothing of it outside the panel.
+  if orange_is "76800 320x240+960+* 0"; then
+    pass "the picture is fitted into the panel with its shape kept: $(orange | cut -d' ' -f2)"
+  else
+    fail "the picture is fitted into the panel with its shape kept (320x240 from x=960)" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "with the picture open the pane keeps its $COLS_DRAGGED columns" as_wide_as "$COLS_DRAGGED"
+  # A click on it: its own size, one texel a pixel. 320 of its 400 columns fit, all 300 rows.
+  click 1100 400
+  if wait_for 5 orange_is "96000 320x300+960+* 0"; then
+    pass "a click on the picture shows it at its own size: $(orange | cut -d' ' -f2)"
+  else
+    fail "a click on the picture shows it at its own size (320x300 from x=960)" "orange pixels, their box, outside the panel: $(orange)"
+  fi
+  check "screenshot 12g-image-actual" shot 12g-image-actual
+  # And a click again fits it.
+  click 1100 400
+  if wait_for 5 orange_is "76800 320x240+960+* 0"; then
+    pass "a click again fits the picture"
+  else
+    fail "a click again fits the picture" "orange pixels, their box, outside the panel: $(orange)"
+  fi
   keys -M alt -M shift -k x -m shift -m alt
   if wait_for 8 as_wide_as "$COLS_BEFORE"; then
     pass "Alt+Shift+X closes the panel: the pane has its $COLS_BEFORE columns again"
   else
     fail "Alt+Shift+X closes the panel: the pane has its columns again" "columns $COLS_BEFORE -> $(pane_cols)"
   fi
+  check "with the panel closed nothing of the picture is left on the screen" orange_is "0 none 0"
   tmux send-keys -t "=$ONE:" 'clear' Enter
   sleep 0.5
   check_typed "after the panel typing still arrives" "$ONE" viewed

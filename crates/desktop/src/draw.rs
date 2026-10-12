@@ -1289,7 +1289,7 @@ fn status_line(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
 }
 
 /// The file panel: its divider, its header and the rows of the file in view, the marked one
-/// on a band.
+/// on a band. Of a picture, the header and the background it is drawn over.
 fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
     let Some(side) = &view.side else {
         return;
@@ -1321,6 +1321,8 @@ fn side_panel(p: &mut Painter, view: &View, l: &Layout, theme: &Theme) {
                 p.span((l.side_body.x, l.side_body.y), &span);
             }
         }
+        // The picture is not made of quads: the app draws it over the body's background.
+        SideBody::Image => {}
     }
 }
 

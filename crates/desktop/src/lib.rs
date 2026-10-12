@@ -10,6 +10,7 @@
 //! - `kitty` — bringing the kitty window of a Claude session outside tmux to the front.
 //! - `viewer` — a clicked file: found and read on the session's host, shown in the panel
 //!   beside the terminal or given to the desktop's app.
+//! - `picture` — a picture in that panel on the GPU: its texture and the pass that draws it.
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
 //! - `uistate` — the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
@@ -27,6 +28,7 @@ pub mod keys;
 pub mod kitty;
 pub mod links;
 pub mod mouse;
+pub mod picture;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme;

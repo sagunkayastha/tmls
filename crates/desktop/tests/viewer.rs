@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use client_core::SessionKey;
 use client_core::files::{locate_argv, read_argv};
+use desktop::draw::Rect;
 use desktop::links::FileLink;
 use desktop::viewer::{
-    self, COPY_TIMEOUT, Document, LOCATE_TIMEOUT, MAX_BYTES, MAX_OUTSIDE_BYTES, Opened,
-    READ_TIMEOUT, SideBody, SidePanel, TextBody, expand, extension, opens_outside,
+    self, COPY_TIMEOUT, Document, IMAGE_TIMEOUT, ImageBody, LOCATE_TIMEOUT, MAX_BYTES,
+    MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MAX_OUTSIDE_BYTES, MAX_SIDE, Opened, READ_TIMEOUT, SideBody,
+    SidePanel, TextBody, decode, expand, extension, opens_outside, place,
 };
 
 /// This machine's name; `nas` is another host.
@@ -117,8 +119,8 @@ fn the_extension_decides_as_in_tmls() {
     assert_eq!(extension(".config.toml"), "toml");
     assert_eq!(extension("a."), "");
     for outside in [
-        "a.png", "A.JPEG", "doc.pdf", "v.mkv", "s.flac", "x.tar.gz", "b.tgz", "r.docx", "p.odp",
-        "i.svg",
+        "doc.pdf", "v.mkv", "s.flac", "x.tar.gz", "b.tgz", "r.docx", "p.odp", "i.svg", "t.tif",
+        "t.tiff", "p.heic", "p.avif", "f.ico",
     ] {
         assert!(opens_outside(outside, false), "{outside}");
     }
@@ -133,8 +135,19 @@ fn the_extension_decides_as_in_tmls() {
     ] {
         assert!(!opens_outside(inside, false), "{inside}");
     }
+    // The pictures the panel shows itself.
+    for image in ["a.png", "A.JPEG", "b.jpg", "c.gif", "d.webp", "e.BMP"] {
+        assert!(!opens_outside(image, false), "{image}");
+        assert!(viewer::is_image(image), "{image}");
+    }
+    assert!(!viewer::is_image("i.svg") && !viewer::is_image("png") && !viewer::is_image(".png"));
+    assert_eq!(viewer::IMAGES, ["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
     assert!(opens_outside("src", true), "a folder");
-    assert_eq!(viewer::OUTSIDE.len(), 35);
+    assert!(
+        opens_outside("shots.png", true),
+        "a folder, whatever it is called"
+    );
+    assert_eq!(viewer::OUTSIDE.len(), 29);
     assert_eq!((MAX_BYTES, MAX_OUTSIDE_BYTES), (2_000_000, 25_000_000));
 }
 
@@ -192,10 +205,10 @@ fn a_text_file_of_another_host_comes_through_ssh() {
 #[test]
 fn what_is_not_text_goes_to_the_desktops_app_where_it_is_on_this_machine() {
     // By its name: not read at all.
-    let host = Host::new("f\n500\n/w/shot.PNG", b"\x89PNG");
+    let host = Host::new("f\n500\n/w/shot.SVG", b"\x89PNG");
     assert_eq!(
-        target(host.open(LOCAL, &link("shot.PNG", None), None)),
-        "/w/shot.PNG"
+        target(host.open(LOCAL, &link("shot.SVG", None), None)),
+        "/w/shot.SVG"
     );
     assert_eq!(host.calls().len(), 1, "located, not read");
     // Also when a line was given (tmls: an image never fits the text viewer).
@@ -245,13 +258,13 @@ fn the_panel_takes_exactly_two_million_bytes() {
 #[test]
 fn a_file_of_another_host_is_copied_to_the_cache_and_the_copy_opened() {
     let cache = scratch("copy");
-    let host = Host::new("f\n4\n/srv/pics/it's a shot.png", b"\x89PNG");
+    let host = Host::new("f\n4\n/srv/pics/it's a shot.tif", b"\x89PNG");
     let opened = host.open(
         "nas",
-        &link("/srv/pics/it's a shot.png", None),
+        &link("/srv/pics/it's a shot.tif", None),
         Some(&cache),
     );
-    let copy = cache.join("nas").join("it's a shot.png");
+    let copy = cache.join("nas").join("it's a shot.tif");
     assert_eq!(target(opened), copy.to_str().unwrap());
     assert_eq!(std::fs::read(&copy).unwrap(), b"\x89PNG");
     use std::os::unix::fs::PermissionsExt;
@@ -262,13 +275,13 @@ fn a_file_of_another_host_is_copied_to_the_cache_and_the_copy_opened() {
     assert_eq!(
         calls[1],
         (
-            read_argv("nas", "/srv/pics/it's a shot.png", 25_000_001, LOCAL),
+            read_argv("nas", "/srv/pics/it's a shot.tif", 25_000_001, LOCAL),
             COPY_TIMEOUT
         )
     );
     // The next file of that name from that host replaces the copy.
-    let host = Host::new("f\n3\n/other/it's a shot.png", b"new");
-    host.open("nas", &link("/other/it's a shot.png", None), Some(&cache))
+    let host = Host::new("f\n3\n/other/it's a shot.tif", b"new");
+    host.open("nas", &link("/other/it's a shot.tif", None), Some(&cache))
         .unwrap();
     assert_eq!(std::fs::read(&copy).unwrap(), b"new");
 
@@ -320,11 +333,11 @@ fn another_hosts_folder_and_too_large_a_file_are_refused() {
     let copy = target(host.open("nas", &link("/srv/big.log", Some(9)), Some(&cache)));
     assert_eq!(std::fs::metadata(copy).unwrap().len(), 2_000_001);
     // Nowhere to copy to.
-    let host = Host::new("f\n4\n/srv/a.png", b"\x89PNG");
+    let host = Host::new("f\n4\n/srv/a.tif", b"\x89PNG");
     let said = host
-        .open("nas", &link("/srv/a.png", None), None)
+        .open("nas", &link("/srv/a.tif", None), None)
         .unwrap_err();
-    assert_eq!(said, "/srv/a.png on nas: no cache directory to copy it to");
+    assert_eq!(said, "/srv/a.tif on nas: no cache directory to copy it to");
     assert_eq!(host.calls().len(), 1);
     let _ = std::fs::remove_dir_all(&cache);
 }
@@ -433,6 +446,14 @@ fn the_cache_is_under_xdg_cache_home_or_the_home() {
         assert_eq!(at("nas", nameless), None, "{nameless:?}");
     }
 }
+
+/// A panel's body of 400 x 400 pixels at (600, 20).
+const AREA: Rect = Rect {
+    x: 600.0,
+    y: 20.0,
+    w: 400.0,
+    h: 400.0,
+};
 
 fn numbered(lines: usize) -> String {
     (1..=lines).map(|n| format!("line {n}\n")).collect()
@@ -591,9 +612,11 @@ fn the_panel_names_the_host_unless_it_is_this_machine() {
     };
     let mut here = SidePanel::text(&document(LOCAL), LOCAL);
     here.reveal(10);
-    let view = here.view(10, 40);
+    let view = here.view(10, 40, AREA);
     assert_eq!(view.title, "/w/src/main.rs");
-    let SideBody::Text { gutter, rows } = &view.body;
+    let SideBody::Text { gutter, rows } = &view.body else {
+        panic!("not text: {view:?}");
+    };
     assert_eq!(*gutter, 2);
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1].text, "    b");
@@ -604,7 +627,7 @@ fn the_panel_names_the_host_unless_it_is_this_machine() {
     );
 
     let there = SidePanel::text(&document("nas"), LOCAL);
-    assert_eq!(there.view(10, 40).title, "nas:/w/src/main.rs");
+    assert_eq!(there.view(10, 40, AREA).title, "nas:/w/src/main.rs");
     assert_eq!(there.host, "nas");
     // The wheel moves a panel that has more than fits.
     let mut long = SidePanel::text(
@@ -615,7 +638,467 @@ fn the_panel_names_the_host_unless_it_is_this_machine() {
         LOCAL,
     );
     assert!(long.scroll(3, 10));
-    let SideBody::Text { rows, .. } = long.view(10, 40).body;
+    let SideBody::Text { rows, .. } = long.view(10, 40, AREA).body else {
+        panic!("not text");
+    };
     assert_eq!(rows[0].number, 4);
     assert!(!here.scroll(3, 10));
+}
+
+// --- pictures ---------------------------------------------------------------------------------
+
+/// A picture as a file's bytes; `pixel` gives each pixel's RGBA.
+fn encoded(
+    format: image::ImageFormat,
+    width: u32,
+    height: u32,
+    pixel: impl Fn(u32, u32) -> [u8; 4],
+) -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| image::Rgba(pixel(x, y)));
+    let mut out = std::io::Cursor::new(Vec::new());
+    match format {
+        // JPEG has no alpha.
+        image::ImageFormat::Jpeg => image::DynamicImage::ImageRgba8(picture)
+            .into_rgb8()
+            .write_to(&mut out, format),
+        _ => picture.write_to(&mut out, format),
+    }
+    .expect("encoding the test's picture");
+    out.into_inner()
+}
+
+fn png(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+    encoded(image::ImageFormat::Png, width, height, pixel)
+}
+
+/// The CRC of a PNG chunk.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (!(crc & 1)).wrapping_add(1));
+        }
+    }
+    !crc
+}
+
+/// A PNG file that is only its header, which says `width` x `height`, and the start of its
+/// data: 60 bytes, whatever the size it claims.
+fn png_header_only(width: u32, height: u32) -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    };
+    let mut header = Vec::new();
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    // 8 bits a channel, RGBA, deflate, no filter, not interlaced.
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(b"IHDR", &header);
+    chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x00]);
+    out
+}
+
+fn at(picture: &viewer::Picture, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * picture.width + x) * 4) as usize;
+    picture.rgba[i..i + 4].try_into().unwrap()
+}
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const GREEN: [u8; 4] = [0, 255, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+
+fn corners(x: u32, y: u32) -> [u8; 4] {
+    match (x, y) {
+        (0, 0) => RED,
+        (2, 0) => GREEN,
+        (0, 1) => BLUE,
+        (2, 1) => WHITE,
+        _ => [10, 20, 30, 128],
+    }
+}
+
+#[test]
+fn a_small_png_decodes_to_its_pixels() {
+    let picture = decode(&png(3, 2, corners), MAX_SIDE).expect("a 3x2 png");
+    assert_eq!((picture.width, picture.height), (3, 2));
+    assert_eq!(picture.rgba.len(), 3 * 2 * 4);
+    assert_eq!(at(&picture, 0, 0), RED);
+    assert_eq!(at(&picture, 2, 0), GREEN);
+    assert_eq!(at(&picture, 0, 1), BLUE);
+    assert_eq!(at(&picture, 2, 1), WHITE);
+    // Alpha is kept as it is, not multiplied in.
+    assert_eq!(at(&picture, 1, 0), [10, 20, 30, 128]);
+    assert_eq!(
+        (MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MAX_SIDE),
+        (25_000_000, 50_000_000, 4096)
+    );
+}
+
+#[test]
+fn the_other_formats_decode_and_a_gif_gives_its_first_frame() {
+    use image::ImageFormat::{Bmp, Gif, Jpeg, WebP};
+    for format in [Bmp, Gif, WebP, Jpeg] {
+        let bytes = encoded(format, 8, 4, |_, _| RED);
+        let picture = decode(&bytes, MAX_SIDE).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        assert_eq!((picture.width, picture.height), (8, 4), "{format:?}");
+        let [r, g, b, a] = at(&picture, 4, 2);
+        assert!(r > 240 && g < 15 && b < 15 && a == 255, "{format:?}");
+    }
+    // Two frames: the first is the one shown.
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+        for colour in [GREEN, BLUE] {
+            let frame = image::RgbaImage::from_pixel(5, 5, image::Rgba(colour));
+            encoder
+                .encode_frame(image::Frame::new(frame))
+                .expect("a gif frame");
+        }
+    }
+    let picture = decode(&bytes, MAX_SIDE).expect("a gif of two frames");
+    assert_eq!((picture.width, picture.height), (5, 5));
+    assert_eq!(at(&picture, 2, 2), GREEN);
+}
+
+#[test]
+fn a_picture_wider_than_the_limit_is_made_smaller_with_its_shape_kept() {
+    let picture = decode(&png(6000, 10, |_, _| BLUE), MAX_SIDE).expect("a 6000x10 png");
+    assert_eq!(picture.width, 4096);
+    // 10 * 4096 / 6000 = 6.83
+    assert_eq!(picture.height, 7);
+    assert_eq!(picture.rgba.len(), 4096 * 7 * 4);
+    assert_eq!(at(&picture, 2000, 3), BLUE);
+    // Taller than wide, and a limit of the caller's own.
+    let picture = decode(&png(10, 300, |_, _| BLUE), 100).expect("a 10x300 png");
+    assert_eq!((picture.width, picture.height), (3, 100));
+    // Never down to nothing.
+    let picture = decode(&png(1, 3000, |_, _| BLUE), 100).expect("a 1x3000 png");
+    assert_eq!((picture.width, picture.height), (1, 100));
+    // One that fits is left as it is.
+    let picture = decode(&png(100, 100, |_, _| BLUE), 100).expect("a 100x100 png");
+    assert_eq!((picture.width, picture.height), (100, 100));
+}
+
+#[test]
+fn what_is_not_a_picture_is_said_not_shown() {
+    let said = decode(b"just some text, called shot.png\n", MAX_SIDE).unwrap_err();
+    assert!(said.contains("not an image"), "{said}");
+    let said = decode(b"", MAX_SIDE).unwrap_err();
+    assert!(said.contains("not an image"), "{said}");
+    // A format the panel does not show (TIFF's first bytes).
+    let said = decode(b"II*\0\x08\0\0\0\0\0\0\0\0\0\0\0", MAX_SIDE).unwrap_err();
+    assert!(said.contains("not an image"), "{said}");
+}
+
+#[test]
+fn a_header_that_claims_too_many_pixels_is_refused_before_anything_is_decoded() {
+    // 60 bytes that say 20000 x 20000 (1.6 GB as RGBA). Decoding them would fail for the
+    // missing data with another message: this one comes from the header alone.
+    let bytes = png_header_only(20_000, 20_000);
+    assert!(bytes.len() < 100);
+    assert_eq!(decode(&bytes, MAX_SIDE), Err("image too large".to_string()));
+    // The same header with a size that is allowed gets as far as the data, which is not there.
+    let said = decode(&png_header_only(20, 20), MAX_SIDE).unwrap_err();
+    assert!(said.starts_with("broken image"), "{said}");
+    // Width times height does not fit 32 bits: no overflow.
+    assert_eq!(
+        decode(&png_header_only(0x7fff_ffff, 0x7fff_ffff), MAX_SIDE),
+        Err("image too large".to_string())
+    );
+}
+
+#[test]
+fn a_cut_off_picture_is_an_error_not_a_panic() {
+    let whole = encoded(image::ImageFormat::Jpeg, 64, 48, |x, y| {
+        [x as u8 * 4, y as u8 * 5, 90, 255]
+    });
+    assert!(decode(&whole, MAX_SIDE).is_ok());
+    // Cut inside its tables: nothing of it can be shown.
+    let said = decode(&whole[..40], MAX_SIDE).unwrap_err();
+    assert!(said.starts_with("broken image"), "{said}");
+    // Cut anywhere else: an error or as much of it as there is, never a panic.
+    for end in (2..whole.len()).step_by(7) {
+        if let Ok(picture) = decode(&whole[..end], MAX_SIDE) {
+            assert_eq!((picture.width, picture.height), (64, 48));
+        }
+    }
+    // A PNG that lacks more than its last chunks has not all its rows: an error.
+    let png = png(40, 40, |x, y| {
+        [x as u8 * 6, y as u8 * 6, (x * y) as u8, 255]
+    });
+    for end in 0..png.len() {
+        let cut = decode(&png[..end], MAX_SIDE);
+        assert!(cut.is_err() || end + 40 > png.len(), "png cut at {end}");
+    }
+}
+
+fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect { x, y, w, h }
+}
+
+#[test]
+fn a_picture_is_fitted_into_the_panel_and_never_enlarged() {
+    // Smaller than the panel: as it is, in the middle.
+    let (dest, source) = place((100, 50), AREA, false, (0.0, 0.0));
+    assert_eq!(dest, rect(750.0, 195.0, 100.0, 50.0));
+    assert_eq!(source, rect(0.0, 0.0, 100.0, 50.0));
+    // Larger: as wide as the panel, its shape kept.
+    let (dest, source) = place((1000, 500), AREA, false, (0.0, 0.0));
+    assert_eq!(dest, rect(600.0, 120.0, 400.0, 200.0));
+    assert_eq!(source, rect(0.0, 0.0, 1000.0, 500.0));
+    // Taller than wide: as high as the panel.
+    let (dest, _) = place((500, 1000), AREA, false, (0.0, 0.0));
+    assert_eq!(dest, rect(700.0, 20.0, 200.0, 400.0));
+    // Scrolling means nothing while it is fitted.
+    assert_eq!(
+        place((1000, 500), AREA, false, (300.0, 300.0)),
+        place((1000, 500), AREA, false, (0.0, 0.0))
+    );
+    // Whatever the panel's size the shape is the picture's, within a pixel.
+    for (w, h) in [(333.0, 77.0), (51.0, 400.0), (1.0, 1.0), (640.5, 480.25)] {
+        let (dest, _) = place((1280, 800), rect(3.0, 4.0, w, h), false, (0.0, 0.0));
+        assert!(dest.w <= w && dest.h <= h, "{dest:?} in {w}x{h}");
+        assert!(dest.x >= 3.0 && dest.y >= 4.0, "{dest:?}");
+        assert!((dest.w / 1.6 - dest.h).abs() <= 1.0, "{dest:?} in {w}x{h}");
+    }
+}
+
+#[test]
+fn at_full_size_the_panel_shows_the_part_scrolled_to() {
+    // The panel's size in texels, from the top-left corner.
+    let (dest, source) = place((1000, 900), AREA, true, (0.0, 0.0));
+    assert_eq!(dest, AREA);
+    assert_eq!(source, rect(0.0, 0.0, 400.0, 400.0));
+    let (dest, source) = place((1000, 900), AREA, true, (250.0, 100.0));
+    assert_eq!(dest, AREA);
+    assert_eq!(source, rect(250.0, 100.0, 400.0, 400.0));
+    // Past either end: the picture's edge stays at the panel's.
+    let (_, source) = place((1000, 900), AREA, true, (5000.0, 5000.0));
+    assert_eq!(source, rect(600.0, 500.0, 400.0, 400.0));
+    let (_, source) = place((1000, 900), AREA, true, (-70.0, -1.0));
+    assert_eq!(source, rect(0.0, 0.0, 400.0, 400.0));
+    // Wider than the panel and less high: scrolled sideways only, centred the other way.
+    let (dest, source) = place((1000, 100), AREA, true, (30.0, 30.0));
+    assert_eq!(dest, rect(600.0, 170.0, 400.0, 100.0));
+    assert_eq!(source, rect(30.0, 0.0, 400.0, 100.0));
+    // One texel is one pixel: both have the same size.
+    for scroll in [(0.0, 0.0), (17.5, 3.25), (1e9, -1e9)] {
+        let (dest, source) = place((1000, 100), rect(0.5, 0.5, 333.3, 77.7), true, scroll);
+        assert_eq!((dest.w, dest.h), (source.w, source.h));
+        assert!(source.x >= 0.0 && source.x + source.w <= 1000.0);
+        assert!(source.y >= 0.0 && source.y + source.h <= 100.0);
+    }
+}
+
+#[test]
+fn a_panel_or_a_picture_of_no_size_draws_nothing() {
+    for actual in [false, true] {
+        for area in [
+            rect(600.0, 20.0, 0.0, 0.0),
+            rect(600.0, 20.0, 0.0, 400.0),
+            rect(600.0, 20.0, 400.0, 0.0),
+            rect(600.0, 20.0, -5.0, 400.0),
+        ] {
+            let (dest, source) = place((100, 50), area, actual, (10.0, 10.0));
+            assert_eq!((dest.w, dest.h), (0.0, 0.0), "{area:?}");
+            for value in [dest.x, dest.y, source.x, source.y, source.w, source.h] {
+                assert!(value.is_finite(), "{area:?}: {dest:?} {source:?}");
+            }
+        }
+        let (dest, _) = place((0, 0), AREA, actual, (0.0, 0.0));
+        assert_eq!((dest.w, dest.h), (0.0, 0.0));
+    }
+}
+
+#[test]
+fn a_png_of_this_machine_is_read_and_decoded_for_the_panel() {
+    let bytes = png(3, 2, corners);
+    let host = Host::new(&format!("f\n{}\n/w/shot.png", bytes.len()), &bytes);
+    let opened = host.open(LOCAL, &link("shot.png", Some(3)), None);
+    let Ok(Opened::Image {
+        host: on,
+        path,
+        picture,
+    }) = opened
+    else {
+        panic!("not a picture: {opened:?}");
+    };
+    assert_eq!((on.as_str(), path.as_str()), (LOCAL, "/w/shot.png"));
+    assert_eq!((picture.width, picture.height), (3, 2));
+    assert_eq!(at(&picture, 2, 1), WHITE);
+    // One byte more than the limit is asked for, with the time a copy gets.
+    let calls = host.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[1],
+        (
+            read_argv(LOCAL, "/w/shot.png", MAX_IMAGE_BYTES + 1, LOCAL),
+            IMAGE_TIMEOUT
+        )
+    );
+    assert_eq!(IMAGE_TIMEOUT, Duration::from_secs(60));
+
+    // From another host: through ssh, and nothing is written here.
+    let host = Host::new(&format!("f\n{}\n/w/Shot.JPG", bytes.len()), &bytes);
+    let opened = host.open("nas", &link("/w/Shot.JPG", None), None);
+    assert!(
+        matches!(&opened, Ok(Opened::Image { host, path, .. }) if host == "nas" && path == "/w/Shot.JPG"),
+        "{opened:?}"
+    );
+    assert_eq!(
+        host.calls()[1].0,
+        read_argv("nas", "/w/Shot.JPG", MAX_IMAGE_BYTES + 1, LOCAL)
+    );
+}
+
+#[test]
+fn a_picture_too_large_or_broken_is_said_in_one_line() {
+    // 100 MB by what the host says: nothing is read.
+    let host = Host::new("f\n100000000\n/w/huge.png", b"");
+    assert_eq!(
+        host.open(LOCAL, &link("/w/huge.png", None), None),
+        Err("/w/huge.png: too large for the panel: Open in app".to_string())
+    );
+    assert_eq!(host.calls().len(), 1, "located, not read");
+    // It grew since it was located: read up to the limit and a byte, not decoded.
+    let grown = vec![0u8; MAX_IMAGE_BYTES as usize + 5];
+    let host = Host::new("f\n10\n/w/grown.png", &grown);
+    assert_eq!(
+        host.open("nas", &link("/w/grown.png", None), None),
+        Err("/w/grown.png on nas: too large for the panel: Open in app".to_string())
+    );
+    // Text called .png.
+    let host = Host::new("f\n6\n/w/notes.png", b"hello\n");
+    assert_eq!(
+        host.open(LOCAL, &link("/w/notes.png", None), None),
+        Err("/w/notes.png: not an image".to_string())
+    );
+    // A header that claims 20000 x 20000.
+    let bytes = png_header_only(20_000, 20_000);
+    let host = Host::new(&format!("f\n{}\n/w/big.png", bytes.len()), &bytes);
+    assert_eq!(
+        host.open(LOCAL, &link("/w/big.png", None), None),
+        Err("/w/big.png: image too large".to_string())
+    );
+    // A JPEG cut off.
+    let whole = encoded(image::ImageFormat::Jpeg, 64, 48, |_, _| RED);
+    let host = Host::new("f\n40\n/w/cut.jpeg", &whole[..40]);
+    let said = host
+        .open(LOCAL, &link("/w/cut.jpeg", None), None)
+        .unwrap_err();
+    assert!(said.starts_with("/w/cut.jpeg: broken image"), "{said}");
+    assert_eq!(said.lines().count(), 1, "{said}");
+}
+
+#[test]
+fn a_link_that_takes_too_long_says_so_and_names_the_picture() {
+    let slow = |argv: &[String], timeout: Duration| -> anyhow::Result<Vec<u8>> {
+        match argv.last().unwrap().contains("head -c") {
+            false => Ok(b"f\n500\n/w/shot.png".to_vec()),
+            true => anyhow::bail!("ssh timed out after {:.1} s", timeout.as_secs_f64()),
+        }
+    };
+    let said = viewer::open_link(&key("nas"), &link("/w/shot.png", None), LOCAL, None, &slow);
+    assert_eq!(
+        said,
+        Err("/w/shot.png on nas: ssh timed out after 60.0 s".to_string())
+    );
+}
+
+#[test]
+fn what_the_panel_does_not_show_still_goes_to_the_desktops_app() {
+    for name in ["/w/doc.pdf", "/w/draw.svg", "/w/scan.tif", "/w/p.heic"] {
+        let host = Host::new(&format!("f\n500\n{name}"), b"%PDF-1.7");
+        let opened = host.open(LOCAL, &link(name, None), None);
+        assert_eq!(target(opened), name);
+        assert_eq!(host.calls().len(), 1, "{name}: not read on this machine");
+    }
+    // A folder called like a picture is a folder.
+    let host = Host::new("d\n0\n/w/shots.png", b"");
+    assert_eq!(
+        target(host.open(LOCAL, &link("/w/shots.png", None), None)),
+        "/w/shots.png"
+    );
+}
+
+#[test]
+fn a_picture_panel_toggles_between_fitted_and_full_size_and_scrolls_only_then() {
+    let mut panel = SidePanel::image("nas", "/w/shot.png", (1000, 900), LOCAL);
+    assert_eq!(
+        (panel.host.as_str(), panel.path.as_str()),
+        ("nas", "/w/shot.png")
+    );
+    let view = panel.view(10, 40, AREA);
+    assert_eq!(view.body, SideBody::Image);
+    assert_eq!(view.title, "nas:/w/shot.png 1000×900 · 40 %");
+    assert_eq!(
+        panel.image_body(),
+        Some(&ImageBody {
+            size: (1000, 900),
+            actual: false,
+            scroll: (0.0, 0.0)
+        })
+    );
+    // Fitted: the wheel moves nothing.
+    assert!(!panel.pan((0.0, 51.0), AREA));
+    // A click: full size, from the top-left corner.
+    assert!(panel.click());
+    assert_eq!(
+        panel.view(10, 40, AREA).title,
+        "nas:/w/shot.png 1000×900 · 100 %"
+    );
+    assert!(panel.pan((0.0, 51.0), AREA));
+    assert!(panel.pan((34.0, 0.0), AREA));
+    assert_eq!(panel.image_body().unwrap().scroll, (34.0, 51.0));
+    // To the end and no further; at the end nothing changes any more.
+    assert!(panel.pan((9000.0, 9000.0), AREA));
+    assert_eq!(panel.image_body().unwrap().scroll, (600.0, 500.0));
+    assert!(!panel.pan((10.0, 10.0), AREA));
+    assert!(panel.pan((-9000.0, -20.0), AREA));
+    assert_eq!(panel.image_body().unwrap().scroll, (0.0, 480.0));
+    // The panel got larger since: less is left to scroll, and it is at the end of that.
+    let large = rect(0.0, 0.0, 800.0, 800.0);
+    assert!(!panel.pan((0.0, 10.0), large));
+    assert_eq!(panel.image_body().unwrap().scroll, (0.0, 100.0));
+    assert!(panel.pan((0.0, -10.0), large));
+    assert_eq!(panel.image_body().unwrap().scroll, (0.0, 90.0));
+    // A click again: fitted, and the next full size starts at the corner.
+    assert!(panel.click());
+    assert_eq!(
+        panel.image_body().unwrap(),
+        &ImageBody {
+            size: (1000, 900),
+            actual: false,
+            scroll: (0.0, 0.0)
+        }
+    );
+    // The text's wheel is not the picture's, and a click is not the text's.
+    assert!(!panel.scroll(3, 10));
+    let mut text = SidePanel::text(
+        &Document {
+            host: LOCAL.to_string(),
+            path: "/w/a.rs".to_string(),
+            line: None,
+            text: numbered(50),
+        },
+        LOCAL,
+    );
+    assert!(!text.click() && !text.pan((0.0, 40.0), AREA) && text.image_body().is_none());
+
+    // A picture smaller than the panel is at full size already.
+    let small = SidePanel::image(LOCAL, "/w/dot.png", (40, 30), LOCAL);
+    assert_eq!(small.view(10, 40, AREA).title, "/w/dot.png 40×30 · 100 %");
+    // A panel of no size: no division by zero.
+    let none = rect(0.0, 0.0, 0.0, 0.0);
+    assert_eq!(
+        panel.view(0, 0, none).title,
+        "nas:/w/shot.png 1000×900 · 0 %"
+    );
 }

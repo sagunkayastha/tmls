@@ -25,3 +25,5 @@ anyhow = "1"
 serde_json = "1"
 # Same features as s2-wgpu: no image support, data-control for wlroots/KDE Wayland.
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+# Decodes the pictures the file panel shows (`viewer::decode`): these five formats and no others.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
