@@ -4,6 +4,9 @@ Quick session log. Newest entry first.
 
 ## 2026-10-12 (afternoon) — hover text, image copy to a remote host, real drag and drop on `feat/drop-hover` @ `8500f37`; PC built 13:16; not merged ⚠️
 
+**Merged (later the same afternoon):** the user said "Merge" — `main` = `66f6d24` (`--no-ff`, contains
+`fix/osc52-copy` too). Same code as the PC's 13:16 build of `8500f37`: no rebuild.
+
 Two of the three unplanned gaps of the entry below, by the user's word ("we dont need right click paste. but the
 other two yes"). Branch `feat/drop-hover` = `fix/osc52-copy` (`618c25a`) + 3 commits. After this: `ag` / `ct`.
 
