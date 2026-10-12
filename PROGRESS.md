@@ -2,6 +2,59 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-12 (night) — attention loop round built, reviewed, fix-waved on `feat/attention-loop` @ `745ba5b`; NOT on the PC yet (PC unreachable) ⚠️
+
+Unattended run of `docs/superpowers/plans/2026-10-12-tmls-rs-attention-loop.md` (spec
+`docs/superpowers/specs/2026-10-12-tmls-rs-attention-loop-design.md`, F1–F8, D1–D10 + departures). One Fable
+main agent, Opus implementers/reviewers, SDD ledger `.superpowers/sdd/2026-10-12-tmls-rs-attention-loop/progress.md`
+(every ruling and deferred minor is there). Branch from `main` `d235ee3`, 30 commits, not merged, not pushed.
+**Start here: `docs/NIGHT-TEST.md`.**
+
+- **Built (task → commit):** T1 ssh keepalive 15 s×3 + ControlMaster via one `tmux::ssh_base` (`8795722`, fixed
+  `e586b31`: real bind limit dir ≤ 46 bytes, no space/`%`); T2 `pane`/`activity` + `•` unread + Alt+Shift+N unread
+  fallback (`5fd157b`); T3 `?` help panel + `tmls-rs keys` from one `keys::HELP` table (`c90283c`); T4 clipboard:
+  not reproducible headless, `wl-copy`/`wl-paste` fallback (1 s) + six status-line messages (`a15d52e`, `260db5a`:
+  wl-copy's daemon held stderr → `tmux::run` no longer waits for stderr on success); T5 approvals `y` / menu / alerts,
+  `1`/Escape, re-capture before send, late form dropped if keys moved on (`2da38a6`, `418e446`); T6 push status from
+  tmls's `events.jsonl` (`tail -F` per host, read-only), last reply on the dim line, `· poll` header, `TMLS_RS_POLL_S`
+  (`1612896`); T7 send/queue `s` / Alt+Shift+A / menu, saved prompts, `N✉`, send ids survive renames (`1e74beb`,
+  `2e4ad67`); T8 failed create keeps the form, tab follows an outside rename when unambiguous (`98287a3`, `e5d2697`).
+- **User requests mid-run:** app detaches from its terminal like a desktop app (`fix/detach` → `a31fe91`; log
+  `~/.cache/tmls-rs/tmls-rs.log`; `--fg`, `TMLS_RS_FOREGROUND=1`, `keys` stay foreground); app icon = Rem's face
+  (Deadlock) + app id `tmls-rs` + `tooling/desktop/install.sh` (`feat/app-icon` → `0c5cb73`; installed on the PC
+  02:17). Opus parity comparison tmls vs tmls-rs: after this round the Python sidebar can be dropped except
+  `Alt+Shift+V` image paste, `Alt+Shift+S` quick select, window/split menu, game-mode awareness, background servers
+  → **round 2 planned**: spec `docs/superpowers/specs/2026-10-12-tmls-rs-parity-round2-design.md`, plan
+  `docs/superpowers/plans/2026-10-12-tmls-rs-parity-round2.md` (G1–G8, 10 tasks), not started. Keep `tmls-web`,
+  `ag`/`ct` (uv tmls), the Claude hooks, sketchpad units.
+- **Final whole-branch review (opus):** 1 Critical — a queued/sent message could be typed into the bash left behind
+  after Claude exits (`=NAME:` fallback + Enter → `$(…)` ran; the old e2e proved it) → fixed `7b8ab2a`: text goes only
+  to a row still Claude with a pane, else kept + "Claude is gone"; 3 Important fixed (`e586b31` ControlPath, `ddf988b`
+  failed-create form over typing, `d5d4605` stuck queue head / tab-less rename); minors `7f884c7`, `745ba5b`. Re-review
+  clean. Known small window: a pushed Stop that beats the relist can still paste into Claude's own old pane (round 2:
+  host-side `pane_current_command` check).
+- **Verified at `745ba5b`:** client-core 123, desktop 268, clippy `-D warnings` + `cargo fmt -p desktop --check`
+  clean; headless e2e **205/205 three times** (`/data/scratch/tmls-rs-v0/night2/final-e2e-{1,2,3}/`); bench closed
+  panel base vs final: median 7.5–8.1 → 8.1–8.2 ms, p95 10.1–12.9 → 10.7–11.1 ms, idle frames 0, RSS 114 → 112 MB
+  (`/data/scratch/tmls-rs-v0/night2/bench/`).
+- **PC:** builds `a31fe91` (01:13) and `0c5cb73` (02:17, with icon install) done; **`745ba5b` not built — the PC was
+  unreachable (LAN + Tailscale) from ~03:40.** The `0c5cb73` build lacks T7/T8 and the critical guard: do not use `s` on it.
+- **Never run in a real window:** everything (sheet lists it): KDE clipboard vs `wl-paste`, 45 s dead-link detection,
+  notify-send on a pushed prompt, approvals on a real prompt (only "Do you want to proceed?" is recognised — Claude's
+  edit prompt text differs, round 2), send/queue, icon in KDE, detach from kitty.
+- **Left on disk, nothing deleted:** worktree `/data/scratch/tmls-rs-v0/night2/base` (main build for the bench), scratch
+  `/data/scratch/tmls-rs-v0/night2/` (e2e runs, benches, logs), `/data/scratch/tmls-rs-v0/icon/`, `/data/scratch/review-{draw,app}.rs`,
+  agent worktrees `.claude/worktrees/agent-*` (branches `fix/detach`, `feat/app-icon` merged), `.superpowers/sdd/…`,
+  untracked `crates/desktop/tests/tabs.rs.new`. Branches to delete after your yes: `fix/detach`, `feat/app-icon`,
+  `fix/pin-ring`, `feat/viewer-panel`, `wip/viewer-panel`, `feat/desktop-v0`.
+
+### NEXT
+1. **"build it"** → PC build of `745ba5b` (game mode checked first) + restart `tmls-rs`; then `docs/NIGHT-TEST.md`.
+2. Fix what the sheet finds; then merge `feat/attention-loop` → `main` (your yes), push (your yes).
+3. Round 2 (`2026-10-12-tmls-rs-parity-round2.md`) on `feat/parity-round2` — say go; add there: host-side pane check
+   before a paste, Claude's other permission-question texts, deferred minors the ledger marks.
+4. Cleanup list above needs your yes.
+
 ## 2026-10-11 (day + eve) — tmls gaps closed in the list, right panel built (text, images, divider, session images), reviewed, merged to main; waiting on the user's real-window test ⚠️
 
 The user's test of v0 turned into a day of fixes and one planned feature. Two branches, both merged `--no-ff` into
