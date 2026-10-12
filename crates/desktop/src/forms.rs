@@ -1801,6 +1801,24 @@ pub fn open_terminal(
     }
 }
 
+/// Opens a terminal running ssh to `host`, so the user can answer what it asks (R5), through
+/// `spawn`; says so for the status line.
+pub fn sign_in(
+    host: &str,
+    terminal: Option<&str>,
+    on_path: &dyn Fn(&str) -> bool,
+    spawn: &mut dyn FnMut(&[String]) -> std::io::Result<()>,
+) -> Result<String, String> {
+    let argv = terminal_argv(terminal, on_path, &tmux::sign_in_argv(host));
+    match spawn(&argv) {
+        Ok(()) => Ok(format!(
+            "sign in to {host} in {}; the list follows by itself",
+            argv[0]
+        )),
+        Err(e) => Err(format!("couldn't start {}: {e}", argv[0])),
+    }
+}
+
 /// Puts the session's attach command on the clipboard through `set`, and says so.
 pub fn copy_attach(
     key: &SessionKey,

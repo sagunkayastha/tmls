@@ -856,6 +856,8 @@ pub struct View {
     pub polled: Vec<String>,
     /// Remote hosts game mode slows (`· game`).
     pub game_hosts: Vec<String>,
+    /// Hosts whose ssh wants a sign-in (`⚠ sign in`).
+    pub sign_in: Vec<String>,
     /// Messages waiting, per session.
     pub queued: Vec<(SessionKey, usize)>,
 }
@@ -1063,6 +1065,9 @@ pub fn header_spans_with(
 /// After the name of a remote host while game mode lists it every 300 s.
 pub const GAME_MODE: &str = "· game";
 
+/// Instead of `· offline` on a host whose ssh wants a sign-in; a click on the header signs in.
+pub const SIGN_IN: &str = "⚠ sign in";
+
 /// What a host's header says after its name, besides `+` or `· offline`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeaderLook {
@@ -1070,10 +1075,12 @@ pub struct HeaderLook {
     pub polled: bool,
     /// Game mode slows its listing: `· game`.
     pub game: bool,
+    /// ssh wants a sign-in: `⚠ sign in` instead of `· offline`.
+    pub sign_in: bool,
 }
 
 /// `header_spans`, with the tags of `look` dimly after the name while the host answers, each
-/// only if it fits before the `+`.
+/// only if it fits before the `+`; a host that does not answer says `⚠ sign in` when that is why.
 pub fn header_spans_look(
     host: &str,
     online: bool,
@@ -1083,6 +1090,13 @@ pub fn header_spans_look(
 ) -> Vec<Span<'static>> {
     let mut spans = header_spans(host, online, cols, theme);
     if !online {
+        // `· offline` is the last span of an offline header; the sign-in takes its place.
+        if look.sign_in
+            && let Some(last) = spans.last_mut()
+        {
+            *last =
+                Span::whole(0, last.col, SIGN_IN).colour(mark_rgb(client_core::Status::Waiting));
+        }
         return spans;
     }
     let end = cols.saturating_sub(1);
@@ -1416,6 +1430,7 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                 let look = HeaderLook {
                     polled: view.polled.contains(host),
                     game: view.game_hosts.contains(host),
+                    sign_in: view.sign_in.contains(host),
                 };
                 for span in header_spans_look(host, *online, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);

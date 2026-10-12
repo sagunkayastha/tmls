@@ -808,6 +808,28 @@ fn open_in_new_terminal_starts_the_users_terminal_with_the_attach_command() {
 }
 
 #[test]
+fn sign_in_opens_the_users_terminal_with_ssh() {
+    let mut started = Vec::new();
+    let mut spawn = |argv: &[String]| -> std::io::Result<()> {
+        started.push(argv.to_vec());
+        Ok(())
+    };
+    let said = forms::sign_in("ph", Some("foot"), &|_| false, &mut spawn);
+    assert_eq!(
+        said,
+        Ok("sign in to ph in foot; the list follows by itself".to_string())
+    );
+    let mut want = vec!["foot".to_string(), "-e".to_string()];
+    want.extend(tmux::sign_in_argv("ph"));
+    assert_eq!(started, [want]);
+    let mut broken = |_: &[String]| -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    };
+    let said = forms::sign_in("ph", Some("foot"), &|_| false, &mut broken);
+    assert!(said.unwrap_err().starts_with("couldn't start foot: "));
+}
+
+#[test]
 fn copy_puts_the_attach_command_on_the_clipboard() {
     let session = key("ph", "tmlsrs-test-a b'c");
     let mut copied = Vec::new();

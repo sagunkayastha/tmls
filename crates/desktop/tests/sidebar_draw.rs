@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use client_core::config::tmls_slug;
 use client_core::{Config, HostColor, HostSnapshot, SessionInfo, SessionKey, Status, Tool};
 use desktop::draw::{
-    Chrome, GAME_MODE, HeaderLook, Layout, POLL_ONLY, Rect, RowLook, Span, TabView, View,
+    Chrome, GAME_MODE, HeaderLook, Layout, POLL_ONLY, Rect, RowLook, SIGN_IN, Span, TabView, View,
     header_spans, header_spans_look, header_spans_with, layer_order, layout, session_spans,
 };
 use desktop::sidebar::{Row, Sidebar};
@@ -950,6 +950,7 @@ fn a_host_header_says_poll_and_game_dimly_after_its_name() {
     let both = HeaderLook {
         polled: true,
         game: true,
+        ..HeaderLook::default()
     };
     let said = header_spans_look("nas", true, both, SIDEBAR_COLS, &theme);
     let (poll, game) = (find(&said, POLL_ONLY), find(&said, GAME_MODE));
@@ -976,4 +977,27 @@ fn a_host_header_says_poll_and_game_dimly_after_its_name() {
     );
     assert!(long.iter().any(|span| span.text == "+"));
     assert_within(&long);
+}
+
+#[test]
+fn a_host_that_wants_a_sign_in_says_so_instead_of_offline() {
+    let theme = Theme::default();
+    let look = HeaderLook {
+        sign_in: true,
+        ..HeaderLook::default()
+    };
+    let said = header_spans_look("nas", false, look, SIDEBAR_COLS, &theme);
+    let sign = find(&said, SIGN_IN);
+    assert_eq!((sign.col, sign.colour), (5, mark_rgb(Status::Waiting)));
+    assert!(
+        said.iter()
+            .all(|span| span.text != "· offline" && span.text != "+")
+    );
+    assert_within(&said);
+    let long = header_spans_look(&"h".repeat(40), false, look, SIDEBAR_COLS, &theme);
+    assert_within(&long);
+    assert!(long.iter().any(|span| span.text == SIGN_IN));
+    // A host that answers needs no sign-in, whatever the look says.
+    let online = header_spans_look("nas", true, look, SIDEBAR_COLS, &theme);
+    assert!(online.iter().all(|span| span.text != SIGN_IN));
 }

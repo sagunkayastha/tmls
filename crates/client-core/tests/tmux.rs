@@ -12,7 +12,7 @@ use client_core::tmux::{
     MAX_NAME_CHARS, NewSession, Split, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
     kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_command_argv, pane_count_argv, rename_argv,
     rename_window_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, send_text_argv, send_text_script,
-    split_argv, valid_session_name, valid_window_name,
+    sign_in_argv, split_argv, valid_session_name, valid_window_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -466,4 +466,11 @@ fn a_window_needs_a_name_tmux_keeps() {
         valid_window_name(&"x".repeat(MAX_NAME_CHARS + 1)),
         Err(format!("names can't be longer than {MAX_NAME_CHARS} characters"))
     );
+}
+
+#[test]
+fn sign_in_is_an_ssh_that_may_ask_and_then_ends() {
+    let mut want = v(&ATTACH);
+    want.push("true".to_string());
+    assert_eq!(sign_in_argv("ph"), want);
 }

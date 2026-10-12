@@ -536,3 +536,14 @@ fn slow_down_gives_those_hosts_their_own_period_and_back_at_once() {
     drop(poller);
     assert_no_poll_threads();
 }
+
+#[test]
+fn a_host_that_wants_a_sign_in_says_so() {
+    let _alone = alone();
+    let refused = "cat >/dev/null; echo 'u@ph: Permission denied (publickey).' >&2; exit 255";
+    assert!(list_once("ph", sh(refused), Duration::from_secs(5)).needs_sign_in());
+    let unreachable = "cat >/dev/null; echo 'ssh: connect to host ph port 22: No route to host' >&2; exit 255";
+    assert!(!list_once("ph", sh(unreachable), Duration::from_secs(5)).needs_sign_in());
+    let up = list_once("ph", sh("cat >/dev/null; echo 100"), Duration::from_secs(5));
+    assert!(up.online && !up.needs_sign_in());
+}

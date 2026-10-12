@@ -1613,7 +1613,16 @@ if [ "$(ssh_calls)" -eq "$CALLS" ]; then
 else
   fail "in game mode the remote host is not listed again within 12 s" "ssh calls $CALLS -> $(ssh_calls): $(tail -3 "$SSH_LOG" | tr '\n' '|')"
 fi
-check "screenshot 44-third-run (this machine, signhost)" shot 44-third-run
+check "screenshot 44-third-run (SIGNHOST ⚠ sign in)" shot 44-third-run
+# The list: line 0 this machine's header, line 1 the gap, line 2 SIGNHOST · ⚠ sign in (y 65).
+# The terminal is the stand-in: it logs its arguments and starts nothing.
+if click 100 65 && wait_for 5 grep -qF -- "|-t|signhost|true|" "$TERM_LOG"; then
+  pass "a click on ⚠ sign in opens a terminal running ssh -t signhost true"
+else
+  fail "a click on ⚠ sign in opens a terminal running ssh -t signhost true" "terminal log: $(tr '\n' ' ' <"$TERM_LOG")"
+fi
+check "the sign-in terminal is given ssh after -e" grep -qF -- "-e|ssh|" "$TERM_LOG"
+check "screenshot 45-sign-in (the status line says sign in to signhost)" shot 45-sign-in
 # --- third run: more checks above this line ---
 key_quit
 wait_for 10 app_gone || kill "$APP_PID" 2>/dev/null

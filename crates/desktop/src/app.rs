@@ -65,7 +65,7 @@
 //! `--bench DIR`: the first tab opened writes the latency log (`Tabs::set_log`); `frame` lines
 //! are written for the frames presented while that tab is in front.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -482,6 +482,8 @@ struct Running {
     game: bool,
     /// `game-mode` is on PATH; without it there is no game mode.
     game_probe: bool,
+    /// Hosts whose last listing said ssh wants a sign-in.
+    sign_in: BTreeSet<String>,
     /// Each host's latest listing as the poller gave it (the listing's statuses, no ◆): what
     /// a pushed event changes.
     listings: HashMap<String, HostSnapshot>,
@@ -764,6 +766,7 @@ impl Running {
             poller,
             game: false,
             game_probe,
+            sign_in: BTreeSet::new(),
             listings: HashMap::new(),
             replies: HashMap::new(),
             tails: HashMap::new(),
@@ -981,6 +984,11 @@ impl Running {
     /// A host's new listing, in the order the poller delivers them. The session of the tab in
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, mut snapshot: HostSnapshot) {
+        if snapshot.needs_sign_in() {
+            self.sign_in.insert(snapshot.host.clone());
+        } else {
+            self.sign_in.remove(&snapshot.host);
+        }
         push::carry_replies(&mut snapshot, &mut self.replies);
         self.listings
             .insert(snapshot.host.clone(), snapshot.clone());
@@ -1288,6 +1296,7 @@ impl Running {
                 true => self.remote_hosts(),
                 false => Vec::new(),
             },
+            sign_in: self.sign_in.iter().cloned().collect(),
             queued: self
                 .queue
                 .keys()
@@ -2380,13 +2389,27 @@ impl Running {
         }
     }
 
-    /// A mouse button pressed on the session list. Left: attach the session, or the `+` of a
-    /// host's header. Middle: pin. Right: the session's menu.
+    /// A mouse button pressed on the session list. Left: attach the session, the `+` of a
+    /// host's header, or the sign-in of a host that says `⚠ sign in`. Middle: pin. Right: the
+    /// session's menu.
     fn list_click(&mut self, button: MouseButton, line: usize, col: usize) {
         let Some(row) = self.sidebar.row_at(line, self.layout.list_lines) else {
             return;
         };
         self.select_when_listed = None;
+        if button == MouseButton::Left
+            && let sidebar::Row::Host {
+                host,
+                online: false,
+                ..
+            } = &self.sidebar.rows()[row]
+            && self.sign_in.contains(host)
+        {
+            let host = host.clone();
+            self.sign_in_to(&host);
+            self.invalidate();
+            return;
+        }
         let header = matches!(self.sidebar.rows()[row], sidebar::Row::Host { .. });
         let action = match button {
             MouseButton::Left if header && !self.layout.on_add(col) => None,
@@ -2447,6 +2470,19 @@ impl Running {
         let said = forms::open_terminal(
             key,
             &self.cfg.local_name,
+            terminal.as_deref(),
+            &forms::on_path,
+            &mut forms::spawn_detached,
+        );
+        self.say(said);
+    }
+
+    /// A click on `⚠ sign in`: a terminal with ssh to the host (R5), chosen as
+    /// `open_in_terminal` chooses it; the next listing clears the row once the user is in.
+    fn sign_in_to(&mut self, host: &str) {
+        let terminal = std::env::var("TERMINAL").ok();
+        let said = forms::sign_in(
+            host,
             terminal.as_deref(),
             &forms::on_path,
             &mut forms::spawn_detached,

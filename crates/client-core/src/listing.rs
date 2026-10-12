@@ -135,6 +135,14 @@ pub struct HostSnapshot {
     pub sessions: Vec<SessionInfo>,
 }
 
+impl HostSnapshot {
+    /// ssh wants a password, a key or a host-key answer (`poll::SIGN_IN_REQUIRED`): the user
+    /// has to sign in by hand (spec G6).
+    pub fn needs_sign_in(&self) -> bool {
+        !self.online && self.error.as_deref() == Some(crate::poll::SIGN_IN_REQUIRED)
+    }
+}
+
 /// Lists one host. POSIX sh, read from stdin by `sh -s` (see [`listing_command`]); the body is
 /// one compound command with stdin on /dev/null, so nothing in it can swallow the script's tail.
 pub const LISTING_SCRIPT: &str = r##"{

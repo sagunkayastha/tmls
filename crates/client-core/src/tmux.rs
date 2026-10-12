@@ -187,6 +187,15 @@ pub fn attach_text(key: &SessionKey, local_name: &str) -> String {
     }
 }
 
+/// What the sign-in row runs in a terminal (tmls `SignInRow`): ssh with a terminal and without
+/// `BatchMode`, so it may ask for a password, a code or a host key, then `true`. Once in, the
+/// shared connection stays up and the next listing finds the host.
+pub fn sign_in_argv(host: &str) -> Vec<String> {
+    let mut argv = ssh_base(host, &["-t"]);
+    argv.push("true".to_string());
+    argv
+}
+
 /// `folder` as a shell word. `~` must stay outside the quotes to mean the host's home.
 pub(crate) fn folder_word(folder: &str) -> String {
     match folder {
