@@ -142,8 +142,9 @@ pub enum UserEvent {
     /// The images of a session were listed, or not; the number is the request's
     /// (`Running::lists`).
     Listed(u64, SessionKey, Result<Opened, String>),
-    /// The permission dialog read off a session's pane (its key and pane), or why not.
-    Approval(SessionKey, Option<String>, Result<Vec<String>, String>),
+    /// The permission dialog read off a session's pane (its key and pane), or why not; the
+    /// number is the request's (`Running::approvals`).
+    Approval(u64, SessionKey, Option<String>, Result<Vec<String>, String>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -224,7 +225,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Viewed(click, result) => running.viewed(click, result),
             UserEvent::Listed(load, key, result) => running.listed(load, key, result),
-            UserEvent::Approval(key, pane, result) => running.approval(key, pane, result),
+            UserEvent::Approval(request, key, pane, result) => {
+                running.approval(request, key, pane, result)
+            }
         }
     }
 
@@ -433,6 +436,13 @@ struct Running {
     /// Counts the requests for the list of a session's images, apart from the clicks: the
     /// answer to the latest is the only one taken, and neither kind overtakes the other.
     lists: Arc<AtomicU64>,
+    /// Counts the approval requests (`y`, Approve…): the answer to the latest is the only one
+    /// taken, and only while no key was pressed and the focus stayed (`forms::approval_fate`).
+    approvals: u64,
+    /// The key presses at the latest approval request, and where the focus was then.
+    approval_asked: (u64, Focus),
+    /// Counts the key presses (repeats and IME commits included) the app has handled.
+    keys_pressed: u64,
     /// The click that opens a picture from the list of a session's images: its panel keeps
     /// the list to go back to.
     back_for: Option<u64>,
@@ -635,6 +645,9 @@ impl Running {
             side: None,
             views: Arc::new(AtomicU64::new(0)),
             lists: Arc::new(AtomicU64::new(0)),
+            approvals: 0,
+            approval_asked: (0, Focus::Sidebar),
+            keys_pressed: 0,
             back_for: None,
             view_cache: viewer::cache_dir(
                 std::env::var_os("XDG_CACHE_HOME").as_deref(),
@@ -910,6 +923,9 @@ impl Running {
 
     fn key(&mut self, t_key_ns: u128, event: &KeyEvent) -> After {
         let pressed = event.state == ElementState::Pressed;
+        if pressed {
+            self.keys_pressed += 1;
+        }
         let action = input::key_action(
             &event.logical_key,
             event.text.as_deref(),
@@ -1140,27 +1156,50 @@ impl Running {
         if !asks {
             return self.say(Err(format!("{} isn't asking anything", key.name)));
         }
+        self.approvals += 1;
+        self.approval_asked = (self.keys_pressed, self.focus);
+        let request = self.approvals;
         let (proxy, local, key) = (self.proxy.clone(), self.cfg.local_name.clone(), key.clone());
         std::thread::spawn(move || {
             let result = forms::approval(&key, pane.as_deref(), &local, &forms::run_tmux);
-            let _ = proxy.send_event(UserEvent::Approval(key, pane, result));
+            let _ = proxy.send_event(UserEvent::Approval(request, key, pane, result));
         });
     }
 
-    /// The dialog came: the form opens, unless another form or menu was opened meanwhile.
+    /// The dialog came: the form opens, unless a newer request was made, a key was pressed or
+    /// the focus moved since (`forms::approval_fate`), or a form or menu is open.
     fn approval(
         &mut self,
+        request: u64,
         key: SessionKey,
         pane: Option<String>,
         result: Result<Vec<String>, String>,
     ) {
-        match result {
-            Err(why) => self.say(Err(why)),
-            Ok(_) if self.modal.is_some() => {
-                self.say(Ok(format!("{} asks: close this, then y again", key.name)))
-            }
-            Ok(dialog) => self.open_modal(Modal::Form(Form::approve(key, pane, dialog)), None),
+        let (keys_then, focus_then) = self.approval_asked;
+        let fate = forms::approval_fate(
+            request,
+            self.approvals,
+            keys_then,
+            self.keys_pressed,
+            self.focus == focus_then,
+        );
+        match (fate, result) {
+            (forms::ApprovalFate::Superseded, _) => {}
+            (forms::ApprovalFate::MovedOn, _) => self.say(Err(format!(
+                "{}: the prompt's answer form was dropped — keys moved on",
+                key.name
+            ))),
+            (forms::ApprovalFate::Open, Err(why)) => self.say(Err(why)),
+            (forms::ApprovalFate::Open, Ok(dialog)) => self.open_approval(key, pane, dialog),
         }
+    }
+
+    /// Opens the approval form, unless another form or menu is open.
+    fn open_approval(&mut self, key: SessionKey, pane: Option<String>, dialog: Vec<String>) {
+        if self.modal.is_some() {
+            return self.say(Ok(format!("{} asks: close this, then y again", key.name)));
+        }
+        self.open_modal(Modal::Form(Form::approve(key, pane, dialog)), None);
     }
 
     /// The menu of a session row, with the entries its state allows.
@@ -2036,6 +2075,7 @@ impl Running {
         let changed = match ime {
             Ime::Preedit(text, _) => session.set_preedit(text),
             Ime::Commit(text) => {
+                self.keys_pressed += 1;
                 session.ime_commit(t_key_ns, text);
                 true
             }

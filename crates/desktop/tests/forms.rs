@@ -845,3 +845,18 @@ fn menu_items_offer_approve_only_while_claude_asks() {
     );
     assert_eq!(RowMenu::new(key(LOCAL, "w")).items(), MENU);
 }
+
+#[test]
+fn a_dialog_that_comes_back_after_the_user_moved_on_opens_no_form() {
+    use forms::ApprovalFate::{MovedOn, Open, Superseded};
+    // Request 3 is the latest, no key since its `y` (5 presses then and now), focus unchanged.
+    assert_eq!(forms::approval_fate(3, 3, 5, 5, true), Open);
+    // A newer `y` asked again: this answer is dropped, the newer one decides.
+    assert_eq!(forms::approval_fate(2, 3, 5, 5, true), Superseded);
+    assert_eq!(forms::approval_fate(2, 3, 5, 9, false), Superseded);
+    // A key pressed since (Esc back to the terminal, a letter, an Enter for the shell): the
+    // form would take it, and an Enter on Yes would approve.
+    assert_eq!(forms::approval_fate(3, 3, 5, 6, true), MovedOn);
+    // The focus left the list or the alerts (a click on the terminal, a menu opened).
+    assert_eq!(forms::approval_fate(3, 3, 5, 5, false), MovedOn);
+}

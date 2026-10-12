@@ -1228,6 +1228,38 @@ pub fn answer(
     })
 }
 
+/// What becomes of a permission dialog read for the approval form when it comes back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalFate {
+    /// The form opens.
+    Open,
+    /// A newer `y` asked again: this answer is dropped without a word, the newer one decides.
+    Superseded,
+    /// A key was pressed or the focus moved since the `y`: the form would take keys meant for
+    /// something else — an Enter for the shell would answer Yes — so it does not open.
+    MovedOn,
+}
+
+/// The fate of the dialog read for approval request `request` when `latest` is the newest
+/// request, `keys_then` and `keys_now` count the key presses the app had handled at the `y` and
+/// has now, and `focus_kept` says the keyboard focus is where it was after the `y`. The read
+/// can take up to `REQUEST_TIMEOUT` on a slow host: the user may be typing elsewhere by then.
+pub fn approval_fate(
+    request: u64,
+    latest: u64,
+    keys_then: u64,
+    keys_now: u64,
+    focus_kept: bool,
+) -> ApprovalFate {
+    if request != latest {
+        ApprovalFate::Superseded
+    } else if keys_now != keys_then || !focus_kept {
+        ApprovalFate::MovedOn
+    } else {
+        ApprovalFate::Open
+    }
+}
+
 /// The command that opens `attach` in a new terminal window (tmls `launch_window`):
 /// `$TERMINAL`, else kitty when it is installed, else `x-terminal-emulator`. kitty takes the
 /// command as its arguments, the others after `-e`.

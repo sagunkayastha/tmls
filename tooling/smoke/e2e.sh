@@ -1183,10 +1183,23 @@ sleep 600
 EOF
 tmux new-session -d -s "$APPROVE" -x 100 -y 40 "bash '$SCRATCH/dialog.sh' '$SCRATCH/dialog.txt'"
 fake_claude "$APPROVE" "$APPROVE_SID" waiting "permission prompt"
-sleep 6
+# `y` is refused at once, in stderr, while the list's first row is not one that asks (the
+# listing has not shown $APPROVE yet); a `y` that is not refused within a second was taken.
+refusals() { grep -cE "isn't asking anything|is not listed any more|runs outside tmux" "$OUT/app.stderr"; }
+refused_since() { [ "$(refusals)" -gt "$1" ]; }
+y_taken() {
+  local before
+  before=$(refusals)
+  top_of_list
+  keys y
+  ! wait_for 1 refused_since "$before"
+}
 key_focus_list
-top_of_list
-keys y
+if wait_for 20 y_taken; then
+  pass "the listing shows $APPROVE asking: y on its row is taken"
+else
+  fail "the listing shows $APPROVE asking: y on its row is taken" "stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
 check "screenshot 36-approve (the dialog, Yes / No / Cancel)" shot 36-approve
 key_enter
 if wait_for 8 pane_has_line "$APPROVE" "GOT[1]"; then
@@ -1194,6 +1207,33 @@ if wait_for 8 pane_has_line "$APPROVE" "GOT[1]"; then
 else
   fail "y on a row that asks, then Enter, presses 1 in its pane" \
     "pane: $(pane_text "$APPROVE" | grep -v '^$' | tail -3 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+# Keys typed after the y belong to what they were typed into: a dialog read that comes back
+# after them opens no form, so an Enter meant for the shell never answers Yes. The same prompt
+# again (the pane id stays), then y, Esc to the terminal and a command line at once.
+tmux respawn-pane -k -t "=$APPROVE:" "bash '$SCRATCH/dialog.sh' '$SCRATCH/dialog.txt'"
+fake_claude "$APPROVE" "$APPROVE_SID" waiting "permission prompt"
+wait_for 5 pane_has_line "$APPROVE" " Do you want to proceed?"
+key_focus_list
+top_of_list
+# One burst (1 ms between keys; wtype refuses 0): Esc and the text are handled before the
+# capture (a tmux process) is back, as when a slow host answers late.
+timeout 10 wtype -s 250 -d 1 y -k Escape "echo moved-on-$NONCE"
+sleep 0.3
+key_enter
+if wait_for 5 pane_has_line "$ODD" "moved-on-$NONCE"; then
+  pass "y, then Esc and a command line at once: the keys reach the terminal"
+else
+  fail "y, then Esc and a command line at once: the keys reach the terminal" \
+    "pane: $(pane_text "$ODD" | grep -v '^$' | tail -3 | tr '\n' '|')"
+fi
+sleep 2
+check "screenshot 37-approve-moved-on (no form over the terminal)" shot 37-approve-moved-on
+if pane_text "$APPROVE" | grep -q '^GOT\['; then
+  fail "a dialog read that comes back after the user typed on answers nothing" \
+    "pane: $(pane_text "$APPROVE" | grep '^GOT' | tr '\n' '|')"
+else
+  pass "a dialog read that comes back after the user typed on answers nothing"
 fi
 
 # --- quit ---------------------------------------------------------------------------------------
