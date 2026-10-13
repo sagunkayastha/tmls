@@ -491,13 +491,67 @@ fn a_listing_that_differs_only_in_activity_is_not_delivered() {
 #[test]
 fn force_next_delivers_the_next_listing_even_when_unchanged() {
     let _one = alone();
-    let (poller, rx) = start(&["a"], Duration::from_millis(100), Duration::from_secs(5), |_| sh("cat >/dev/null; echo 100"));
+    let (poller, rx) = start(&["a", "b"], Duration::from_millis(100), Duration::from_secs(5), |_| sh("cat >/dev/null; echo 100"));
+    next(&rx, Duration::from_secs(5));
     next(&rx, Duration::from_secs(5));
     assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "an unchanged listing is not delivered");
-    poller.force_next();
-    next(&rx, Duration::from_secs(2));
-    assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "only the next one");
+    poller.force_next("a");
+    assert_eq!(next(&rx, Duration::from_secs(2)).1.host, "a");
+    assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "only the next one, and only that host's");
     drop(poller);
+}
+
+#[test]
+fn a_refresh_for_one_host_lists_that_host_slowed_or_not_and_no_other() {
+    let _one = alone();
+    let d = dir("refresh-host");
+    let count = {
+        let d = d.clone();
+        move |host: &str| std::fs::read_to_string(d.join(host)).map_or(0, |text| text.lines().count())
+    };
+    let listed = |host: &str, times: usize| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count(host) < times {
+            assert!(Instant::now() < deadline, "{host} was listed {} times, not {times}", count(host));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let logs = d.clone();
+    // A period no test waits out: every listing after the first is a refresh.
+    let (poller, _rx) = start(&["here", "far", "other"], Duration::from_secs(60), Duration::from_secs(5), move |host| {
+        sh(format!("echo x >>'{}'; cat >/dev/null; echo 100", logs.join(host).display()))
+    });
+    for host in ["here", "far", "other"] {
+        listed(host, 1);
+    }
+    // game mode: far is listed every 5 minutes
+    poller.slow_down(&hosts(&["far"]), Some(Duration::from_secs(300)));
+
+    // a tab closed on this machine: far stays asleep, and so does every other host
+    poller.refresh_host("here");
+    listed("here", 2);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((count("here"), count("far"), count("other")), (2, 1, 1));
+
+    // a request on far itself reaches it, slowed as it is
+    poller.refresh_host("far");
+    listed("far", 2);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((count("here"), count("far"), count("other")), (2, 2, 1));
+
+    // a host the poller does not list (a background server's `HOST#NAME`) wakes nobody
+    poller.refresh_host("far#bg");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((count("here"), count("far"), count("other")), (2, 2, 1));
+
+    // by hand: every host, the slowed one too
+    poller.refresh_now();
+    for (host, times) in [("here", 3), ("far", 3), ("other", 2)] {
+        listed(host, times);
+    }
+    drop(poller);
+    assert_no_poll_threads();
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 #[test]

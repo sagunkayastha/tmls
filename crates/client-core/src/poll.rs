@@ -1,7 +1,8 @@
 //! Keeps the listing of every host fresh: one thread per host, so a host that hangs delays
 //! nobody else. Each thread runs the host's listing command with a timeout, hands the snapshot
 //! to the callback when it differs from the host's previous one in anything but the sessions'
-//! output ages (an online host going offline always does), then sleeps for the period or until [`Poller::refresh_now`].
+//! output ages (an online host going offline always does), then sleeps for the period or until
+//! [`Poller::refresh_host`] names it (or [`Poller::refresh_now`], which is for every host).
 //!
 //! A listing runs in a process group of its own and is read without blocking, so a timeout or
 //! a stopping poller kills the command and everything it started, and never waits on a pipe.
@@ -61,10 +62,20 @@ struct State {
     stop: bool,
     /// Counts `refresh_now` calls: a thread that sees it move lists again.
     refresh: u64,
-    /// Counts force_next calls: a thread that sees it move delivers its next listing.
-    resend: u64,
+    /// Counts each host's `refresh_host` calls: its thread lists again when it sees its own move.
+    asked: HashMap<String, u64>,
+    /// Counts each host's force_next calls: its thread delivers its next listing when it sees its own move.
+    resend: HashMap<String, u64>,
     /// Hosts listed at a period of their own (`slow_down`), instead of the poller's.
     slow: HashMap<String, Duration>,
+}
+
+impl State {
+    /// What a thread compares to know that it is asked to list again: every host's count and
+    /// `host`'s own.
+    fn refreshes(&self, host: &str) -> (u64, u64) {
+        (self.refresh, self.asked.get(host).copied().unwrap_or(0))
+    }
 }
 
 impl Shared {
@@ -96,7 +107,8 @@ impl Poller {
         timeout: Duration,
         on_snapshot: Box<dyn Fn(HostSnapshot) + Send>,
     ) -> Poller {
-        let state = State { stop: false, refresh: 0, resend: 0, slow: HashMap::new() };
+        let state =
+            State { stop: false, refresh: 0, asked: HashMap::new(), resend: HashMap::new(), slow: HashMap::new() };
         let shared = Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() });
         let command = Arc::new(command);
         let deliver = Arc::new(Mutex::new(on_snapshot));
@@ -113,16 +125,25 @@ impl Poller {
         Poller { shared, threads }
     }
 
-    /// Lists every host again without waiting for the period to end.
+    /// Lists every host again without waiting for the period to end, the slowed ones
+    /// (`slow_down`) too: for a refresh the user asks for by hand, and nothing else.
     pub fn refresh_now(&self) {
         self.shared.state().refresh += 1;
         self.shared.wake.notify_all();
     }
 
-    /// The next listing of every host is delivered even if it is the same as the last one: a
+    /// Lists `host` again without waiting for its period to end, slowed or not, and no other
+    /// host: for what concerns that host alone (a request on it, one of its tabs, an event it
+    /// pushed). A host the poller does not list is nobody's.
+    pub fn refresh_host(&self, host: &str) {
+        *self.shared.state().asked.entry(host.to_string()).or_default() += 1;
+        self.shared.wake.notify_all();
+    }
+
+    /// The next listing of `host` is delivered even if it is the same as the last one: a
     /// pushed event changed the app's copy, and the listing is the truth again (D3).
-    pub fn force_next(&self) {
-        self.shared.state().resend += 1;
+    pub fn force_next(&self, host: &str) {
+        *self.shared.state().resend.entry(host.to_string()).or_default() += 1;
     }
 
     /// Lists `hosts` every `period` from now on instead of the poller's own period; `None`
@@ -167,9 +188,9 @@ fn poll_host(
     let mut last: Option<HostSnapshot> = None;
     let mut resent = 0;
     loop {
-        let (refresh, resend) = {
+        let (refreshes, resend) = {
             let state = shared.state();
-            (state.refresh, state.resend)
+            (state.refreshes(host), state.resend.get(host).copied().unwrap_or(0))
         };
         let stopped = || shared.state().stop;
         let Some(snapshot) = run(host, command(host), timeout, &stopped) else { return };
@@ -193,7 +214,7 @@ fn poll_host(
             }
             let period = state.slow.get(host).copied().unwrap_or(period);
             let left = (listed_at + period).saturating_duration_since(Instant::now());
-            if state.refresh != refresh || left.is_zero() {
+            if state.refreshes(host) != refreshes || left.is_zero() {
                 break;
             }
             state = shared.wake.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;

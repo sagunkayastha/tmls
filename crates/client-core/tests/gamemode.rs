@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use client_core::gamemode::{PROGRAM, REMOTE_PERIOD, TIMEOUT, answer, parse, status_argv};
+use client_core::gamemode::{PROGRAM, REMOTE_PERIOD, TIMEOUT, answer, parse, remote_scan, status_argv};
 
 #[test]
 fn the_status_is_asked_and_only_on_is_on() {
@@ -16,6 +16,14 @@ fn the_status_is_asked_and_only_on_is_on() {
     }
     assert_eq!(REMOTE_PERIOD, Duration::from_secs(300));
     assert_eq!(TIMEOUT, Duration::from_secs(2));
+}
+
+#[test]
+fn remote_hosts_are_scanned_only_once_game_mode_is_known_to_be_off() {
+    assert!(!remote_scan(false, false), "not before the first probe is over: it may say on");
+    assert!(!remote_scan(true, true), "not in game mode");
+    assert!(remote_scan(true, false));
+    assert!(!remote_scan(false, true));
 }
 
 /// A stand-in for the script, run as the app runs it: never the real `game-mode`.

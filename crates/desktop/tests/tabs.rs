@@ -197,8 +197,12 @@ fn a_tab_whose_child_exits_stays_and_can_reattach() {
         TabState::Live,
         "the other tab is not affected"
     );
-    assert!(tabs.state_changes(), "the end is reported");
-    assert!(!tabs.state_changes(), "once");
+    assert_eq!(
+        tabs.state_changes(),
+        [key("gone")],
+        "the end is reported, with the session whose host is to be listed again"
+    );
+    assert!(tabs.state_changes().is_empty(), "once");
     assert_eq!(
         type_line(&mut tabs, "lost"),
         0,

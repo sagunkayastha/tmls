@@ -738,6 +738,36 @@ fn window_and_pane_requests_run_their_commands_and_say_what_happened() {
 }
 
 #[test]
+fn a_request_names_the_one_host_that_is_listed_again_after_it() {
+    let k = key("ph", "w");
+    let new = NewSession {
+        host: "far".to_string(),
+        folder: "~".to_string(),
+        name: "n".to_string(),
+        start: Start::Shell,
+        size: None,
+    };
+    assert_eq!(Request::New(new).host(), "far");
+    let on_ph = [
+        Request::Rename(k.clone(), "x".to_string()),
+        Request::Kill(k.clone()),
+        Request::NewWindow(k.clone()),
+        Request::RenameWindow(k.clone(), "x".to_string()),
+        Request::Split(k.clone(), Split::TopBottom),
+        Request::KillPane(k.clone(), "%7".to_string()),
+        Request::Answer {
+            key: k.clone(),
+            pane: None,
+            shown: Vec::new(),
+            yes: true,
+        },
+    ];
+    for request in on_ph {
+        assert_eq!(request.host(), "ph", "{request:?}");
+    }
+}
+
+#[test]
 fn a_killed_pane_says_the_session_ended_only_when_tmux_says_so_after_the_kill() {
     let k = key("ph", "w");
     let request = Request::KillPane(k.clone(), "%7".to_string());

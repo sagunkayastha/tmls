@@ -316,17 +316,18 @@ impl Tabs {
 
     /// Call when woken: the tabs whose command has ended since the last call are noted (the
     /// one in front is asked for the frame with its last output, `Session::begin_exit`).
-    /// Returns whether there was one, i.e. whether the tab bar looks different now.
-    pub fn state_changes(&mut self) -> bool {
-        let mut changed = false;
+    /// Returns their sessions: with one, the tab bar looks different now, and that session's
+    /// host has something new to list.
+    pub fn state_changes(&mut self) -> Vec<SessionKey> {
+        let mut ended = Vec::new();
         for tab in &mut self.tabs {
             if !tab.end_seen && tab.session.exited() {
                 tab.end_seen = true;
                 tab.session.begin_exit();
-                changed = true;
+                ended.push(tab.key.clone());
             }
         }
-        changed
+        ended
     }
 
     /// Call when woken: what the programs in the tabs wrote to the clipboard (OSC 52) since

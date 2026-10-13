@@ -181,8 +181,8 @@ pub enum UserEvent {
     FilesDropped(String),
     /// The 30 s ticker: game mode and the other tmux servers are asked about again.
     Tick,
-    /// What `game-mode status` said.
-    GameMode(bool),
+    /// What `game-mode status` said; `None` when it failed or took too long.
+    GameMode(Option<bool>),
     /// A host's sessions on its other tmux servers.
     Background(String, Vec<SessionInfo>),
 }
@@ -278,7 +278,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Sent(id, key, result) => running.sent(id, key, result),
             UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
             UserEvent::Tick => running.tick(),
-            UserEvent::GameMode(on) => running.game_mode(on),
+            UserEvent::GameMode(said) => running.game_probed(said),
             UserEvent::Background(host, sessions) => running.background(&host, sessions),
             UserEvent::FilesDropped(list) => running.files_dropped(&list),
         }
@@ -490,6 +490,9 @@ struct Running {
     game: bool,
     /// `game-mode` is on PATH; without it there is no game mode.
     game_probe: bool,
+    /// The first `game-mode status` is over (at once without the script): until then no remote
+    /// host is asked about its other tmux servers.
+    game_known: bool,
     /// Hosts whose last listing said ssh wants a sign-in.
     sign_in: BTreeSet<String>,
     /// Each host's latest listing as the poller gave it (the listing's statuses, no ◆): what
@@ -775,6 +778,7 @@ impl Running {
             poller,
             game: false,
             game_probe,
+            game_known: !game_probe,
             sign_in: BTreeSet::new(),
             listings: HashMap::new(),
             replies: HashMap::new(),
@@ -974,24 +978,24 @@ impl Running {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
                 let ran = tmux::run(&gamemode::status_argv(), gamemode::TIMEOUT);
-                if let Some(on) = gamemode::answer(ran) {
-                    let _ = proxy.send_event(UserEvent::GameMode(on));
-                }
+                let _ = proxy.send_event(UserEvent::GameMode(gamemode::answer(ran)));
             });
         }
         // The other tmux servers of every host that answers (R4: listed, attach only); not the
-        // remote ones in game mode (R1).
-        let online: Vec<String> = self
-            .cfg
-            .hosts
-            .iter()
-            .filter(|host| self.host_online(host))
-            .cloned()
-            .collect();
-        for host in online {
-            if self.game && host != self.cfg.local_name {
-                continue;
-            }
+        // remote ones in game mode, nor before the first probe has said whether it is (R1).
+        let remote = gamemode::remote_scan(self.game_known, self.game);
+        let hosts = self.cfg.hosts.clone();
+        self.scan_background(
+            hosts
+                .iter()
+                .filter(|host| remote || **host == self.cfg.local_name),
+        );
+    }
+
+    /// Asks those of `hosts` that answer about their other tmux servers, each on a thread; the
+    /// answers are `UserEvent::Background`.
+    fn scan_background<'a>(&self, hosts: impl Iterator<Item = &'a String>) {
+        for host in hosts.filter(|host| self.host_online(host)).cloned() {
             let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
             std::thread::spawn(move || {
                 let argv = tmux::server_sockets_argv(&host, &local);
@@ -1010,6 +1014,19 @@ impl Running {
     fn background(&mut self, host: &str, sessions: Vec<SessionInfo>) {
         if self.host_online(host) && self.sidebar.apply_background(host, sessions) {
             self.invalidate();
+        }
+    }
+
+    /// A probe of game mode is over. The first one is what the remote hosts' first scan for
+    /// other tmux servers waited for: it runs now, unless game mode is on.
+    fn game_probed(&mut self, said: Option<bool>) {
+        let first = !self.game_known;
+        self.game_known = true;
+        if let Some(on) = said {
+            self.game_mode(on);
+        }
+        if first && gamemode::remote_scan(self.game_known, self.game) {
+            self.scan_background(self.remote_hosts().iter());
         }
     }
 
@@ -1243,10 +1260,11 @@ impl Running {
                 };
                 match push::apply(&mut snapshot, &event) {
                     Applied::Unchanged => {}
-                    Applied::Relist => self.poller.refresh_now(),
+                    // The host that pushed the event, and no other.
+                    Applied::Relist => self.poller.refresh_host(&host),
                     Applied::Changed => {
-                        // Until the next listing, which replaces this whatever it says.
-                        self.poller.force_next();
+                        // Until the host's next listing, which replaces this whatever it says.
+                        self.poller.force_next(&host);
                         self.snapshot(snapshot);
                     }
                 }
@@ -1827,7 +1845,8 @@ impl Running {
         if !ok {
             return;
         }
-        self.poller.refresh_now();
+        // The host the request ran on has something new to list; no other host does.
+        self.poller.refresh_host(request.host());
         let keys_were = keys::keys_at(self.focus, self.focus_before, self.modal.is_some());
         let list_keeps_keys = keys::list_keeps_keys(&request, keys_were);
         match request {
@@ -2658,9 +2677,10 @@ impl Running {
             .tabs
             .active()
             .map(|active| self.tabs.key(active).clone());
+        let host = self.tabs.key(index).host.clone();
         self.tabs.close(index);
-        // One client fewer on that session: the row's count is read again now.
-        self.poller.refresh_now();
+        // One client fewer on that session: the row's count is read again now, on its host.
+        self.poller.refresh_host(&host);
         let now = self.tabs.active().map(|active| self.tabs.key(active));
         let front_changed = now != front.as_ref();
         let focus = keys::focus_after_close(self.focus, front_changed, self.tabs.is_empty());
@@ -3186,10 +3206,11 @@ impl Running {
             marks.begin_redraw();
         }
         // A tab whose command ended looks different in the tab bar, in front or not.
-        if self.tabs.state_changes() {
+        for ended in self.tabs.state_changes() {
             self.dirty = true;
-            // A session ended (killed, exited, ssh dropped): the list hears of it now.
-            self.poller.refresh_now();
+            // A session ended (killed, exited, ssh dropped): the list hears of it now, from
+            // that session's host and no other.
+            self.poller.refresh_host(&ended.host);
         }
         // What a program in a tab wrote to the clipboard (tmux, when a mouse selection in it
         // ends) goes there, and the status line says so.

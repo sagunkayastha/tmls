@@ -93,6 +93,22 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// The host the request runs on: the one whose listing it changes.
+    pub fn host(&self) -> &str {
+        match self {
+            Request::New(new) => &new.host,
+            Request::Rename(key, _)
+            | Request::Kill(key)
+            | Request::NewWindow(key)
+            | Request::RenameWindow(key, _)
+            | Request::Split(key, _)
+            | Request::KillPane(key, _)
+            | Request::Answer { key, .. } => &key.host,
+        }
+    }
+}
+
 /// What a key or a click did to a form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormResult {

@@ -28,3 +28,9 @@ pub fn parse(out: &str) -> bool {
 pub fn answer(ran: anyhow::Result<String>) -> Option<bool> {
     ran.ok().map(|out| parse(&out))
 }
+
+/// Whether the remote hosts may be asked about their other tmux servers: not in game mode
+/// (`on`), and not before the first `game-mode status` is over (`known`), which may say on.
+pub fn remote_scan(known: bool, on: bool) -> bool {
+    known && !on
+}
