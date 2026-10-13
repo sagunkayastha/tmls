@@ -30,8 +30,10 @@ pub fn answer(ran: anyhow::Result<String>) -> Option<bool> {
 }
 
 /// The listing period of a remote host: [`REMOTE_PERIOD`] in game mode (`on`), `None` (the
-/// poller's own) otherwise — and for a host that waits for a sign-in (`sign_in`), which is not
-/// slowed: once the user has signed in, the list is to say so within seconds, not minutes.
+/// poller's own) otherwise — and for a host the user is signing in to (`sign_in`: its
+/// `sign in` was clicked and it has not answered since), which is not slowed: once the user has
+/// signed in, the list is to say so within seconds, not minutes. A host that only waits for a
+/// sign-in nobody starts is slowed as any other.
 pub fn remote_period(on: bool, sign_in: bool) -> Option<Duration> {
     (on && !sign_in).then_some(REMOTE_PERIOD)
 }

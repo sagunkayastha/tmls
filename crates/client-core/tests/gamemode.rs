@@ -29,7 +29,7 @@ fn remote_hosts_are_scanned_only_once_game_mode_is_known_to_be_off() {
 }
 
 #[test]
-fn a_remote_host_that_waits_for_a_sign_in_is_not_slowed() {
+fn a_remote_host_the_user_is_signing_in_to_is_not_slowed() {
     assert_eq!(remote_period(true, false), Some(REMOTE_PERIOD));
     assert_eq!(remote_period(true, true), None, "the list is to follow the sign-in within seconds");
     assert_eq!(remote_period(false, false), None);

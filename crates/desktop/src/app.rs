@@ -495,6 +495,9 @@ struct Running {
     game_known: bool,
     /// Hosts whose last listing said ssh wants a sign-in.
     sign_in: BTreeSet<String>,
+    /// Of those, the hosts whose `⚠ sign in` was clicked and that have not answered since:
+    /// in game mode they are listed at the poller's own period meanwhile.
+    signing_in: BTreeSet<String>,
     /// Each host's latest listing as the poller gave it (the listing's statuses, no ◆): what
     /// a pushed event changes.
     listings: HashMap<String, HostSnapshot>,
@@ -780,6 +783,7 @@ impl Running {
             game_probe,
             game_known: !game_probe,
             sign_in: BTreeSet::new(),
+            signing_in: BTreeSet::new(),
             listings: HashMap::new(),
             replies: HashMap::new(),
             tails: HashMap::new(),
@@ -1032,9 +1036,9 @@ impl Running {
     }
 
     /// Gives the remote host `host` the period it has now: 300 s in game mode, the poller's
-    /// own without it and while the host waits for a sign-in (`gamemode::remote_period`).
+    /// own without it and while the user signs in to it (`gamemode::remote_period`).
     fn pace(&self, host: &str) {
-        let period = gamemode::remote_period(self.game, self.sign_in.contains(host));
+        let period = gamemode::remote_period(self.game, self.signing_in.contains(host));
         self.poller.slow_down(&[host.to_string()], period);
     }
 
@@ -1061,14 +1065,14 @@ impl Running {
     /// A host's new listing, in the order the poller delivers them. The session of the tab in
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, mut snapshot: HostSnapshot) {
-        let changed = match snapshot.needs_sign_in() {
-            true => self.sign_in.insert(snapshot.host.clone()),
-            false => self.sign_in.remove(&snapshot.host),
-        };
-        // In game mode a host that waits for a sign-in is listed at the poller's period until
-        // it answers: the list follows the sign-in in seconds, not in 300.
-        if changed && self.game && snapshot.host != self.cfg.local_name {
-            self.pace(&snapshot.host);
+        if snapshot.needs_sign_in() {
+            self.sign_in.insert(snapshot.host.clone());
+        } else {
+            self.sign_in.remove(&snapshot.host);
+            // The host answered: the sign-in is over, and in game mode it is slowed again.
+            if self.signing_in.remove(&snapshot.host) {
+                self.pace(&snapshot.host);
+            }
         }
         push::carry_replies(&mut snapshot, &mut self.replies);
         self.listings
@@ -2626,6 +2630,12 @@ impl Running {
             &forms::on_path,
             &mut forms::spawn_detached,
         );
+        // In game mode the host's next listing may be 300 s away: until it answers it is
+        // listed at the poller's period, so that the list follows the sign-in in seconds. A
+        // host nobody signs in to stays slowed.
+        if said.is_ok() && self.signing_in.insert(host.to_string()) {
+            self.pace(host);
+        }
         self.say(said);
     }
 
