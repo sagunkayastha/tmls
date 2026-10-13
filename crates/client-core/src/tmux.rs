@@ -143,9 +143,21 @@ pub fn shares_connections() -> bool {
     CONTROL.get().is_some()
 }
 
+/// What stands in for ssh when the host is `HOST#NAME`: fails, saying why, and starts nothing.
+/// Whatever a builder adds after it is an argument sh does not look at.
+const NO_SSH: &str = "echo 'no ssh to another tmux server of a host: its sessions are attach only' >&2; exit 1";
+
 /// The start of every ssh argv: `ssh`, the keepalive, the shared connection once switched on,
 /// `flags`, then `host`. The caller adds the remote command.
+///
+/// Never for `HOST#NAME`, a session key's host for another tmux server of `HOST`
+/// (`listing::BACKGROUND_SEP`): ssh would take it for a machine's name. Nothing passes one
+/// today (`attach_argv` splits it first); if a builder ever does, its command is [`NO_SSH`]
+/// and not an ssh.
 pub fn ssh_base(host: &str, flags: &[&str]) -> Vec<String> {
+    if host.contains(crate::listing::BACKGROUND_SEP) {
+        return strings(&["sh", "-c", NO_SSH, "sh"]);
+    }
     let mut argv = vec!["ssh".to_string()];
     argv.extend(KEEPALIVE.iter().map(|word| word.to_string()));
     if let Some(control) = CONTROL.get() {

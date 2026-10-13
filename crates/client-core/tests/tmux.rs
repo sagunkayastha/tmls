@@ -12,7 +12,7 @@ use client_core::tmux::{
     MAX_NAME_CHARS, NewSession, PANE_INFO_FORMAT, Split, Start, attach_argv, attach_text, buffer_name, capture_argv,
     derived_name_argv, kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_info_argv, parse_kill_pane, rename_argv,
     rename_window_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, send_text_argv, send_text_script,
-    server_sockets_argv, sign_in_argv, split_argv, valid_session_name, valid_window_name,
+    server_sockets_argv, sign_in_argv, split_argv, ssh_base, valid_session_name, valid_window_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -486,6 +486,51 @@ fn sign_in_is_an_ssh_that_may_ask_and_then_ends() {
     let mut want = v(&ATTACH);
     want.push("true".to_string());
     assert_eq!(sign_in_argv("ph"), want);
+}
+
+#[test]
+fn a_background_servers_host_never_reaches_ssh() {
+    use client_core::files::{locate_argv, made_argv, read_argv};
+    use client_core::listing::listing_command;
+    // `HOST#NAME` is a session key's host, not a machine: ssh would take it for a host name.
+    // Of this machine's other servers too: `archbox#bg` is not `archbox`.
+    for host in ["ph#bg", "archbox#bg", "ph#"] {
+        let k = key(host, "w");
+        let new = new_session(host, "~", "w", Start::Shell, None);
+        let built = [
+            ssh_base(host, &["-t"]),
+            kill_argv(&k, LOCAL),
+            rename_argv(&k, "x", LOCAL),
+            running_commands_argv(&k, LOCAL),
+            new_window_argv(&k, LOCAL),
+            rename_window_argv(&k, "x", LOCAL),
+            split_argv(&k, Split::TopBottom, LOCAL),
+            kill_pane_argv(&k, "%7", LOCAL),
+            pane_info_argv(&k, LOCAL),
+            capture_argv(&k, None, LOCAL),
+            send_keys_argv(&k, None, "Enter", LOCAL),
+            send_text_argv(&k, None, "tmls-0", LOCAL),
+            new_session_argv(&new, LOCAL),
+            derived_name_argv(host, "~", LOCAL),
+            server_sockets_argv(host, LOCAL),
+            sign_in_argv(host),
+            locate_argv(&k, "a.rs", LOCAL),
+            read_argv(host, "/a.rs", 10, LOCAL),
+            made_argv(host, "0", None, LOCAL),
+        ];
+        for argv in built {
+            assert!(!argv.iter().any(|word| word == "ssh" || word == host), "{host}: {argv:?}");
+            let error = run(&argv, Duration::from_secs(5)).expect_err("a command that fails and starts nothing");
+            assert_eq!(error.to_string(), "no ssh to another tmux server of a host: its sessions are attach only");
+        }
+        let listing = listing_command(host, LOCAL);
+        assert_ne!(listing.get_program(), "ssh", "{host}");
+        assert!(listing.get_args().all(|arg| arg != host), "{host}: {listing:?}");
+    }
+    // What attaches such a session goes to the machine, with the server as `tmux -L`.
+    let attach = attach_argv(&key("ph#bg", "w"), LOCAL);
+    assert_eq!(attach[..ATTACH.len()], ATTACH);
+    assert_eq!(attach.last().map(String::as_str), Some("tmux -u -L 'bg' attach -t '=w'"));
 }
 
 #[test]
