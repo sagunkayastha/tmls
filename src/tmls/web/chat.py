@@ -165,7 +165,7 @@ async def send(request):
     refused = await _guard(request, data, found)
     if refused is not None:
         return refused
-    request.app["chat_sent"][key] = asyncio.get_running_loop().time()  # an empty chat looks again soon
+    request.app["chat_sent"][data["key"]] = asyncio.get_running_loop().time()  # an empty chat looks again soon
     return _sent(await prompts.send(host, name, text, pane=_pane(row)))
 
 
