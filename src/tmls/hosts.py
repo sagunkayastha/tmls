@@ -64,6 +64,7 @@ class Session:
     model: str | None = None    # model of Claude's newest reply
     context: int = 0            # tokens in context at Claude's newest reply
     pane: str | None = None     # Claude's own tmux pane ("%7"); after a split it needn't be the active one
+    session_id: str | None = None  # Claude's conversation: its record is projects/*/<session_id>.jsonl
     viewers: list = field(default_factory=list)  # [(viewer, "WxH")] per attached tmux client
 
 
@@ -122,6 +123,7 @@ def parse(host, out):
             s.claude, s.claude_since = status, since
             s.waiting, s.failed, s.title = c.get("waitingFor"), bool(c.get("failed")), c.get("name")
             s.model, s.context = c.get("model"), c.get("context", 0)
+            s.session_id = c.get("sessionId") if isinstance(c.get("sessionId"), str) else None
             m = re.search(r"%\d+$", c.get("tmux") or "")
             s.pane = m.group(0) if m else None
     return list(sessions.values())

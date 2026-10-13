@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 
 from tmls import approve, create, hosts, tmux_ops
-from tmls.web import auth, events, term
+from tmls.web import auth, chat, events, term
 
 STATIC = Path(__file__).parent / "static"
 PUBLIC = ("/healthz", "/login")
@@ -335,6 +335,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/api/rename", rename_session)
     app.router.add_post("/api/kill", kill_session)
     term.setup(app)
+    chat.setup(app)
     app.router.add_get("/api/config", config)
     app.router.add_get("/app/latest.json", app_manifest)
     app.router.add_get("/app/tmls.apk", app_apk)

@@ -46,6 +46,11 @@ async def poll_once(app):
     if host_list != app["host_list"]:
         app["host_list"][:] = host_list  # in place: aiohttp frowns on replacing state once running
         await broadcast(app, {"t": "hosts", "hosts": host_list})
+    for host, online, sessions in found:
+        if online:  # an offline host keeps its last ones, like its rows: an open chat waits for it
+            for k in [k for k, s in app["claudes"].items() if s.host == host]:
+                del app["claudes"][k]
+            app["claudes"].update({rows.key(host, s.name): s for s in sessions if s.claude})
     lines, extras = app["lines"], {}
     screens, prompts_up = {}, {}  # fetched in parallel: one slow host mustn't hold up the rest
     for host, online, sessions in found:
@@ -71,6 +76,7 @@ async def poll_once(app):
     items = rows.alerts(old_marks, new)
     if items:
         await broadcast(app, {"t": "alerts", "items": items})
+    app["polled"].set()
 
 
 async def broadcast(app, message):
@@ -137,6 +143,8 @@ async def _stop(app):
 def setup(app):
     app["state"], app["sockets"], app["lines"], app["now"], app["slots"] = rows.State(), set(), {}, {}, {}
     app["host_list"], app["background"], app["polls"] = [], [], 0
+    # key -> hosts.Session of the Claude in it (chat.py follows its record); set once listed
+    app["claudes"], app["polled"] = {}, asyncio.Event()
     app.router.add_get("/api/events", handle_events)
     app.router.add_post("/api/seen", handle_seen)
     app.on_startup.append(_start)

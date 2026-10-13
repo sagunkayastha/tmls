@@ -57,6 +57,13 @@ def test_parse_claude_conversation_title():
     assert {s.name: s.title for s in hosts.parse("nas", out)} == {"Season-36": "NERSC_Training", "plain": None}
 
 
+def test_parse_keeps_the_conversation_id_for_the_chat():
+    # the record the phone's chat follows is ~/.claude/projects/*/<sessionId>.jsonl
+    out = ("1000\nSeason-36:1:0:990\nplain:1:0:10\n---\n"
+           '{"sessionId":"0a1b-2c3d","status":"idle","statusUpdatedAt":900000,"tmux":"Season-36:@1.%1"}\n')
+    assert {s.name: s.session_id for s in hosts.parse("nas", out)} == {"Season-36": "0a1b-2c3d", "plain": None}
+
+
 def test_parse_context_use_from_the_newest_reply():
     # "usage" after a session file: model and token counts of its newest real reply
     out = ("1000\nwork:1:0:990\n---\n"

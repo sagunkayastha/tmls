@@ -83,3 +83,12 @@ def test_background_rows_are_flagged_and_never_alert():
 def test_rows_carry_viewers():
     out = rows.build(rows.State(), [("box", True, [sess("a", viewers=[("laptop", "80x24")])])], {})
     assert out[0]["viewers"] == [["laptop", "80x24"]]
+
+
+def test_rows_say_whether_a_claude_runs_and_how_full_it_is():
+    found = [("box", True, [sess("a", claude="idle", model="claude-opus-5-5", context=250_000),
+                            sess("b", claude="busy"), sess("c", model="stale", context=5)])]
+    out = {r["name"]: (r["claude"], r["context"], r["model"]) for r in rows.build(rows.State(), found, {})}
+    assert out == {"a": (True, 25, "claude-opus-5-5"),
+                   "b": (True, None, None),      # no reply yet: nothing to measure
+                   "c": (False, None, None)}     # plain tmux

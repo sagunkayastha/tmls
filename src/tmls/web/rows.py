@@ -47,6 +47,9 @@ def build(state, found, extras):
                         "line": second_line(s, mark, extra.get("line")), "waiting": s.waiting,
                         "shown": extra.get("shown") if mark == "waiting" else None, "pane": s.pane,
                         "viewers": [list(v) for v in s.viewers],
+                        # for the phone's chat view: is there a Claude to chat with, and how full is it
+                        "claude": bool(s.claude), "model": s.model if s.claude else None,
+                        "context": hosts.context_pct(s) if s.claude else None,
                         "online": True, "background": hosts.is_background(host)})
     state.marks = {r["key"]: r["mark"] for r in out}
     state.rows = {r["key"]: r for r in out}
