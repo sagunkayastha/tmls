@@ -1,20 +1,24 @@
 """Answer a Claude permission prompt from tmls: read the dialog off the pane, send 1 or Esc.
 
-Claude's dialog is "Do you want to proceed? 1. Yes … N. No"; "1" approves at once and Esc denies
+Claude's dialog is "Do you want to proceed? 1. Yes … N. No" (for a file: "Do you want to create
+hello.txt?", "… make this edit to x.py?"); "1" approves at once and Esc denies
 (the number for No varies, Esc doesn't).
 """
+import re
 import shlex
 
 from tmls import prompts
 
-QUESTION = "Do you want to proceed?"
+QUESTION = re.compile(r"Do you want to .+\?")
+FIRST = re.compile(r"(❯\s*)?1\. Yes")  # the first choice, under the question: text in a reply has none
 KEYS = {True: "1", False: "Escape"}
 
 
 def request(screen):
     """The dialog's lines (tool, description, command) when a permission prompt is up, else None."""
     lines = screen.splitlines()
-    ask = [i for i, line in enumerate(lines) if line.strip() == QUESTION]
+    ask = [i for i, line in enumerate(lines) if QUESTION.fullmatch(line.strip())
+           and any(FIRST.match(after.strip()) for after in lines[i + 1:i + 3])]
     if not ask:
         return None
     top = max((i for i, line in enumerate(lines[:ask[-1]]) if line.startswith("──")), default=-1)

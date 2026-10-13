@@ -74,3 +74,12 @@ async def test_answer_sends_the_key_only_while_the_same_request_is_up(private_tm
     await asyncio.sleep(0.3)
     out = subprocess.run(["tmux", "capture-pane", "-p", "-t", "=w:"], capture_output=True, text=True).stdout
     assert out.rstrip().endswith("1")
+
+
+def test_request_reads_a_file_dialog():
+    dialog = DIALOG.replace("Do you want to proceed?", "Do you want to create hello.txt?")
+    assert approve.request(dialog) == approve.request(DIALOG)
+
+
+def test_request_needs_the_choices_under_the_question():
+    assert approve.request("some reply\nDo you want to proceed?\nmore text\n") is None
