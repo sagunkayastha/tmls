@@ -8,7 +8,8 @@ use client_core::config::tmls_slug;
 use client_core::{Config, HostColor, HostSnapshot, SessionInfo, SessionKey, Status, Tool};
 use desktop::draw::{
     Chrome, GAME_MODE, HeaderLook, Layout, POLL_ONLY, Rect, RowLook, SIGN_IN, Span, TabView, View,
-    header_spans, header_spans_look, header_spans_with, layer_order, layout, session_spans,
+    background_spans, header_spans, header_spans_look, header_spans_with, layer_order, layout,
+    session_spans,
 };
 use desktop::sidebar::{Row, Sidebar};
 use desktop::theme::{self, SIDEBAR_COLS, Theme, host_rgb, mark_rgb};
@@ -1000,4 +1001,19 @@ fn a_host_that_wants_a_sign_in_says_so_instead_of_offline() {
     // A host that answers needs no sign-in, whatever the look says.
     let online = header_spans_look("nas", true, look, SIDEBAR_COLS, &theme);
     assert!(online.iter().all(|span| span.text != SIGN_IN));
+}
+
+#[test]
+fn the_background_row_says_how_many_and_whether_it_is_open() {
+    let theme = Theme::default();
+    let closed = background_spans(3, false, SIDEBAR_COLS, &theme);
+    assert_eq!(
+        (closed[0].text.as_ref(), closed[0].col, closed[0].colour),
+        ("background ▸ · 3", 1, theme.dim_fg)
+    );
+    assert_eq!(
+        background_spans(3, true, SIDEBAR_COLS, &theme)[0].text,
+        "background ▾ · 3"
+    );
+    assert_within(&closed);
 }

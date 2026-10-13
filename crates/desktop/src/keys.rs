@@ -8,6 +8,7 @@
 //! - in the list (`list_key`): j / k or the arrows move, Enter attaches, p pins, n opens the
 //!   next session that waits, c opens the new-session form for the cursor's host, m the
 //!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts,
+//!   b the other tmux servers' sessions,
 //!   y — answer the cursor's session's permission prompt (Yes / No / Cancel),
 //!   s — the message form (send now, or queue while the session is busy)
 //! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
@@ -269,6 +270,8 @@ pub enum ListKey {
     Menu,
     /// The list of alerts.
     Alerts,
+    /// Show or hide the other tmux servers' sessions.
+    Background,
     /// The keys and mouse actions (`?`).
     Help,
     /// Approve the permission prompt of the session under the cursor.
@@ -299,6 +302,7 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('c') if !ev.repeat => Some(ListKey::New),
         Key::Char('m') if !ev.repeat => Some(ListKey::Menu),
         Key::Char('a') if !ev.repeat => Some(ListKey::Alerts),
+        Key::Char('b') if !ev.repeat => Some(ListKey::Background),
         Key::Char('y') if !ev.repeat => Some(ListKey::Approve),
         Key::Char('s') if !ev.repeat => Some(ListKey::Send),
         _ => None,
@@ -453,6 +457,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("c", "new session on this host"),
             ("m", "the session's menu"),
             ("a", "alerts"),
+            ("b", "show / hide background tmux"),
             ("?", "this help"),
             ("y", "approve a permission prompt"),
             ("s", "send or queue a message"),

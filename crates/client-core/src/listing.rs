@@ -191,6 +191,81 @@ pub fn listing_command(host: &str, local_name: &str) -> std::process::Command {
     }
 }
 
+/// Between a machine and one of its other tmux servers in a host's name: `HOST#NAME` (tmls
+/// `hosts.SEP`). Such a host is listed under its machine's `background` row.
+pub const BACKGROUND_SEP: char = '#';
+
+/// `(machine, Some(server))` for `HOST#NAME`, `(host, None)` for any other host.
+pub fn split_host(host: &str) -> (&str, Option<&str>) {
+    match host.split_once(BACKGROUND_SEP) {
+        Some((machine, server)) if !server.is_empty() => (machine, Some(server)),
+        _ => (host, None),
+    }
+}
+
+/// Whether `name` is a tmux server name tmls-rs passes to `tmux -L`: tmls's `[\w.-]+`, in
+/// ASCII. Anything else never goes into a command.
+pub fn valid_server_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
+/// Reads what `tmux::server_sockets_argv` printed on `host`: one snapshot per other tmux
+/// server, its host `HOST#NAME`, its sessions with no Claude status (running while a window had
+/// output in the last 30 s, else idle; the dim line says `tmux -L NAME`). A server whose name
+/// is not `valid_server_name` is skipped with its lines; without a clock line there is nothing.
+pub fn parse_background(host: &str, output: &str) -> Vec<HostSnapshot> {
+    let lines: Vec<&str> = output.lines().collect();
+    let first = lines.iter().position(|line| line.starts_with("background ")).unwrap_or(lines.len());
+    let clock = lines[..first].iter().enumerate().rev().find_map(|(i, line)| {
+        let digits = !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit());
+        Some((i, line.parse::<u64>().ok().filter(|_| digits)?))
+    });
+    let Some((start, now)) = clock else { return Vec::new() };
+    let mut out: Vec<HostSnapshot> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in &lines[start + 1..] {
+        if let Some(name) = line.strip_prefix("background ").and_then(|rest| rest.strip_suffix(':')) {
+            current = valid_server_name(name).then(|| name.to_string());
+            if let Some(name) = &current {
+                out.push(HostSnapshot {
+                    host: format!("{host}{BACKGROUND_SEP}{name}"),
+                    online: true,
+                    error: None,
+                    sessions: Vec::new(),
+                });
+            }
+            continue;
+        }
+        let (Some(server), Some(window), Some(snap)) = (&current, window_line(line), out.last_mut()) else { continue };
+        let age = now.saturating_sub(window.activity);
+        if let Some(known) = snap.sessions.iter_mut().find(|s| s.key.name == window.name) {
+            // newest window output wins
+            if known.last_output_age_s.is_none_or(|known_age| age < known_age) {
+                known.last_output_age_s = Some(age);
+                known.activity = Some(window.activity);
+                known.status = if age < QUIET_S { Status::Running } else { Status::Idle };
+            }
+            continue;
+        }
+        snap.sessions.push(SessionInfo {
+            key: SessionKey { host: snap.host.clone(), name: window.name.to_string() },
+            status: if age < QUIET_S { Status::Running } else { Status::Idle },
+            reason: None,
+            tool: Tool::Other,
+            title: Some(format!("tmux -L {server}")),
+            context_pct: None,
+            attached: window.attached,
+            last_output_age_s: Some(age),
+            pid: None,
+            session_id: None,
+            pane: None,
+            activity: Some(window.activity),
+            last_reply: None,
+        });
+    }
+    out
+}
+
 /// One Claude Code session, from its status file and the lines the script printed after it.
 struct Claude {
     session: String,

@@ -163,15 +163,23 @@ pub(crate) fn script_argv(host: &str, script: String, local_name: &str) -> Vec<S
 }
 
 /// Attaches to the session, for a PTY: `tmux -u attach -t =NAME` here, `ssh -t HOST "tmux -u
-/// attach -t '=NAME'"` elsewhere. `-u`: ssh without a login often has no UTF-8 locale, and tmux
-/// then draws `_` and `lqqk`. ssh may prompt here (it has the terminal), so no `BatchMode`.
+/// attach -t '=NAME'"` elsewhere; a session of another tmux server (`HOST#SERVER`) with
+/// `-L SERVER`. `-u`: ssh without a login often has no UTF-8 locale, and tmux then draws `_`
+/// and `lqqk`. ssh may prompt here (it has the terminal), so no `BatchMode`.
 pub fn attach_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     let target = format!("={}", key.name);
-    if key.host == local_name {
-        strings(&["tmux", "-u", "attach", "-t", &target])
+    let (machine, server) = crate::listing::split_host(&key.host);
+    if machine == local_name {
+        let mut argv = strings(&["tmux", "-u"]);
+        if let Some(server) = server {
+            argv.extend(strings(&["-L", server]));
+        }
+        argv.extend(strings(&["attach", "-t", &target]));
+        argv
     } else {
-        let mut argv = ssh_base(&key.host, &["-t"]);
-        argv.push(format!("tmux -u attach -t {}", quote(&target)));
+        let socket = server.map_or(String::new(), |server| format!(" -L {}", quote(server)));
+        let mut argv = ssh_base(machine, &["-t"]);
+        argv.push(format!("tmux -u{socket} attach -t {}", quote(&target)));
         argv
     }
 }
@@ -179,11 +187,16 @@ pub fn attach_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
 /// The attach command as the user would type it, safe to paste into a shell: what tmls's Copy
 /// button copies, byte for byte (quoted only where a shell needs it).
 pub fn attach_text(key: &SessionKey, local_name: &str) -> String {
-    let tmux = ["tmux", "-u", "attach", "-t", &format!("={}", key.name)].map(str::to_string);
-    if key.host == local_name {
+    let (machine, server) = crate::listing::split_host(&key.host);
+    let mut tmux = strings(&["tmux", "-u"]);
+    if let Some(server) = server {
+        tmux.extend(strings(&["-L", server]));
+    }
+    tmux.extend(strings(&["attach", "-t", &format!("={}", key.name)]));
+    if machine == local_name {
         shlex_join(&tmux)
     } else {
-        shlex_join(&["ssh", "-t", &key.host, &shlex_join(&tmux)])
+        shlex_join(&["ssh", "-t", machine, &shlex_join(&tmux)])
     }
 }
 
@@ -194,6 +207,27 @@ pub fn sign_in_argv(host: &str) -> Vec<String> {
     let mut argv = ssh_base(host, &["-t"]);
     argv.push("true".to_string());
     argv
+}
+
+/// Lists the sessions of every other tmux server of the user (tmls `hosts.SOCKETS`): the
+/// host's clock, then for each socket in `${TMUX_TMPDIR:-/tmp}/tmux-UID` but `default` whose
+/// name is `[A-Za-z0-9_.-]+`, a `background NAME:` line and that server's windows as the
+/// listing prints them. Read by `listing::parse_background`.
+pub const SERVER_SOCKETS_SCRIPT: &str = r#"date +%s
+d="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+for s in "$d"/*; do
+  [ -S "$s" ] || continue
+  n=${s##*/}
+  [ "$n" = default ] && continue
+  case $n in *[!A-Za-z0-9_.-]*) continue ;; esac
+  echo "background $n:"
+  tmux -L "$n" -u list-windows -a -F '#{session_name}:#{session_windows}:#{session_attached}:#{window_activity}' 2>/dev/null
+done
+true"#;
+
+/// [`SERVER_SOCKETS_SCRIPT`] on `host`.
+pub fn server_sockets_argv(host: &str, local_name: &str) -> Vec<String> {
+    script_argv(host, SERVER_SOCKETS_SCRIPT.to_string(), local_name)
 }
 
 /// `folder` as a shell word. `~` must stay outside the quotes to mean the host's home.

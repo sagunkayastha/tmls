@@ -2,7 +2,8 @@
 //! (`tests/data/*.txt`). Cases ported from tmls's `tests/test_hosts.py` keep its inputs.
 
 use client_core::listing::{
-    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command, parse_listing,
+    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command, parse_background,
+    parse_listing, split_host, valid_server_name,
 };
 
 fn fixture(name: &str) -> String {
@@ -481,4 +482,39 @@ fn claude_outside_tmux_has_no_pane_and_no_activity() {
     );
     let outside = &snap.sessions[0];
     assert_eq!((outside.pane.as_deref(), outside.activity), (None, None));
+}
+
+#[test]
+fn other_tmux_servers_parse_into_one_snapshot_each() {
+    let out = "Welcome to nas\n1000\nbackground web:\nsite:1:1:995\nsite:2:1:900\nbackground jobs:\ncron:1:0:100\n\
+               background bad name:\nhidden:1:0:999\nbackground empty:\n";
+    let snaps = parse_background("nas", out);
+    let hosts: Vec<&str> = snaps.iter().map(|snap| snap.host.as_str()).collect();
+    assert_eq!(hosts, ["nas#web", "nas#jobs", "nas#empty"]);
+    assert!(snaps.iter().all(|snap| snap.online && snap.error.is_none()));
+    let site = &snaps[0].sessions;
+    assert_eq!(site.len(), 1, "one row per session, the newest window's output");
+    let site = &site[0];
+    assert_eq!(
+        (site.key.host.as_str(), site.key.name.as_str(), site.status, site.attached, site.last_output_age_s),
+        ("nas#web", "site", Status::Running, 1, Some(5))
+    );
+    assert_eq!((site.tool, site.title.as_deref(), site.session_id.as_deref()), (Tool::Other, Some("tmux -L web"), None));
+    assert_eq!(snaps[1].sessions[0].status, Status::Idle);
+    assert!(snaps[2].sessions.is_empty());
+    assert!(parse_background("nas", "").is_empty());
+    assert!(parse_background("nas", "background web:\nsite:1:0:5\n").is_empty(), "no clock, nothing");
+}
+
+#[test]
+fn a_background_host_is_machine_hash_server() {
+    assert_eq!(split_host("nas#web"), ("nas", Some("web")));
+    assert_eq!(split_host("nas"), ("nas", None));
+    assert_eq!(split_host("nas#"), ("nas#", None));
+    for good in ["web", "jobs.2", "a_b-c"] {
+        assert!(valid_server_name(good), "{good}");
+    }
+    for bad in ["", "a b", "x;y", "$(id)", "日本", "a/b"] {
+        assert!(!valid_server_name(bad), "{bad}");
+    }
 }

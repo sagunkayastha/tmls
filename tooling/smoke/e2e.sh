@@ -150,6 +150,8 @@ cleanup() {
   tmux kill-session -t "=$ASK" 2>/dev/null
   tmux kill-session -t "=$ASK2" 2>/dev/null
   tmux kill-session -t "=$WIN" 2>/dev/null
+  # The third run's second tmux server: this script's own, on its own socket directory.
+  TMUX_TMPDIR="$SCRATCH/tmux3" tmux -L tmlsrs-test-bg kill-server 2>/dev/null
   for pid in "${FAKE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
   [ -n "${SWAY_PID:-}" ] && kill "$SWAY_PID" 2>/dev/null
   return 0
@@ -1613,6 +1615,11 @@ cat >"$OUT/bin3/fake-term" <<EOF
 { printf '%s|' "\$@"; echo; } >>"$TERM_LOG"
 EOF
 chmod +x "$OUT/bin3/ssh" "$OUT/bin3/game-mode" "$OUT/bin3/fake-term"
+# A second tmux server of this machine (-L tmlsrs-test-bg) with one session, there before the
+# app starts: its first tick finds it.
+BG='tmlsrs-test-bgjob'
+TMUX_TMPDIR="$THIRD_TMUX" tmux -L tmlsrs-test-bg new-session -d -s "$BG" -x 100 -y 30
+bg_attached() { TMUX_TMPDIR="$THIRD_TMUX" tmux -L tmlsrs-test-bg list-clients -F '#{session_name}' 2>/dev/null | grep -qxF -- "$BG"; }
 ssh_calls() { wc -l <"$SSH_LOG"; }
 PATH="$OUT/bin3:$PATH" TMUX_TMPDIR="$THIRD_TMUX" TERMINAL="$OUT/bin3/fake-term" TMLS_RS_FOREGROUND=1 \
   "$BIN" signhost 2>"$OUT/app3.stderr" &
@@ -1636,15 +1643,37 @@ else
   fail "in game mode the remote host is not listed again within 12 s" "ssh calls $CALLS -> $(ssh_calls): $(tail -3 "$SSH_LOG" | tr '\n' '|')"
 fi
 check "screenshot 44-third-run (SIGNHOST ⚠ sign in)" shot 44-third-run
-# The list: line 0 this machine's header, line 1 the gap, line 2 SIGNHOST · ⚠ sign in (y 65).
+# The list: line 0 this machine's header, line 1 background ▸ · 1, line 2 the gap, line 3
+# SIGNHOST · ⚠ sign in (y 82).
 # The terminal is the stand-in: it logs its arguments and starts nothing.
-if click 100 65 && wait_for 5 grep -qF -- "|-t|signhost|true|" "$TERM_LOG"; then
+if click 100 82 &&wait_for 5 grep -qF -- "|-t|signhost|true|" "$TERM_LOG"; then
   pass "a click on ⚠ sign in opens a terminal running ssh -t signhost true"
 else
   fail "a click on ⚠ sign in opens a terminal running ssh -t signhost true" "terminal log: $(tr '\n' ' ' <"$TERM_LOG")"
 fi
 check "the sign-in terminal is given ssh after -e" grep -qF -- "-e|ssh|" "$TERM_LOG"
 check "screenshot 45-sign-in (the status line says sign in to signhost)" shot 45-sign-in
+# This machine has a second tmux server (-L tmlsrs-test-bg) with one session: `background ▸ · 1`.
+# b lists it (two lines: its name, `tmux -L tmlsrs-test-bg`); j puts the cursor on it, Enter
+# attaches.
+check "screenshot 47-background-closed (background ▸ · 1 under this machine)" shot 47-background-closed
+BG_CLOSED=$(list_picture)
+bg_listed() { [ "$(list_picture)" != "$BG_CLOSED" ]; }
+key_focus_list
+keys -k b
+if [ "$BG_CLOSED" != none ] && wait_for 3 bg_listed; then
+  pass "b shows the other tmux server's session under background"
+else
+  fail "b shows the other tmux server's session under background" "the list's pixels did not change"
+fi
+check "screenshot 48-background-open (▾, $BG, tmux -L tmlsrs-test-bg)" shot 48-background-open
+keys -k j
+key_enter
+if wait_for 8 bg_attached; then
+  pass "Enter on a background session attaches with tmux -L tmlsrs-test-bg"
+else
+  fail "Enter on a background session attaches with tmux -L tmlsrs-test-bg" "stderr: $(tail -2 "$OUT/app3.stderr" | tr '\n' ' ')"
+fi
 # --- third run: more checks above this line ---
 key_quit
 wait_for 10 app_gone || kill "$APP_PID" 2>/dev/null

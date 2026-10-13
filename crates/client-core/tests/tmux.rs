@@ -12,7 +12,7 @@ use client_core::tmux::{
     MAX_NAME_CHARS, NewSession, Split, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
     kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_command_argv, pane_count_argv, rename_argv,
     rename_window_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, send_text_argv, send_text_script,
-    sign_in_argv, split_argv, valid_session_name, valid_window_name,
+    server_sockets_argv, sign_in_argv, split_argv, valid_session_name, valid_window_name,
 };
 
 /// This machine's name in every test; `ph` is a remote host.
@@ -473,4 +473,47 @@ fn sign_in_is_an_ssh_that_may_ask_and_then_ends() {
     let mut want = v(&ATTACH);
     want.push("true".to_string());
     assert_eq!(sign_in_argv("ph"), want);
+}
+
+#[test]
+fn server_names_that_are_not_names_are_skipped() {
+    use std::os::unix::net::UnixListener;
+    let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("sockets-{}-{run}", std::process::id()));
+    let sockets = dir.join("tmux-4242");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let _listening: Vec<UnixListener> = ["default", "web", "a b", "x;y", "jobs.2"]
+        .iter()
+        .map(|name| UnixListener::bind(sockets.join(name)).unwrap())
+        .collect();
+    std::fs::write(sockets.join("plain-file"), "").unwrap();
+    let argv = server_sockets_argv(LOCAL, LOCAL);
+    assert_eq!(argv[..2], v(&["sh", "-c"]));
+    let format = "#{session_name}:#{session_windows}:#{session_attached}:#{window_activity}";
+    let stubs = "id() { echo 4242; }; date() { echo 1000; }; tmux() { echo \"T $*\"; }; ";
+    let ran = Command::new("sh").args(["-c", &format!("{stubs}{}", argv[2])]).env("TMUX_TMPDIR", &dir).output().unwrap();
+    assert!(ran.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("1000\nbackground jobs.2:\nT -L jobs.2 -u list-windows -a -F {format}\nbackground web:\nT -L web -u list-windows -a -F {format}\n")
+    );
+    // No socket directory at all: the clock, nothing else.
+    let none = Command::new("sh").args(["-c", &format!("{stubs}{}", argv[2])]).env("TMUX_TMPDIR", dir.join("nowhere")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&none.stdout), "1000\n");
+    // Another host: the same script over ssh.
+    assert_eq!(remote(&server_sockets_argv("ph", LOCAL), &SSH), argv[2]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_background_server_attaches_with_its_socket_name() {
+    let here = key(&format!("{LOCAL}#web"), "site");
+    assert_eq!(attach_argv(&here, LOCAL), v(&["tmux", "-u", "-L", "web", "attach", "-t", "=site"]));
+    assert_eq!(attach_text(&here, LOCAL), "tmux -u -L web attach -t =site");
+    let there = remote(&attach_argv(&key("ph#web", "it's"), LOCAL), &ATTACH);
+    assert_eq!(there, "tmux -u -L 'web' attach -t '=it'\\''s'");
+    assert_eq!(words(&there), v(&["-u", "-L", "web", "attach", "-t", "=it's"]));
+    assert_eq!(attach_text(&key("ph#web", "site"), LOCAL), "ssh -t ph 'tmux -u -L web attach -t =site'");
+    // The default server is unchanged.
+    assert_eq!(attach_argv(&key(LOCAL, "w"), LOCAL), v(&["tmux", "-u", "attach", "-t", "=w"]));
 }

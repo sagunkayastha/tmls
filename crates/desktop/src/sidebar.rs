@@ -12,6 +12,11 @@
 //! pin, rename or kill: Enter or a click brings their terminal window to the front (the
 //! app's part). Those of other hosts are not shown, as in tmls.
 //!
+//! **Other tmux servers** (`tmux -L NAME`, spec G5): under each host's sessions (and under
+//! this machine's sessions outside tmux) a row `background ▸ · N` when the host has any; `b`
+//! or a click on it shows them all (`toggle_background`). Their sessions attach and do nothing
+//! else: no menu, no pin (R4).
+//!
 //! **Selection is by identity.** The cursor is on a *session*, not on a row number: when a
 //! listing moves rows (a session started above, one renamed or killed elsewhere, a host gone
 //! offline) the cursor stays on its session. When that session itself is gone, the cursor goes
@@ -30,11 +35,12 @@
 //! written is not shown as one: the ★ means "saved" (`take_pin_error` says what went wrong).
 
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
 
 use client_core::config::tmls_slug;
+use client_core::listing::split_host;
 use client_core::{
     Config, HostColor, HostSnapshot, KITTY, Seen, SessionInfo, SessionKey, Status, default_color,
 };
@@ -48,6 +54,13 @@ pub enum Row {
         color: HostColor,
     },
     Session(SessionInfo),
+    /// The sessions of `host`'s other tmux servers: `count` of them, listed under it while
+    /// `open`.
+    Background {
+        host: String,
+        count: usize,
+        open: bool,
+    },
     Gap,
 }
 
@@ -77,6 +90,8 @@ pub enum Action {
     NewSessionOn(String),
     /// The session's menu (rename, kill, …).
     Menu(SessionKey),
+    /// Show or hide the other tmux servers' sessions.
+    ToggleBackground,
 }
 
 /// The dim line under a session's name, and whether it is what Claude waits for (tmls
@@ -109,6 +124,13 @@ pub fn hover_text(info: &SessionInfo) -> Option<String> {
         true => format!("{name} waits for you: {text}"),
         false => format!("{name}: {text}"),
     })
+}
+
+/// Why nothing but attaching is done to a session of another tmux server (R4), for the status
+/// line; `None` for every other session.
+pub fn attach_only(key: &SessionKey) -> Option<String> {
+    let server = split_host(&key.host).1?;
+    Some(format!("{} is on tmux -L {server}: attach only", key.name))
 }
 
 /// A session renamed outside the app (`renamed_outside`): its ★ and its queued messages take
@@ -181,6 +203,10 @@ pub struct Sidebar {
     rows: Vec<Row>,
     /// Of every session in `rows`: its place in its host's listing, and whether it is pinned.
     listed: HashMap<SessionKey, (usize, bool)>,
+    /// Each host's sessions on its other tmux servers, as the last scan found them.
+    background: BTreeMap<String, Vec<SessionInfo>>,
+    /// They are listed under their `background` row (`b`).
+    background_open: bool,
     /// The row of the selected session.
     cursor: Option<usize>,
     /// Why the last `toggle_pin` changed nothing, until `take_pin_error` is asked.
@@ -216,6 +242,8 @@ impl Sidebar {
             pins: cfg.pins.clone(),
             rows,
             listed: HashMap::new(),
+            background: BTreeMap::new(),
+            background_open: false,
             cursor: None,
             pin_error: None,
             wanted: None,
@@ -470,15 +498,16 @@ impl Sidebar {
             Row::Host {
                 host, online: true, ..
             } if host != KITTY => Some(Action::NewSessionOn(host.clone())),
+            Row::Background { .. } => Some(Action::ToggleBackground),
             Row::Host { .. } | Row::Gap => None,
         }
     }
 
     /// A right-click on a row: a session is selected and its menu asked for.
-    /// A session outside tmux has none.
+    /// A session outside tmux has none, nor has one of another tmux server (R4).
     pub fn menu(&mut self, row: usize) -> Option<Action> {
         let key = self.key_at(row)?.clone();
-        if key.host == KITTY {
+        if key.host == KITTY || split_host(&key.host).1.is_some() {
             return None;
         }
         self.set_cursor(row);
@@ -497,8 +526,8 @@ impl Sidebar {
         let Some(key) = self.selected().cloned() else {
             return false;
         };
-        if key.host == KITTY {
-            // Nothing to attach: it is in no ring of sessions to walk.
+        if key.host == KITTY || split_host(&key.host).1.is_some() {
+            // Nothing to attach, or a server tmls-rs only attaches (R4): in no ring to walk.
             return false;
         }
         let slug = tmls_slug(&key, &self.local_name);
@@ -539,6 +568,107 @@ impl Sidebar {
         // The row still has the old name and its ★: the next listing brings the new one, pinned.
         self.pins = pins;
         true
+    }
+
+    /// `host`'s sessions on its other tmux servers (`listing::parse_background`, every server's
+    /// together): what its `background` row counts and, while open, lists. None: no row.
+    /// Returns whether the list changed (output ages alone change nothing). The cursor stays
+    /// on its session; when that is hidden or gone it goes to the nearest one.
+    pub fn apply_background(&mut self, host: &str, sessions: Vec<SessionInfo>) -> bool {
+        let same = |a: &[SessionInfo], b: &[SessionInfo]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| (&x.key, x.status, x.attached) == (&y.key, y.status, y.attached))
+        };
+        let known = self
+            .background
+            .get(host)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if same(known, &sessions) {
+            if let Some(known) = self.background.get_mut(host) {
+                *known = sessions;
+            }
+            return false;
+        }
+        if sessions.is_empty() {
+            self.background.remove(host);
+        } else {
+            self.background.insert(host.to_string(), sessions);
+        }
+        self.place_background(host);
+        true
+    }
+
+    /// `b`: shows or hides every host's other tmux servers' sessions.
+    pub fn toggle_background(&mut self) {
+        self.background_open = !self.background_open;
+        let hosts: Vec<String> = self.background.keys().cloned().collect();
+        for host in hosts {
+            self.place_background(&host);
+        }
+    }
+
+    /// The other tmux servers' sessions are listed.
+    pub fn background_open(&self) -> bool {
+        self.background_open
+    }
+
+    /// Puts `host`'s `background` row (and, while open, its sessions) where it belongs, or
+    /// takes it away.
+    fn place_background(&mut self, host: &str) {
+        let selected = self.selected().cloned();
+        let at = self.cursor;
+        if let Some(old) = self.background_rows(host) {
+            self.rows.drain(old);
+        }
+        let sessions = self.background.get(host).cloned().unwrap_or_default();
+        if !sessions.is_empty()
+            && let Some(place) = self.background_place(host)
+        {
+            let mut rows = vec![Row::Background {
+                host: host.to_string(),
+                count: sessions.len(),
+                open: self.background_open,
+            }];
+            if self.background_open {
+                rows.extend(sessions.into_iter().map(Row::Session));
+            }
+            self.rows.splice(place..place, rows);
+        }
+        self.cursor = match selected {
+            Some(key) => self
+                .position(&key)
+                .or_else(|| at.and_then(|at| self.nearest_session(at))),
+            None => at.and_then(|at| self.nearest_session(at)),
+        };
+    }
+
+    /// `host`'s `background` row and the sessions under it.
+    fn background_rows(&self, host: &str) -> Option<Range<usize>> {
+        let start = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::Background { host: h, .. } if h == host))?;
+        let sessions = self.rows[start + 1..]
+            .iter()
+            .take_while(|row| row.key().is_some())
+            .count();
+        Some(start..start + 1 + sessions)
+    }
+
+    /// Where `host`'s `background` row goes: after its sessions, and for this machine after
+    /// its sessions outside tmux.
+    fn background_place(&self, host: &str) -> Option<usize> {
+        let mut at = self.section(host)?.end;
+        if host == self.local_name
+            && let Some(outside) = self.section(KITTY)
+            && outside.start == at
+        {
+            at = outside.end;
+        }
+        Some(at)
     }
 
     /// What went wrong at the last `toggle_pin` or `renamed`, once; `Ok` when nothing did.

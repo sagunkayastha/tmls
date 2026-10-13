@@ -51,7 +51,8 @@
 //!
 //! Ticker: a thread sends `UserEvent::Tick` at start and every 30 s; `tick` asks
 //! `game-mode status` on a thread → `UserEvent::GameMode` → `Poller::slow_down` for the remote
-//! hosts.
+//! hosts, and `server_sockets_argv` for each online host (remote ones not in game mode) →
+//! `UserEvent::Background` → `Sidebar::apply_background`.
 //!
 //! Frame path: an emulator thread publishes a frame (or its command ends) and calls the waker →
 //! `UserEvent::Wake` → `request_redraw` → `RedrawRequested` takes the front tab's frames,
@@ -72,6 +73,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
+use client_core::listing::{parse_background, split_host};
 use client_core::push::{self, Applied, PushLine};
 use client_core::tmux::Split;
 use client_core::{
@@ -180,6 +182,8 @@ pub enum UserEvent {
     Tick,
     /// What `game-mode status` said.
     GameMode(bool),
+    /// A host's sessions on its other tmux servers.
+    Background(String, Vec<SessionInfo>),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -274,6 +278,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Dropped(key, name, result) => running.dropped(key, name, result),
             UserEvent::Tick => running.tick(),
             UserEvent::GameMode(on) => running.game_mode(on),
+            UserEvent::Background(host, sessions) => running.background(&host, sessions),
             UserEvent::FilesDropped(list) => running.files_dropped(&list),
         }
     }
@@ -953,7 +958,16 @@ impl Running {
             .collect()
     }
 
-    /// Every 30 s: game mode is asked about on a thread (2 s at most; no answer is off).
+    /// Whether `host`'s last listing was an answer (until the first one: yes).
+    fn host_online(&self, host: &str) -> bool {
+        self.sidebar
+            .rows()
+            .iter()
+            .any(|row| matches!(row, sidebar::Row::Host { host: h, online: true, .. } if h == host))
+    }
+
+    /// Every 30 s: game mode is asked about on a thread (2 s at most; no answer is off), and
+    /// every host that answers about its other tmux servers.
     fn tick(&mut self) {
         if self.game_probe {
             let proxy = self.proxy.clone();
@@ -962,6 +976,38 @@ impl Running {
                     .is_ok_and(|out| gamemode::parse(&out));
                 let _ = proxy.send_event(UserEvent::GameMode(on));
             });
+        }
+        // The other tmux servers of every host that answers (R4: listed, attach only); not the
+        // remote ones in game mode (R1).
+        let online: Vec<String> = self
+            .cfg
+            .hosts
+            .iter()
+            .filter(|host| self.host_online(host))
+            .cloned()
+            .collect();
+        for host in online {
+            if self.game && host != self.cfg.local_name {
+                continue;
+            }
+            let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
+            std::thread::spawn(move || {
+                let argv = tmux::server_sockets_argv(&host, &local);
+                let found = tmux::run(&argv, POLL_TIMEOUT)
+                    .map(|out| parse_background(&host, &out))
+                    .unwrap_or_default();
+                let sessions = found.into_iter().flat_map(|snap| snap.sessions).collect();
+                let _ = proxy.send_event(UserEvent::Background(host, sessions));
+            });
+        }
+    }
+
+    /// A host said what its other tmux servers run. An answer that comes after the host
+    /// stopped answering is dropped: `snapshot` took its row away, and nothing asks again
+    /// until the host is back.
+    fn background(&mut self, host: &str, sessions: Vec<SessionInfo>) {
+        if self.host_online(host) && self.sidebar.apply_background(host, sessions) {
+            self.invalidate();
         }
     }
 
@@ -1065,12 +1111,19 @@ impl Running {
             let turn = self.queue.turn_ended(&key, before, after, pane.as_deref());
             self.deliver(key, turn);
         }
+        // A host that does not answer has no other tmux servers to show either.
+        if !online {
+            self.sidebar.apply_background(&host, Vec::new());
+        }
         self.invalidate();
     }
 
     /// `s` in the list, the menu's Send message…, or Alt+Shift+A: the message form for a
     /// Claude session.
     fn ask_form(&mut self, key: SessionKey) {
+        if let Some(only) = sidebar::attach_only(&key) {
+            return self.say(Err(only));
+        }
         let Some(info) = self.sidebar.info(&key) else {
             return self.say(Err(format!("{} is not listed any more", key.name)));
         };
@@ -1242,11 +1295,13 @@ impl Running {
         let tabs = (0..self.tabs.len())
             .map(|index| {
                 let key = self.tabs.key(index);
-                let host = self.cfg.host_colors.get(&key.host).copied();
+                // A session of another tmux server has its machine's colour.
+                let machine = split_host(&key.host).0;
+                let host = self.cfg.host_colors.get(machine).copied();
                 TabView {
                     key: key.clone(),
                     mark: status_of(key),
-                    host: host_rgb(host.unwrap_or_else(|| default_color(&key.host))),
+                    host: host_rgb(host.unwrap_or_else(|| default_color(machine))),
                     ended: self.tabs.state(index) != TabState::Live,
                 }
             })
@@ -1572,6 +1627,9 @@ impl Running {
     /// `y` in the list or the alerts, or the menu's Approve…: the session's pane is read on a
     /// thread; the dialog comes back as `UserEvent::Approval`.
     fn approve(&mut self, key: &SessionKey) {
+        if let Some(only) = sidebar::attach_only(key) {
+            return self.say(Err(only));
+        }
         let listed = self
             .sidebar
             .info(key)
@@ -1854,6 +1912,10 @@ impl Running {
         let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
             return;
         };
+        // Its folder is asked of the host's default tmux server, which does not have it (R4).
+        if let Some(only) = sidebar::attach_only(&key) {
+            return self.say(Err(only));
+        }
         self.say(Ok(format!("opening {} on {} …", link.path, key.host)));
         self.view(move |local, cache, wanted| {
             viewer::open_link_while(&key, &link, local, cache, &viewer::run, wanted)
@@ -2374,13 +2436,20 @@ impl Running {
             ListKey::NextWaiting => self.next_waiting(),
             ListKey::New => self.foot_button(Button::New),
             ListKey::Alerts => self.open_alerts(),
+            ListKey::Background => self.sidebar.toggle_background(),
             ListKey::Help => self.open_help(),
             ListKey::Menu => {
-                // A session outside tmux has no menu: nothing in it applies.
+                // A session outside tmux has no menu: nothing in it applies. Nor has one of
+                // another tmux server (R4), and the status line says so.
                 let selected = self.sidebar.selected().filter(|key| key.host != KITTY);
                 if let Some(key) = selected.cloned() {
-                    let menu = self.row_menu(key);
-                    self.open_modal(Modal::Menu(menu), None);
+                    match sidebar::attach_only(&key) {
+                        Some(only) => self.say(Err(only)),
+                        None => {
+                            let menu = self.row_menu(key);
+                            self.open_modal(Modal::Menu(menu), None);
+                        }
+                    }
                 }
             }
             ListKey::Approve => {
@@ -2408,6 +2477,7 @@ impl Running {
                 let menu = self.row_menu(key);
                 self.open_modal(Modal::Menu(menu), Some(at));
             }
+            sidebar::Action::ToggleBackground => self.sidebar.toggle_background(),
         }
     }
 
@@ -2436,7 +2506,14 @@ impl Running {
         let action = match button {
             MouseButton::Left if header && !self.layout.on_add(col) => None,
             MouseButton::Left => self.sidebar.click(row),
-            MouseButton::Right => self.sidebar.menu(row),
+            MouseButton::Right => {
+                // No menu for a session of another tmux server (R4): said, not silent.
+                let only = self.sidebar.key_at(row).and_then(sidebar::attach_only);
+                if let Some(only) = only {
+                    self.say(Err(only));
+                }
+                self.sidebar.menu(row)
+            }
             MouseButton::Middle => {
                 if let Some(key) = self.sidebar.key_at(row).cloned() {
                     self.sidebar.select_key(&key);
@@ -2470,10 +2547,11 @@ impl Running {
             (Button::Open, Some(key)) => self.open_in_terminal(&key),
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
-                // From a session outside tmux: on this machine.
+                // From a session outside tmux: on this machine. From one of another tmux
+                // server: on its machine's default server.
                 let host = selected.map(|key| match key.host == KITTY {
                     true => self.cfg.local_name.clone(),
-                    false => key.host,
+                    false => split_host(&key.host).0.to_string(),
                 });
                 if let Some(host) = host.or_else(|| self.cfg.hosts.first().cloned()) {
                     self.act(sidebar::Action::NewSessionOn(host));
@@ -2548,6 +2626,9 @@ impl Running {
     /// Pins or unpins the selected session; a `pins` file that cannot be written shows in the
     /// status line.
     fn toggle_pin(&mut self) {
+        if let Some(only) = self.sidebar.selected().and_then(sidebar::attach_only) {
+            return self.say(Err(only));
+        }
         self.sidebar.toggle_pin();
         let saved = self.sidebar.take_pin_error();
         self.report(saved);
@@ -2771,7 +2852,9 @@ impl Running {
         let Some(key) = self.tabs.active().map(|index| self.tabs.key(index).clone()) else {
             return false;
         };
-        if key.host == self.cfg.local_name || key.host == KITTY {
+        // A session of another tmux server reads files where its machine has them.
+        let machine = split_host(&key.host).0.to_string();
+        if machine == self.cfg.local_name || key.host == KITTY {
             return false;
         }
         let Some(path) = imagedrop::dropped_image(text) else {
@@ -2781,13 +2864,13 @@ impl Running {
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
-        self.say(Ok(format!("copying {name} to {} …", key.host)));
+        self.say(Ok(format!("copying {name} to {machine} …")));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let run = |argv: &[String], input: &[u8]| {
                 tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)
             };
-            let result = imagedrop::store(&key.host, &path, std::time::SystemTime::now(), &run);
+            let result = imagedrop::store(&machine, &path, std::time::SystemTime::now(), &run);
             let _ = proxy.send_event(UserEvent::Dropped(key, name, result));
         });
         true

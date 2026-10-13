@@ -638,7 +638,7 @@ fn chords(group: &str) -> Vec<&'static str> {
 #[test]
 fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     let list = chords("List");
-    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'y', 's', '?'] {
+    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'b', 'y', 's', '?'] {
         let mods = if c == '?' { SHIFT } else { NONE };
         assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
         assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
@@ -750,4 +750,11 @@ fn ctrl_alt_arrows_are_the_tab_keys_too() {
             Route::Terminal
         );
     }
+}
+
+#[test]
+fn b_in_the_list_shows_or_hides_the_other_tmux_servers() {
+    assert_eq!(list_key(&ch('b', NONE)), Some(ListKey::Background));
+    assert_eq!(list_key(&repeat(&ch('b', NONE))), None);
+    assert_eq!(list_key(&ch('B', SHIFT)), None);
 }

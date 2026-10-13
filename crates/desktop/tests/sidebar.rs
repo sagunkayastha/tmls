@@ -10,7 +10,7 @@ use client_core::{
     default_color,
 };
 use desktop::queue::Queue;
-use desktop::sidebar::{Action, Row, Sidebar, hover_text, renamed_outside, summary};
+use desktop::sidebar::{Action, Row, Sidebar, attach_only, hover_text, renamed_outside, summary};
 
 const LOCAL: &str = "laptop";
 
@@ -113,6 +113,12 @@ fn shape(sidebar: &Sidebar) -> Vec<String> {
                 ..
             } => format!("[{host} offline]"),
             Row::Session(info) => info.key.name.clone(),
+            Row::Background { host, count, open } => {
+                format!(
+                    "[{host} background {count}{}]",
+                    if *open { " open" } else { "" }
+                )
+            }
             Row::Gap => "-".to_string(),
         })
         .collect()
@@ -767,6 +773,12 @@ fn kinds(s: &Sidebar) -> Vec<String> {
         .map(|row| match row {
             Row::Host { host, .. } => format!("[{host}]"),
             Row::Session(info) => info.key.name.clone(),
+            Row::Background { host, count, open } => {
+                format!(
+                    "[{host} background {count}{}]",
+                    if *open { " open" } else { "" }
+                )
+            }
             Row::Gap => "-".to_string(),
         })
         .collect()
@@ -1056,4 +1068,115 @@ fn hover_text_is_the_whole_dim_line_and_says_what_a_session_waits_for() {
     let mut same = claude(LOCAL, "work", "work");
     same.last_reply = Some("  ".to_string());
     assert_eq!(hover_text(&same), None);
+}
+
+fn bg(host: &str, server: &str, name: &str) -> SessionInfo {
+    session(&format!("{host}#{server}"), name, Status::Idle)
+}
+
+#[test]
+fn other_tmux_servers_are_a_collapsed_row_under_their_host() {
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    s.apply(idle(LOCAL, &["work"]));
+    s.apply(idle("nas", &["media"]));
+    let two = || vec![bg("nas", "web", "site"), bg("nas", "jobs", "cron")];
+    assert!(s.apply_background("nas", two()));
+    assert_eq!(
+        shape(&s),
+        [
+            "[laptop]",
+            "work",
+            "-",
+            "[nas]",
+            "media",
+            "[nas background 2]"
+        ]
+    );
+    assert!(
+        !s.apply_background("nas", two()),
+        "the same again changes nothing"
+    );
+    assert!(!s.background_open());
+    s.toggle_background();
+    assert_eq!(
+        shape(&s),
+        [
+            "[laptop]",
+            "work",
+            "-",
+            "[nas]",
+            "media",
+            "[nas background 2 open]",
+            "site",
+            "cron"
+        ]
+    );
+    // A click on the row toggles; its sessions attach, and have no menu and no pin (R4).
+    let row = s
+        .rows()
+        .iter()
+        .position(|row| matches!(row, Row::Background { .. }))
+        .unwrap();
+    assert_eq!(s.click(row), Some(Action::ToggleBackground));
+    assert_eq!(
+        s.click(row + 1),
+        Some(Action::Attach(key("nas#web", "site")))
+    );
+    assert_eq!(s.menu(row + 1), None);
+    assert!(!s.toggle_pin());
+    assert_eq!(
+        attach_only(&key("nas#web", "site")).as_deref(),
+        Some("site is on tmux -L web: attach only")
+    );
+    assert_eq!(attach_only(&key("nas", "media")), None);
+    // The host's own listing leaves the row after its sessions.
+    s.apply(idle("nas", &["media", "backup"]));
+    assert_eq!(
+        shape(&s),
+        [
+            "[laptop]",
+            "work",
+            "-",
+            "[nas]",
+            "media",
+            "backup",
+            "[nas background 2 open]",
+            "site",
+            "cron"
+        ]
+    );
+    assert_eq!(selected(&s), at("nas#web", "site"));
+    // Hidden with the cursor on one of them: the cursor goes to the nearest session.
+    s.toggle_background();
+    assert_eq!(selected(&s), at("nas", "backup"));
+    // None left: no row.
+    assert!(s.apply_background("nas", Vec::new()));
+    assert_eq!(
+        shape(&s),
+        ["[laptop]", "work", "-", "[nas]", "media", "backup"]
+    );
+}
+
+#[test]
+fn this_machines_background_row_comes_after_its_sessions_outside_tmux() {
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    s.apply(idle(LOCAL, &["work"]));
+    assert!(s.apply_background(LOCAL, vec![bg(LOCAL, "web", "site")]));
+    let mut with_outside = idle(LOCAL, &["work"]);
+    with_outside
+        .sessions
+        .push(session(KITTY, "notes", Status::Idle));
+    s.apply(with_outside);
+    assert_eq!(
+        kinds(&s),
+        [
+            "[laptop]",
+            "work",
+            "[kitty]",
+            "notes",
+            "[laptop background 1]",
+            "-",
+            "[nas]"
+        ]
+    );
 }

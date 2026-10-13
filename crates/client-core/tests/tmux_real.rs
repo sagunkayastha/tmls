@@ -16,9 +16,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use client_core::files::{Kind, locate_argv, parse_located};
-use client_core::listing::SessionKey;
+use client_core::listing::{SessionKey, parse_background};
 use client_core::tmux::{
-    NewSession, Start, attach_argv, kill_argv, new_session_argv, rename_argv, run, valid_session_name,
+    NewSession, Start, attach_argv, kill_argv, new_session_argv, rename_argv, run, server_sockets_argv,
+    valid_session_name,
 };
 use s2_core::pty::Pty;
 
@@ -301,4 +302,37 @@ fn a_relative_path_is_found_in_the_panes_directory() {
     // A session that does not exist names no directory: tmux's error, not a file at the root.
     let nowhere = go(&locate_argv(&key("tmlsrs-test-not there"), "etc/passwd", LOCAL));
     assert!(nowhere.is_err());
+}
+
+/// A second tmux server a test started in the private directory (`tmux -L NAME`); killed when
+/// the test ends, however it ends, and nothing else is.
+struct Server(&'static str);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if private_in_effect() && self.0.starts_with(PREFIX) {
+            let _ = tmux(&["-L", self.0, "kill-server"]); // already gone is fine
+        }
+    }
+}
+
+#[test]
+fn another_tmux_server_is_found_by_its_socket() {
+    let (_alone, _dir) = private_server();
+    let server = Server("tmlsrs-test-bg");
+    let name = "tmlsrs-test-job";
+    tmux(&["-L", server.0, "new-session", "-d", "-s", name]).expect("starting the second server");
+
+    let out = go(&server_sockets_argv(LOCAL, LOCAL)).expect("listing the other servers");
+    let found = parse_background(LOCAL, &out);
+    let snap = found.iter().find(|snap| snap.host == "here#tmlsrs-test-bg").expect("the second server's snapshot");
+    let names: Vec<&str> = snap.sessions.iter().map(|s| s.key.name.as_str()).collect();
+    assert_eq!(names, [name]);
+    assert_eq!(snap.sessions[0].title.as_deref(), Some("tmux -L tmlsrs-test-bg"));
+    // The default server is not among them, running or not.
+    assert!(found.iter().all(|snap| snap.host != "here#default"));
+    // What attaches the session names the socket it was found by.
+    let attach = attach_argv(&snap.sessions[0].key, LOCAL);
+    assert_eq!(attach, ["tmux", "-u", "-L", "tmlsrs-test-bg", "attach", "-t", "=tmlsrs-test-job"]);
+    tmux(&["-L", server.0, "has-session", "-t", &format!("={name}")]).expect("the session is on that server");
 }

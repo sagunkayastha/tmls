@@ -1129,6 +1129,17 @@ pub fn rule_spans(label: &str, cols: usize, theme: &Theme) -> Vec<Span<'static>>
     ]
 }
 
+/// The row of a host's other tmux servers: `background ▸ · N`, `▾` while they are listed.
+pub fn background_spans(
+    count: usize,
+    open: bool,
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let text = format!("background {} · {count}", if open { '▾' } else { '▸' });
+    vec![Span::new(0, 1, cols.saturating_sub(2), text).colour(theme.dim_fg)]
+}
+
 /// `text` cut to `cols` columns at its start: a path that does not fit keeps its end, the
 /// file's name, after "…".
 pub fn keep_end(text: &str, cols: usize) -> String {
@@ -1407,6 +1418,11 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
         line += row.lines();
         match row {
             Row::Gap => {}
+            Row::Background { count, open, .. } => {
+                for span in background_spans(*count, *open, l.list_cols, theme) {
+                    p.span((r.x, r.y), &span);
+                }
+            }
             Row::Host {
                 host,
                 online,
