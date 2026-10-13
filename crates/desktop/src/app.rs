@@ -1817,6 +1817,11 @@ impl Running {
             return;
         }
         let ok = result.is_ok();
+        // Whether a killed pane took its session along: what tmux said after the kill.
+        let session_ended = matches!(
+            (&request, &result),
+            (Request::KillPane(key, _), Ok(said)) if *said == forms::killed_pane_note(key, true)
+        );
         self.say(result);
         if !ok {
             return;
@@ -1872,7 +1877,7 @@ impl Running {
                     self.sidebar.select_key(&key);
                 }
             }
-            Request::KillPane(key, true) => {
+            Request::KillPane(key, _) if session_ended => {
                 // The session ended with its last pane, as after a kill.
                 if let Some(index) = self.tabs.index_of(&key) {
                     self.close_tab(index);
@@ -1881,7 +1886,7 @@ impl Running {
             Request::NewWindow(_)
             | Request::RenameWindow(..)
             | Request::Split(..)
-            | Request::KillPane(_, false) => {}
+            | Request::KillPane(..) => {}
             Request::Answer { .. } => {}
         }
         if list_keeps_keys {

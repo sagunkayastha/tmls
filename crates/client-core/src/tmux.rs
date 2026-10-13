@@ -358,22 +358,36 @@ pub fn split_argv(key: &SessionKey, split: Split, local_name: &str) -> Vec<Strin
     session_tmux(key, &["split-window", way, "-t", &target, "-c", "#{pane_current_path}"], local_name)
 }
 
-/// Ends the session's active pane; the last one ends the session (tmls `kill_pane`).
-pub fn kill_pane_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
-    let target = format!("={}:", key.name);
-    session_tmux(key, &["kill-pane", "-t", &target], local_name)
+/// What [`kill_pane_argv`]'s command prints when the session ended with the pane.
+const SESSION_ENDED: &str = "ended";
+
+/// Ends the pane `pane` (its id, `%7`, as [`pane_info_argv`]'s command gave it) and prints
+/// whether its session is still there, for [`parse_kill_pane`] (tmls `kill_pane`). By its id,
+/// never `=NAME:`: the session's active pane may be another one by now. A pane that is gone
+/// already is tmux's error, and nothing else is killed.
+pub fn kill_pane_argv(key: &SessionKey, pane: &str, local_name: &str) -> Vec<String> {
+    let script = format!(
+        "tmux kill-pane -t {} || exit 1; if tmux has-session -t {} 2>/dev/null; then echo alive; else echo {SESSION_ENDED}; fi",
+        quote(pane),
+        quote(&format!("={}", key.name)),
+    );
+    script_argv(&key.host, script, local_name)
 }
 
-/// Prints one line per pane of the whole session: one line means the active pane is its last.
-pub fn pane_count_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
-    let target = format!("={}:", key.name);
-    session_tmux(key, &["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"], local_name)
+/// Whether the session ended with the pane, from what [`kill_pane_argv`]'s command printed.
+pub fn parse_kill_pane(out: &str) -> bool {
+    out.lines().any(|line| line.trim() == SESSION_ENDED)
 }
 
-/// Prints what the session's active pane runs (tmls `pane_info`).
-pub fn pane_command_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
+/// What [`pane_info_argv`] asks tmux for: the pane's id, the panes of its window, the windows
+/// of its session, and what it runs (last: a command's name may have spaces).
+pub const PANE_INFO_FORMAT: &str = "#{pane_id} #{window_panes} #{session_windows} #{pane_current_command}";
+
+/// Prints [`PANE_INFO_FORMAT`] of the session's active pane on one line (tmls `pane_info`):
+/// asked once, so the four are of one moment and of one pane.
+pub fn pane_info_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     let target = format!("={}:", key.name);
-    session_tmux(key, &["display-message", "-p", "-t", &target, "#{pane_current_command}"], local_name)
+    session_tmux(key, &["display-message", "-p", "-t", &target, PANE_INFO_FORMAT], local_name)
 }
 
 /// Whether tmux can name a window `name`; the error is the reason, for the user. A window may

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use client_core::listing::SessionKey;
 use client_core::tmux::{
-    MAX_NAME_CHARS, NewSession, Split, Start, attach_argv, attach_text, buffer_name, capture_argv, derived_name_argv,
-    kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_command_argv, pane_count_argv, rename_argv,
+    MAX_NAME_CHARS, NewSession, PANE_INFO_FORMAT, Split, Start, attach_argv, attach_text, buffer_name, capture_argv,
+    derived_name_argv, kill_argv, kill_pane_argv, new_session_argv, new_window_argv, pane_info_argv, parse_kill_pane, rename_argv,
     rename_window_argv, run, run_with_stdin, running_commands_argv, send_keys_argv, send_text_argv, send_text_script,
     server_sockets_argv, sign_in_argv, split_argv, valid_session_name, valid_window_name,
 };
@@ -422,12 +422,27 @@ fn window_and_pane_commands_target_the_sessions_current_window() {
         split_argv(&k, Split::TopBottom, LOCAL),
         v(&["tmux", "split-window", "-v", "-t", "=w:", "-c", "#{pane_current_path}"])
     );
-    assert_eq!(kill_pane_argv(&k, LOCAL), v(&["tmux", "kill-pane", "-t", "=w:"]));
-    assert_eq!(pane_count_argv(&k, LOCAL), v(&["tmux", "list-panes", "-s", "-t", "=w:", "-F", "#{pane_id}"]));
-    assert_eq!(
-        pane_command_argv(&k, LOCAL),
-        v(&["tmux", "display-message", "-p", "-t", "=w:", "#{pane_current_command}"])
-    );
+    assert_eq!(pane_info_argv(&k, LOCAL), v(&["tmux", "display-message", "-p", "-t", "=w:", PANE_INFO_FORMAT]));
+    assert_eq!(PANE_INFO_FORMAT, "#{pane_id} #{window_panes} #{session_windows} #{pane_current_command}");
+}
+
+#[test]
+fn kill_pane_ends_the_pane_it_was_asked_about_and_says_whether_the_session_is_left() {
+    // by the pane's id: `=w:` is whichever pane is active when the command runs
+    let script = "tmux kill-pane -t '%7' || exit 1; if tmux has-session -t '=w' 2>/dev/null; then echo alive; else echo ended; fi";
+    assert_eq!(kill_pane_argv(&key(LOCAL, "w"), "%7", LOCAL), v(&["sh", "-c", script]));
+    assert_eq!(remote(&kill_pane_argv(&key("ph", "w"), "%7", LOCAL), &SSH), script);
+    for name in HOSTILE {
+        // the stub's has-session says no: the session is gone
+        assert_eq!(
+            words(&remote(&kill_pane_argv(&key("ph", name), "%7", LOCAL), &SSH)),
+            v(&["kill-pane", "-t", "%7", "has-session", "-t", &format!("={name}"), "ended"]),
+            "{name}"
+        );
+    }
+    assert!(parse_kill_pane("ended\n"));
+    assert!(!parse_kill_pane("alive\n"));
+    assert!(!parse_kill_pane(""), "no answer is not an ended session");
 }
 
 #[test]
@@ -435,13 +450,11 @@ fn window_commands_quote_every_word_for_a_remote_host() {
     for name in HOSTILE {
         let k = key("ph", name);
         let target = format!("={name}:");
-        let cases: [(Vec<String>, Vec<&str>); 6] = [
+        let cases: [(Vec<String>, Vec<&str>); 4] = [
             (new_window_argv(&k, LOCAL), vec!["new-window", "-t", &target, "-c", "#{pane_current_path}"]),
             (split_argv(&k, Split::SideBySide, LOCAL), vec!["split-window", "-h", "-t", &target, "-c", "#{pane_current_path}"]),
             (split_argv(&k, Split::TopBottom, LOCAL), vec!["split-window", "-v", "-t", &target, "-c", "#{pane_current_path}"]),
-            (kill_pane_argv(&k, LOCAL), vec!["kill-pane", "-t", &target]),
-            (pane_count_argv(&k, LOCAL), vec!["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"]),
-            (pane_command_argv(&k, LOCAL), vec!["display-message", "-p", "-t", &target, "#{pane_current_command}"]),
+            (pane_info_argv(&k, LOCAL), vec!["display-message", "-p", "-t", &target, PANE_INFO_FORMAT]),
         ];
         for (argv, want) in cases {
             assert_eq!(words(&remote(&argv, &SSH)), v(&want), "{name}");

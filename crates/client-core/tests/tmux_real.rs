@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use client_core::files::{Kind, locate_argv, parse_located};
 use client_core::listing::{SessionKey, parse_background};
 use client_core::tmux::{
-    NewSession, Start, attach_argv, kill_argv, new_session_argv, rename_argv, run, server_sockets_argv,
-    valid_session_name,
+    NewSession, Start, attach_argv, kill_argv, kill_pane_argv, new_session_argv, pane_info_argv, parse_kill_pane,
+    rename_argv, run, server_sockets_argv, valid_session_name,
 };
 use s2_core::pty::Pty;
 
@@ -302,6 +302,43 @@ fn a_relative_path_is_found_in_the_panes_directory() {
     // A session that does not exist names no directory: tmux's error, not a file at the root.
     let nowhere = go(&locate_argv(&key("tmlsrs-test-not there"), "etc/passwd", LOCAL));
     assert!(nowhere.is_err());
+}
+
+#[test]
+fn kill_pane_ends_the_pane_the_host_described_and_no_other() {
+    let (_alone, dir) = private_server();
+    let mut created = Created(Vec::new());
+    let name = created.name("tmlsrs-test-panes it's");
+    go(&new_session_argv(&shell_in(dir, &name), LOCAL)).expect("creating the session");
+    assert_on_private_socket(&name, dir);
+    let k = key(&name);
+    let panes = || -> Vec<String> {
+        let out = tmux(&["list-panes", "-s", "-t", &format!("={name}"), "-F", "#{pane_id}"]).expect("list-panes");
+        out.lines().map(str::to_string).collect()
+    };
+
+    // what the confirm is told: the pane, alone in its window, in a session of one window
+    let first = show(&name, "#{pane_id}");
+    let info = go(&pane_info_argv(&k, LOCAL)).expect("asking about the pane");
+    assert!(info.starts_with(&format!("{first} 1 1 ")), "{info:?}");
+    // before the answer to the confirm something splits the window: another pane is active
+    tmux(&["split-window", "-t", &format!("={name}:")]).expect("splitting");
+    let second = show(&name, "#{pane_id}");
+    assert_ne!(first, second);
+    let info = go(&pane_info_argv(&k, LOCAL)).expect("asking about the pane");
+    assert!(info.starts_with(&format!("{second} 2 1 ")), "{info:?}");
+
+    let out = go(&kill_pane_argv(&k, &first, LOCAL)).expect("killing the pane that was described");
+    assert!(!parse_kill_pane(&out), "the session has a pane left: {out:?}");
+    assert_eq!(panes(), only(&second));
+    // gone already: tmux's error, and nothing else is killed
+    let gone = go(&kill_pane_argv(&k, &first, LOCAL)).expect_err("the pane is gone");
+    assert!(gone.to_string().contains("can't find pane"), "{gone:#}");
+    assert_eq!(panes(), only(&second));
+
+    let out = go(&kill_pane_argv(&k, &second, LOCAL)).expect("killing the last pane");
+    assert!(parse_kill_pane(&out), "the session ended with it: {out:?}");
+    assert_eq!(sessions(), Vec::<String>::new());
 }
 
 /// A second tmux server a test started in the private directory (`tmux -L NAME`); killed when

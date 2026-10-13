@@ -594,6 +594,7 @@ fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
     form.set_pane_info(
         &key("ph", "other"),
         Ok(PaneInfo {
+            pane: "%1".to_string(),
             command: None,
             last: true,
         }),
@@ -606,6 +607,7 @@ fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
     form.set_pane_info(
         &k,
         Ok(PaneInfo {
+            pane: "%4".to_string(),
             command: Some("vim".to_string()),
             last: false,
         }),
@@ -617,11 +619,13 @@ fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
     );
     assert_eq!(
         form.key(&named(Named::Enter)),
-        FormResult::Submit(Request::KillPane(k.clone(), false))
+        FormResult::Submit(Request::KillPane(k.clone(), "%4".to_string())),
+        "the pane the confirm described, by its id"
     );
     form.set_pane_info(
         &k,
         Ok(PaneInfo {
+            pane: "%9".to_string(),
             command: None,
             last: true,
         }),
@@ -629,7 +633,7 @@ fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
     assert!(text(&form.panel()).contains(forms::LAST_PANE));
     assert_eq!(
         form.key(&named(Named::Enter)),
-        FormResult::Submit(Request::KillPane(k.clone(), true))
+        FormResult::Submit(Request::KillPane(k.clone(), "%9".to_string()))
     );
     form.set_pane_info(
         &k,
@@ -640,28 +644,49 @@ fn the_kill_pane_confirm_waits_for_the_host_and_warns_on_the_last_pane() {
 }
 
 #[test]
-fn pane_info_reads_the_command_and_the_count() {
+fn pane_info_asks_once_for_the_pane_its_command_and_whether_it_is_the_last() {
     let k = key("ph", "w");
-    let answer = |command: &'static str, panes: &'static str| {
+    // One command and no second one: an answer in two parts could be about two panes.
+    let asked = RefCell::new(Vec::new());
+    let answer = |line: &'static str| {
+        let asked = &asked;
         move |argv: &[String]| -> anyhow::Result<String> {
-            let asks_command = argv == tmux::pane_command_argv(&key("ph", "w"), LOCAL).as_slice();
-            Ok(if asks_command { command } else { panes }.to_string())
+            asked.borrow_mut().push(argv.to_vec());
+            Ok(line.to_string())
         }
     };
-    assert_eq!(
-        forms::pane_info(&k, LOCAL, &answer("vim\n", "%1\n%2\n")),
+    let info = |pane: &str, command: Option<&str>, last| {
         Ok(PaneInfo {
-            command: Some("vim".to_string()),
-            last: false
+            pane: pane.to_string(),
+            command: command.map(str::to_string),
+            last,
         })
+    };
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &answer("%7 2 1 vim\n")),
+        info("%7", Some("vim"), false)
+    );
+    assert_eq!(*asked.borrow(), [tmux::pane_info_argv(&k, LOCAL)]);
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &answer("%7 1 1 bash\n")),
+        info("%7", None, true)
     );
     assert_eq!(
-        forms::pane_info(&k, LOCAL, &answer("bash\n", "%1\n")),
-        Ok(PaneInfo {
-            command: None,
-            last: true
-        })
+        forms::pane_info(&k, LOCAL, &answer("%12 1 2 my tool\n")),
+        info("%12", Some("my tool"), false),
+        "the last pane of a window is not the last of a session with two"
     );
+    assert_eq!(
+        forms::pane_info(&k, LOCAL, &answer("%3 1 1 \n")),
+        info("%3", None, true)
+    );
+    for odd in ["", "motd\n", "=w: 1 1 vim\n", "%7 x 1 vim\n"] {
+        assert_eq!(
+            forms::pane_info(&k, LOCAL, &answer(odd)),
+            Err("couldn't ask ph about its pane: no pane in its answer".to_string()),
+            "{odd:?}: without a pane id nothing can be killed"
+        );
+    }
     let down = |_: &[String]| -> anyhow::Result<String> {
         anyhow::bail!("ssh: connect to host ph: timed out")
     };
@@ -696,14 +721,9 @@ fn window_and_pane_requests_run_their_commands_and_say_what_happened() {
             "split tmlsrs-test-a b'c top / bottom on ph",
         ),
         (
-            Request::KillPane(k.clone(), false),
-            kill_pane_argv(&k, LOCAL),
+            Request::KillPane(k.clone(), "%7".to_string()),
+            kill_pane_argv(&k, "%7", LOCAL),
             "killed the active pane of tmlsrs-test-a b'c on ph",
-        ),
-        (
-            Request::KillPane(k.clone(), true),
-            kill_pane_argv(&k, LOCAL),
-            "killed the last pane of tmlsrs-test-a b'c on ph: the session ended",
         ),
     ];
     for (request, argv, said) in cases {
@@ -715,6 +735,32 @@ fn window_and_pane_requests_run_their_commands_and_say_what_happened() {
         let error = forms::perform(&request, LOCAL, &failing).unwrap_err();
         assert!(error.ends_with(": can't find window: 3"), "{error:?}");
     }
+}
+
+#[test]
+fn a_killed_pane_says_the_session_ended_only_when_tmux_says_so_after_the_kill() {
+    let k = key("ph", "w");
+    let request = Request::KillPane(k.clone(), "%7".to_string());
+    let says =
+        |out: &'static str| move |_: &[String]| -> anyhow::Result<String> { Ok(out.to_string()) };
+    assert_eq!(
+        forms::perform(&request, LOCAL, &says("alive\n")),
+        Ok(forms::killed_pane_note(&k, false))
+    );
+    assert_eq!(
+        forms::perform(&request, LOCAL, &says("ended\n")),
+        Ok(forms::killed_pane_note(&k, true))
+    );
+    assert_eq!(
+        forms::killed_pane_note(&k, true),
+        "killed the last pane of w on ph: the session ended"
+    );
+    // The pane went away before the answer to the confirm: tmux's words, nothing else killed.
+    let gone = |_: &[String]| -> anyhow::Result<String> { anyhow::bail!("can't find pane: %7") };
+    assert_eq!(
+        forms::perform(&request, LOCAL, &gone),
+        Err("couldn't kill the pane of w on ph: can't find pane: %7".to_string())
+    );
 }
 
 #[test]

@@ -82,8 +82,8 @@ pub enum Request {
     /// The session's current window gets this name.
     RenameWindow(SessionKey, String),
     Split(SessionKey, Split),
-    /// The session's active pane ends; `true`: it is the last one, and the session ends with it.
-    KillPane(SessionKey, bool),
+    /// The pane with this id (`%7`) ends: the one the confirm described, whichever is active now.
+    KillPane(SessionKey, String),
     /// Yes (`1`) or No (Escape) to the dialog `shown`, if the pane still shows it.
     Answer {
         key: SessionKey,
@@ -249,6 +249,8 @@ pub enum Look {
 /// and whether it is the session's last pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneInfo {
+    /// The pane's id (`%7`): the pane the confirm is about, and the one Kill pane ends.
+    pub pane: String,
     pub command: Option<String>,
     pub last: bool,
 }
@@ -895,7 +897,7 @@ impl Form {
                 key,
                 pane: Some(Ok(info)),
                 ..
-            } => FormResult::Submit(Request::KillPane(key.clone(), info.last)),
+            } => FormResult::Submit(Request::KillPane(key.clone(), info.pane.clone())),
             // Not before the host has said what would end.
             Form::ConfirmKillPane { .. } => FormResult::Pending,
         }
@@ -1468,7 +1470,7 @@ pub fn request_argv(request: &Request, local_name: &str) -> Vec<String> {
         Request::NewWindow(key) => tmux::new_window_argv(key, local_name),
         Request::RenameWindow(key, name) => tmux::rename_window_argv(key, name, local_name),
         Request::Split(key, split) => tmux::split_argv(key, *split, local_name),
-        Request::KillPane(key, _) => tmux::kill_pane_argv(key, local_name),
+        Request::KillPane(key, pane) => tmux::kill_pane_argv(key, pane, local_name),
         Request::Answer { key, pane, yes, .. } => tmux::send_keys_argv(
             key,
             pane.as_deref(),
@@ -1524,20 +1526,34 @@ pub fn perform(request: &Request, local_name: &str, run: Runner) -> Result<Strin
                 format!("couldn't split {} on {}", key.name, key.host),
             )
         }
-        Request::KillPane(key, last) => (
-            match last {
-                true => format!(
-                    "killed the last pane of {} on {}: the session ended",
-                    key.name, key.host
-                ),
-                false => format!("killed the active pane of {} on {}", key.name, key.host),
-            },
-            format!("couldn't kill the pane of {} on {}", key.name, key.host),
-        ),
+        // What it says depends on what tmux says after the kill, not on what the confirm knew.
+        Request::KillPane(key, _) => {
+            return match run(&request_argv(request, local_name)) {
+                Ok(out) => Ok(killed_pane_note(key, tmux::parse_kill_pane(&out))),
+                Err(e) => Err(format!(
+                    "couldn't kill the pane of {} on {}: {}",
+                    key.name,
+                    key.host,
+                    first_line(&e)
+                )),
+            };
+        }
     };
     match run(&request_argv(request, local_name)) {
         Ok(_) => Ok(done),
         Err(e) => Err(format!("{failed}: {}", first_line(&e))),
+    }
+}
+
+/// What `perform` says of a killed pane; `ended`: the session is gone with it, as tmux said
+/// after the kill.
+pub fn killed_pane_note(key: &SessionKey, ended: bool) -> String {
+    match ended {
+        true => format!(
+            "killed the last pane of {} on {}: the session ended",
+            key.name, key.host
+        ),
+        false => format!("killed the active pane of {} on {}", key.name, key.host),
     }
 }
 
@@ -1564,24 +1580,24 @@ pub fn running_commands(key: &SessionKey, local_name: &str, run: Runner) -> Vec<
     commands
 }
 
-/// What runs in the session's active pane and whether it is the session's last (tmls
-/// `pane_info`), for the kill-pane confirm; why not, when the host did not say.
+/// The session's active pane, what runs in it and whether it is the session's last (tmls
+/// `pane_info`), for the kill-pane confirm; why not, when the host did not say. One command:
+/// the three are of the same pane at the same moment.
 pub fn pane_info(key: &SessionKey, local_name: &str, run: Runner) -> Result<PaneInfo, String> {
-    let ask = |argv: Vec<String>| {
-        run(&argv).map_err(|e| {
-            format!(
-                "couldn't ask {} about its pane: {}",
-                key.host,
-                first_line(&e)
-            )
-        })
+    let failed = |why: &str| format!("couldn't ask {} about its pane: {why}", key.host);
+    let out = run(&tmux::pane_info_argv(key, local_name)).map_err(|e| failed(&first_line(&e)))?;
+    // `%7 1 1 vim`: the id, the window's panes, the session's windows, the command.
+    let mut fields = out.trim().splitn(4, ' ');
+    let pane = fields.next().filter(|pane| tmux::valid_pane(pane));
+    let mut count = || fields.next().and_then(|n| n.parse::<u32>().ok());
+    let (Some(pane), Some(panes), Some(windows)) = (pane, count(), count()) else {
+        return Err(failed("no pane in its answer"));
     };
-    let command = ask(tmux::pane_command_argv(key, local_name))?;
-    let panes = ask(tmux::pane_count_argv(key, local_name))?;
-    let command = command.trim();
+    let command = fields.next().unwrap_or_default().trim();
     Ok(PaneInfo {
+        pane: pane.to_string(),
         command: (!command.is_empty() && !SHELLS.contains(&command)).then(|| command.to_string()),
-        last: panes.lines().filter(|line| !line.trim().is_empty()).count() <= 1,
+        last: panes <= 1 && windows <= 1,
     })
 }
 
