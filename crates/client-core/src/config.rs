@@ -1,5 +1,5 @@
 //! Readers for the files tmls keeps in `~/.config/tmls` (`hosts`, `name`, `pins`,
-//! `host-colors.json`, `agent-presets.json`) and the one writer v0 has: `pins`.
+//! `host-colors.json`, `agent-presets.json`, `sketchpad`) and the one writer v0 has: `pins`.
 //!
 //! Reading never fails: a missing or damaged file is that file's default.
 //!
@@ -17,6 +17,7 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
 use crate::listing::SessionKey;
+use crate::sketchpad::Sketchpad;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -112,14 +113,16 @@ impl Config {
         self.pins.contains(&tmls_slug(key, &self.local_name))
     }
 
-    /// The sketchpad hub's address: the first line of `dir/sketchpad` that is not blank or a
-    /// `#` comment (tmls `read_config`). `None` without the file: then there is no Sketch.
-    pub fn sketchpad(dir: &Path) -> Option<String> {
+    /// The sketchpad hub: the first line of `dir/sketchpad` that is not blank or a `#` comment
+    /// (tmls `read_config`), an address or `ssh HOST ADDR:PORT` for a hub reached through an
+    /// ssh forward ([`Sketchpad::parse`]). `None` without the file, and when that line starts
+    /// with `ssh` but is no forward: then there is no Sketch.
+    pub fn sketchpad(dir: &Path) -> Option<Sketchpad> {
         let text = std::fs::read_to_string(dir.join("sketchpad")).ok()?;
         text.lines()
             .map(|line| line.split('#').next().unwrap_or("").trim())
             .find(|line| !line.is_empty() && !line.starts_with('-'))
-            .map(str::to_string)
+            .and_then(Sketchpad::parse)
     }
 
     /// Writes `dir/pins` as tmls does: the whole set, one slug per line, sorted. Creates `dir`

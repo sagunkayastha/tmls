@@ -101,7 +101,7 @@ pub(crate) fn strings(words: &[&str]) -> Vec<String> {
 /// What every ssh tmls-rs starts says first: a probe every 15 s, given up after three
 /// unanswered, so a link that died (a laptop asleep, Wi-Fi gone) ends the command — and an
 /// attached tab shows "ended" — within 45 s instead of hanging.
-const KEEPALIVE: [&str; 4] = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+pub(crate) const KEEPALIVE: [&str; 4] = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
 
 /// The ControlMaster options, once `use_control_master` ran; never set in a process that does
 /// not call it (the tests), whose ssh commands then have the keepalive only.

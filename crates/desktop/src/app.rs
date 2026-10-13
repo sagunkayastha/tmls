@@ -75,6 +75,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow, bail};
 use client_core::listing::{background_sessions, split_host};
 use client_core::push::{self, Applied, PushLine};
+use client_core::sketchpad::{Forward, Sketchpad};
 use client_core::tmux::Split;
 use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
@@ -185,6 +186,14 @@ pub enum UserEvent {
     GameMode(Option<bool>),
     /// A host's sessions on its other tmux servers.
     Background(String, Vec<SessionInfo>),
+}
+
+/// Where the `Sketch` button goes.
+enum Hub {
+    /// The hub's address.
+    Url(String),
+    /// The hub behind a host: `ssh HOST ADDR:PORT` in the file.
+    Forward(Forward),
 }
 
 /// What is open over the window and has the keys. There is at most one, so the size of a
@@ -549,8 +558,9 @@ struct Running {
     ui_path: Option<PathBuf>,
     /// The pointer is drawn as the resize arrows.
     resize_cursor: bool,
-    /// The sketchpad hub's address (`~/.config/tmls/sketchpad`), if there is one.
-    sketchpad: Option<String>,
+    /// The sketchpad hub (`~/.config/tmls/sketchpad`), if there is one: its address, or the
+    /// ssh forward to it, whose ssh ends when this is dropped.
+    sketchpad: Option<Hub>,
     /// The file panel beside the terminal, while one is open.
     side: Option<SidePanel>,
     /// Counts the clicks on files: the answer to the latest is the only one taken.
@@ -819,7 +829,12 @@ impl Running {
             ui,
             ui_path,
             resize_cursor: false,
-            sketchpad: Config::sketchpad(config_dir),
+            sketchpad: Config::sketchpad(config_dir).map(|sketchpad| match sketchpad {
+                Sketchpad::Url(url) => Hub::Url(url),
+                Sketchpad::Forward { host, addr, port } => {
+                    Hub::Forward(Forward::new(&host, &addr, port))
+                }
+            }),
             side: None,
             views: Arc::new(AtomicU64::new(0)),
             lists: Arc::new(AtomicU64::new(0)),
@@ -2589,8 +2604,13 @@ impl Running {
             (Button::Quit, _) => self.quit = true,
             (Button::Sketch, _) => {
                 // Without a hub the button is not drawn and its place does nothing.
-                if let Some(url) = self.sketchpad.clone() {
-                    self.say(links::open(&url).map(|()| format!("opened {url}")));
+                match &self.sketchpad {
+                    Some(Hub::Url(url)) => {
+                        let said = links::open(url).map(|()| format!("opened {url}"));
+                        self.say(said);
+                    }
+                    Some(Hub::Forward(_)) => self.sketch_through(),
+                    None => {}
                 }
             }
             // As in tmls: a terminal window of its own on the session, beside the app. A
@@ -2612,6 +2632,25 @@ impl Running {
             (Button::Help, _) => self.open_help(),
             (Button::Open | Button::Copy, None) => {}
         }
+    }
+
+    /// `Sketch` with a hub behind a host: the forward is brought up on a thread of its own
+    /// (`Forward::open`), which then opens the browser on its local end; the status line says
+    /// how it went (`UserEvent::Said`). A click while that is still at work starts nothing.
+    fn sketch_through(&mut self) {
+        let Some(Hub::Forward(forward)) = &self.sketchpad else {
+            return;
+        };
+        let (proxy, host) = (self.proxy.clone(), forward.host().to_string());
+        let through = host.clone();
+        forward.open(move |port| {
+            let said = port.and_then(|port| {
+                let url = format!("http://127.0.0.1:{port}");
+                links::open(&url).map(|()| format!("opened {url} (through {through})"))
+            });
+            let _ = proxy.send_event(UserEvent::Said(said));
+        });
+        self.say(Ok(format!("sketchpad: connecting through {host}…")));
     }
 
     /// The session in a new terminal window (`$TERMINAL`, else kitty, else

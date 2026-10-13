@@ -80,7 +80,7 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `agent-presets.json` | agent commands for a new session: the form's Start choices after `shell` and `claude` | read |
 | `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
-| `sketchpad` | the sketchpad hub's address, first line | read |
+| `sketchpad` | the sketchpad hub, first line: its address, or `ssh HOST ADDR:PORT` (e.g. `ssh archbox 192.168.0.162:8790`) for a hub reached through an ssh forward | read |
 | `prompts` | saved messages for the Send form, one per line; `#` starts a comment (default: `What's the progress?`) | read |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.
@@ -249,7 +249,7 @@ not found. Other hosts' sessions outside tmux are not shown, as in tmls. They ra
 | click the `×` of a tab | close the tab (the session lives on) |
 | click the red `✕` at the foot of the list | quit (sessions keep running) |
 | drag the line right of the list | make the list wider or narrower (20 columns to half the window; not kept across a restart) |
-| click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address |
+| click `Sketch` at the foot of the list | open the sketchpad hub in the browser; the button is there only when `~/.config/tmls/sketchpad` has the hub's address. With `ssh HOST ADDR:PORT` there, the app first starts `ssh -N -L` to HOST (a connection of its own, without a prompt, ended when the app quits) and opens `http://127.0.0.1:PORT`, or another local port when that one is taken |
 | wheel over the list | scroll the list |
 | right-click a session | its menu (Rename, Kill…, Open in new terminal, Copy attach command) |
 | the `?` button | the keys and mouse actions |

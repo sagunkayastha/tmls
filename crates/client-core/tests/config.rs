@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use client_core::config::{Config, HostColor, default_color, tmls_slug};
 use client_core::listing::SessionKey;
+use client_core::sketchpad::Sketchpad;
 
 /// A fresh directory under cargo's target tmp dir (never /tmp); removed by `done`.
 fn dir(test: &str) -> PathBuf {
@@ -236,7 +237,16 @@ fn sketchpad_is_the_first_usable_line() {
     let d = dir("sketchpad");
     assert_eq!(Config::sketchpad(&d), None, "no file: no Sketch");
     std::fs::write(d.join("sketchpad"), "# the hub\n\n  http://10.0.0.5:8790  # home\nhttps://away.example\n").unwrap();
-    assert_eq!(Config::sketchpad(&d).as_deref(), Some("http://10.0.0.5:8790"));
+    assert_eq!(Config::sketchpad(&d), Some(Sketchpad::Url("http://10.0.0.5:8790".into())));
+    // A hub behind a host: `ssh HOST ADDR:PORT`.
+    std::fs::write(d.join("sketchpad"), "# through archbox\n-o nothing\n ssh archbox 192.168.0.162:8790 # lan\n").unwrap();
+    let forward = Sketchpad::Forward { host: "archbox".into(), addr: "192.168.0.162".into(), port: 8790 };
+    assert_eq!(Config::sketchpad(&d), Some(forward));
+    // An ssh line that is no forward is no Sketch: neither an address nor the next line.
+    for line in ["ssh archbox", "ssh archbox 192.168.0.162:port", "ssh -oProxyCommand=x 192.168.0.162:8790", "ssh archbox -x:8790"] {
+        std::fs::write(d.join("sketchpad"), format!("{line}\nhttp://10.0.0.5:8790\n")).unwrap();
+        assert_eq!(Config::sketchpad(&d), None, "{line}");
+    }
     std::fs::write(d.join("sketchpad"), "\n# nothing\n").unwrap();
     assert_eq!(Config::sketchpad(&d), None);
     done(d);
