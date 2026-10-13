@@ -60,3 +60,19 @@ async def test_approve_passes_claudes_pane_and_rejects_anything_else(aiohttp_cli
     for bad in ("evil; rm", "%", "%7\n", "7", 7, ["%7"]):
         assert (await client.post("/api/approve", json={**body, "pane": bad})).status == 400
     assert answer.await_count == calls
+
+
+async def test_approve_choice_is_passed_and_validated(aiohttp_client, monkeypatch, tmp_path):
+    client = await client_logged_in(aiohttp_client, tmp_path)
+    answer = AsyncMock(side_effect=[None, "x isn't offering choice 3 any more"])
+    monkeypatch.setattr(server.approve, "answer", answer)
+    body = {"host": "local", "name": "x", "shown": ["Bash"], "yes": True}
+    ok = await client.post("/api/approve", json={**body, "choice": 2})
+    assert ok.status == 200
+    answer.assert_awaited_with("local", "x", ["Bash"], True, pane=None, choice=2)
+    gone = await client.post("/api/approve", json={**body, "choice": 3})
+    assert gone.status == 409 and "choice 3" in (await gone.json())["error"]
+    calls = answer.await_count
+    for bad in (0, 10, -1, "1", 1.0, True, [1]):
+        assert (await client.post("/api/approve", json={**body, "choice": bad})).status == 400
+    assert answer.await_count == calls

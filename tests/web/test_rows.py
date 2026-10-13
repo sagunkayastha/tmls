@@ -10,8 +10,10 @@ def test_build_marks_running_and_waiting_with_shown():
     state = rows.State()
     found = [("box", True, [sess("a", claude="busy", claude_since=90),
                             sess("b", claude="waiting", claude_since=90, waiting="permission prompt")])]
-    out = {r["key"]: r for r in rows.build(state, found, {"box/b": {"line": None, "shown": ["Bash", "rm x"]}})}
-    assert out["box/a"]["mark"] == "running"
+    out = {r["key"]: r for r in rows.build(state, found, {"box/b": {"line": None, "shown": ["Bash", "rm x"],
+                                                                "choices": [{"n": 1, "label": "Yes"}]}})}
+    assert out["box/a"]["mark"] == "running" and out["box/a"]["choices"] is None
+    assert out["box/b"]["choices"] == [{"n": 1, "label": "Yes"}]
     assert out["box/b"]["mark"] == "waiting" and out["box/b"]["shown"] == ["Bash", "rm x"]
     assert out["box/b"]["line"] == "permission prompt"
     assert state.started["box"] == 100 - hosts.QUIET

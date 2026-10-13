@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import dev.sagun.tmls.chat.ChatViewModel
+import dev.sagun.tmls.chat.Choice
 import dev.sagun.tmls.chat.Row as SessionRow
 import dev.sagun.tmls.chat.Upload
 import java.io.File
@@ -88,7 +89,10 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
     ) {
         vm.error?.let { ErrorLine(it) { vm.error = null } }
         vm.upload?.let { UploadLine(it) }
-        row.prompt?.let { PromptCard(it, vm.answering, vm::answer) }
+        row.prompt?.let { PromptCard(it, row.choices, vm.answering, vm::answer) }
+        if (row.waiting && row.prompt == null) {
+            WaitingCard(row.waitingFor ?: "input needed", onShowTerminal = { vm.showTerminal(true) })
+        }
         Surface(color = Tm.Raised, shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Tm.Line)) {
             Column(Modifier.padding(8.dp)) {
                 BasicTextField(
@@ -215,9 +219,12 @@ private fun UploadLine(upload: Upload) {
     }
 }
 
-/** The permission prompt Claude waits on, as the terminal shows it, with its two answers. */
+/**
+ * The permission prompt Claude waits on, as the terminal shows it, with its answers: one button per
+ * numbered choice when the server lists them, else Allow and Deny.
+ */
 @Composable
-private fun PromptCard(lines: List<String>, busy: Boolean, onAnswer: (Boolean) -> Unit) {
+private fun PromptCard(lines: List<String>, choices: List<Choice>?, busy: Boolean, onAnswer: (Boolean, Int?) -> Unit) {
     Surface(color = Tm.Raised, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Tm.Line)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Claude asks for permission", style = Tm.Small)
@@ -226,12 +233,36 @@ private fun PromptCard(lines: List<String>, busy: Boolean, onAnswer: (Boolean) -
                     lines.forEach { Text(it, style = Tm.Mono.copy(fontSize = 13.sp, lineHeight = 18.sp)) }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End), modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically) {
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Tm.Accent, strokeWidth = 2.dp)
-                OutlinedButton(onClick = { onAnswer(false) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line)) { Text("Deny", color = Tm.Text) }
-                Button(onClick = { onAnswer(true) }, enabled = !busy) { Text("Allow") }
+            if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Tm.Accent, strokeWidth = 2.dp)
+            if (choices.isNullOrEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End), modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { onAnswer(false, null) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line)) { Text("Deny", color = Tm.Text) }
+                    Button(onClick = { onAnswer(true, null) }, enabled = !busy) { Text("Allow") }
+                }
+            } else {
+                choices.forEachIndexed { i, choice ->
+                    when {
+                        i == 0 -> Button(onClick = { onAnswer(true, choice.n) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Allow") }
+                        choice.label.startsWith("No") ->
+                            OutlinedButton(onClick = { onAnswer(false, null) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line),
+                                modifier = Modifier.fillMaxWidth()) { Text("Deny", color = Tm.Text) }
+                        else -> OutlinedButton(onClick = { onAnswer(true, choice.n) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line),
+                            modifier = Modifier.fillMaxWidth()) { Text(choice.label, color = Tm.Text, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+                    }
+                }
             }
+        }
+    }
+}
+
+/** Claude waits on a menu or a question the app cannot draw: say so, and offer the terminal. */
+@Composable
+private fun WaitingCard(reason: String, onShowTerminal: () -> Unit) {
+    Surface(color = Tm.Raised, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Tm.Line)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Claude is waiting: $reason", style = Tm.Small)
+            OutlinedButton(onClick = onShowTerminal, border = BorderStroke(1.dp, Tm.Line)) { Text("Show terminal", color = Tm.Text) }
         }
     }
 }

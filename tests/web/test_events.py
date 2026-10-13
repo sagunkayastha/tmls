@@ -28,10 +28,14 @@ async def make(aiohttp_client, monkeypatch, listing):
     async def current(host, name, pane=None):
         return listing.get("shown")
 
+    async def choices(host, name, pane=None):
+        return listing.get("choices")
+
     monkeypatch.setattr(hosts, "list_host", list_host)
     monkeypatch.setattr(hosts, "background", no_background)
     monkeypatch.setattr(prompts, "_run", run)
     monkeypatch.setattr(approve, "current", current)
+    monkeypatch.setattr(approve, "current_choices", choices)
     app = web.Application()
     app["hosts"], app["poll_interval"] = ["box"], 0.05
     events.setup(app)
@@ -60,11 +64,13 @@ async def test_waiting_row_pushes_shown_and_alert(aiohttp_client, monkeypatch):
     ws = await client.ws_connect("/api/events")
     await next_kind(ws, "rows")
     listing["shown"] = ["Bash", "rm x"]
+    listing["choices"] = [{"n": 1, "label": "Yes"}, {"n": 3, "label": "No"}]
     listing["box"] = (True, [sess("a", claude="waiting", claude_since=95, waiting="permission prompt")])
     changed = await next_kind(ws, "rows")
     while not changed["set"]:
         changed = await next_kind(ws, "rows")
     assert changed["set"][0]["mark"] == "waiting" and changed["set"][0]["shown"] == ["Bash", "rm x"]
+    assert changed["set"][0]["choices"] == [{"n": 1, "label": "Yes"}, {"n": 3, "label": "No"}]
     alert = await next_kind(ws, "alerts")
     assert alert["items"] == [{"key": "box/a", "name": "a", "mark": "waiting"}]
 

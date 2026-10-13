@@ -235,7 +235,7 @@ class ChatClient(
     /** One of the contract's key names: Escape, Enter, Up, Down, 1-4. */
     suspend fun key(key: String, name: String): Reply = post("api/chat/key", Wire.key(key, name))
 
-    suspend fun approve(row: Row, yes: Boolean): Reply = post("api/approve", Wire.approve(row, yes))
+    suspend fun approve(row: Row, yes: Boolean, choice: Int? = null): Reply = post("api/approve", Wire.approve(row, yes, choice))
 
     /** The session was looked at: its "done" mark has been seen (as the web page does on a pick). */
     suspend fun seen(key: String): Reply = post("api/seen", Wire.seen(key))

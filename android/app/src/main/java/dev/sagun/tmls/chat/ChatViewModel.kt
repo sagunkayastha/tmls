@@ -90,6 +90,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     val unfolded = mutableStateMapOf<String, Boolean>()
 
     var draft by mutableStateOf(TextFieldValue(""))
+    /** The other sessions' drafts; this ViewModel outlives configuration changes. */
+    private val drafts = Drafts()
     var sending by mutableStateOf(false)
         private set
     var upload by mutableStateOf<Upload?>(null)
@@ -270,9 +272,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         creating = null
         terminal = false
         if (key == selected) return
+        draft = drafts.swap(selected, draft, key)
         remember(key)
         error = null
-        draft = TextFieldValue("")
         syncChat()
         val c = client ?: return
         viewModelScope.launch { c.seen(key) }
@@ -328,7 +330,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
             sending = false
             if (reply.ok) {
                 error = null
-                if (draft.text == text) draft = TextFieldValue("")
+                if (selected != key) drafts.clear(key)  // sent after switching away: don't bring it back
+                else if (draft.text == text) draft = TextFieldValue("")
                 toBottom++
             } else if (!reply.login) {
                 error = "Not sent: ${reply.error}"
@@ -349,14 +352,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         }
     }
 
-    /** Allow or Deny on the permission prompt the row shows. */
-    fun answer(yes: Boolean) {
+    /** Allow or Deny on the permission prompt the row shows, or one of its numbered [choice]s. */
+    fun answer(yes: Boolean, choice: Int? = null) {
         val c = client ?: return
         val r = row?.takeIf { it.prompt != null } ?: return
         if (answering) return
         answering = true
         viewModelScope.launch {
-            val reply = c.approve(r, yes)
+            val reply = c.approve(r, yes, choice)
             answering = false
             if (reply.ok) error = null else if (!reply.login) error = reply.error ?: "The answer did not get through."
         }

@@ -30,7 +30,7 @@ def second_line(s, mark, screen):
 
 
 def build(state, found, extras):
-    """found: [(host, online, sessions)]; extras: key -> {"line": screen text, "shown": prompt lines}.
+    """found: [(host, online, sessions)]; extras: key -> {"line": screen text, "shown": prompt lines, "choices": [{"n", "label"}]}.
     An offline host keeps its last rows, marked offline."""
     out = []
     for host, online, sessions in found:
@@ -45,7 +45,8 @@ def build(state, found, extras):
             extra = extras.get(k, {})
             out.append({"key": k, "host": host, "label": hosts.label(host), "name": s.name, "mark": mark,
                         "line": second_line(s, mark, extra.get("line")), "waiting": s.waiting,
-                        "shown": extra.get("shown") if mark == "waiting" else None, "pane": s.pane,
+                        "shown": extra.get("shown") if mark == "waiting" else None,
+                        "choices": extra.get("choices") if mark == "waiting" else None, "pane": s.pane,
                         "viewers": [list(v) for v in s.viewers],
                         # for the phone's chat view: is there a Claude to chat with, and how full is it
                         "claude": bool(s.claude), "model": s.model if s.claude else None,

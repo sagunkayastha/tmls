@@ -52,7 +52,7 @@ async def poll_once(app):
                 del app["claudes"][k]
             app["claudes"].update({rows.key(host, s.name): s for s in sessions if s.claude})
     lines, extras = app["lines"], {}
-    screens, prompts_up = {}, {}  # fetched in parallel: one slow host mustn't hold up the rest
+    screens, prompts_up, choices_up = {}, {}, {}  # fetched in parallel: one slow host mustn't hold up the rest
     for host, online, sessions in found:
         for s in sessions:
             app["now"][host] = s.now
@@ -61,13 +61,15 @@ async def poll_once(app):
                 screens[k] = (s.activity, _capped(app, host, _screen(host, s.name)))
             if s.claude == "waiting":
                 prompts_up[k] = _capped(app, host, approve.current(host, s.name, pane=s.pane))
+                choices_up[k] = _capped(app, host, approve.current_choices(host, s.name, pane=s.pane))
     for (k, (activity, _)), text in zip(screens.items(), await asyncio.gather(*(c for _, c in screens.values()))):
         lines[k] = (activity, text)
     shown = dict(zip(prompts_up, await asyncio.gather(*prompts_up.values())))
+    choices = dict(zip(choices_up, await asyncio.gather(*choices_up.values())))
     for host, online, sessions in found:
         for s in sessions:
             k = rows.key(host, s.name)
-            extras[k] = {"line": lines.get(k, (None, None))[1], "shown": shown.get(k)}
+            extras[k] = {"line": lines.get(k, (None, None))[1], "shown": shown.get(k), "choices": choices.get(k)}
     old_rows, old_marks = dict(state.rows), dict(state.marks)
     new = rows.build(state, found, extras)
     changed = rows.diff(old_rows, new)

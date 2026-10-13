@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -64,6 +65,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -322,9 +324,21 @@ private fun Folded(text: String, label: String, color: Color, actions: RowAction
     }
 }
 
+/** The size to draw a [w] x [h] px picture at, in dp: natural, within [maxWidth] and [MAX_PICTURE_HEIGHT], not under [MIN_PICTURE_SIDE] on its short side. */
+internal fun pictureSize(w: Float, h: Float, density: Float, maxWidth: Float): Pair<Float, Float> {
+    val wDp = w / density
+    val hDp = h / density
+    val scale = minOf(maxOf(1f, MIN_PICTURE_SIDE / minOf(wDp, hDp)), maxWidth / wDp, MAX_PICTURE_HEIGHT / hDp)
+    return wDp * scale to hDp * scale
+}
+
+private const val MIN_PICTURE_SIDE = 48f
+private const val MAX_PICTURE_HEIGHT = 360f
+
 @Composable
 private fun Pictures(vm: ChatViewModel, sessionKey: String, blobs: List<Blob>, actions: RowActions) {
     val context = LocalContext.current
+    val density = LocalDensity.current.density
     blobs.forEach { blob ->
         val picture = remember(sessionKey, blob.id, vm.base) {
             vm.blobUrl(sessionKey, blob.id)?.let { Picture(it, "$sessionKey/${blob.id}") }
@@ -332,14 +346,24 @@ private fun Pictures(vm: ChatViewModel, sessionKey: String, blobs: List<Blob>, a
         val request = remember(picture) {
             ImageRequest.Builder(context).data(picture.url).memoryCacheKey(picture.cacheKey).diskCacheKey(picture.cacheKey).build()
         }
-        AsyncImage(
-            model = request,
-            imageLoader = vm.images,
-            contentDescription = "Picture. Tap for full screen.",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.padding(vertical = 6.dp).heightIn(min = 72.dp, max = 280.dp).clip(RoundedCornerShape(12.dp))
-                .background(Tm.Raised).clickable { actions.showPicture(picture) },
-        )
+        // The picture's own pixel size, once it has loaded; until then a square.
+        var natural by remember(picture) { mutableStateOf<Pair<Float, Float>?>(null) }
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+            val box = natural?.let { (w, h) ->
+                pictureSize(w, h, density, maxWidth.value).let { (wDp, hDp) -> Modifier.size(wDp.dp, hDp.dp) }
+            } ?: Modifier.size(120.dp)
+            AsyncImage(
+                model = request,
+                imageLoader = vm.images,
+                contentDescription = "Picture. Tap for full screen.",
+                contentScale = ContentScale.Fit,
+                onSuccess = { state ->
+                    val size = state.painter.intrinsicSize
+                    if (size.width > 0f && size.height > 0f) natural = size.width to size.height
+                },
+                modifier = box.clip(RoundedCornerShape(8.dp)).clickable { actions.showPicture(picture) },
+            )
+        }
     }
 }
 

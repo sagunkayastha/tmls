@@ -1,5 +1,6 @@
 package dev.sagun.tmls.chat
 
+import androidx.compose.ui.text.input.TextFieldValue
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -58,5 +59,15 @@ class ChatUrlsTest {
         assertEquals("c.txt", Draft.fileName("/a/b/c.txt", "f"))
         assertEquals("photo-1.jpg", Draft.fileName(null, "photo-1.jpg"))
         assertEquals("photo-1.jpg", Draft.fileName("  ", "photo-1.jpg"))
+    }
+
+    @Test fun eachSessionKeepsItsDraft() {
+        val drafts = Drafts()
+        assertEquals("", drafts.swap(null, TextFieldValue(""), "a").text)
+        assertEquals("", drafts.swap("a", TextFieldValue("hello /x/y.png"), "b").text)
+        assertEquals("hello /x/y.png", drafts.swap("b", TextFieldValue(""), "a").text)
+        drafts.clear("a")
+        assertEquals("", drafts.swap("b", TextFieldValue("more"), "a").text)
+        assertEquals("more", drafts.swap("a", TextFieldValue(""), "b").text)
     }
 }

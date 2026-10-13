@@ -52,6 +52,7 @@ async def make(aiohttp_client, monkeypatch, tmp_path, listing, login=True):
     monkeypatch.setattr(hosts, "background", no_background)
     monkeypatch.setattr(prompts, "_run", run)
     monkeypatch.setattr(approve, "current", AsyncMock(return_value=None))
+    monkeypatch.setattr(approve, "current_choices", AsyncMock(return_value=None))
     monkeypatch.setattr(chat, "WATCH", 0.05)
     monkeypatch.setattr(chat, "RETRY", 0.05)
     monkeypatch.setenv("HOME", str(tmp_path))

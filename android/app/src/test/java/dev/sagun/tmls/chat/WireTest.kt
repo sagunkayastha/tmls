@@ -25,6 +25,19 @@ class WireTest {
         assertEquals("opus", row.model)
     }
 
+    @Test fun aPromptsChoicesAndTheApprovalThatSendsOne() {
+        val row = (Wire.event(
+            """{"t":"rows","set":[{"key":"a/b","host":"a","name":"b","mark":"waiting","waiting":"Bash","shown":["x"],
+               "choices":[{"n":1,"label":"Yes"},{"n":2,"label":"Yes, always"},{"n":4,"label":"No"},{"n":"x"}],"pane":"%7"}],"gone":[]}"""
+        ) as EventMsg.Rows).set.single()
+        assertEquals(listOf(Choice(1, "Yes"), Choice(2, "Yes, always"), Choice(4, "No")), row.choices)
+        assertEquals("Bash", row.waitingFor)
+        assertTrue(Wire.approve(row, true, 2).contains("\"choice\":2"))
+        assertFalse(Wire.approve(row, false).contains("choice"))
+        val old = (Wire.event("""{"t":"rows","set":[{"key":"a/b","host":"a","name":"b","mark":"waiting","shown":["x"],"choices":null}],"gone":[]}""") as EventMsg.Rows).set.single()
+        assertNull(old.choices)
+    }
+
     @Test fun aRowOfAnOlderServerHasNoChat() {
         val msg = Wire.event("""{"t":"rows","set":[{"key":"pc/x","host":"pc","label":"pc","name":"x","mark":"idle","shown":null,"pane":null}],"gone":[]}""") as EventMsg.Rows
         val row = msg.set.single()

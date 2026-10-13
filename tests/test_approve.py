@@ -83,3 +83,36 @@ def test_request_reads_a_file_dialog():
 
 def test_request_needs_the_choices_under_the_question():
     assert approve.request("some reply\nDo you want to proceed?\nmore text\n") is None
+
+
+def test_choices_consecutive_and_not():
+    assert approve.choices(DIALOG) == [{"n": 1, "label": "Yes"},
+                                       {"n": 2, "label": "Yes, and always allow access to /tmp from this project"},
+                                       {"n": 4, "label": "No"}]
+    consecutive = DIALOG.replace("   4. No", "   3. No")
+    assert [c["n"] for c in approve.choices(consecutive)] == [1, 2, 3]
+
+
+def test_choices_when_the_marker_is_on_another_line():
+    moved = DIALOG.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No")
+    assert approve.choices(moved) == approve.choices(DIALOG)
+
+
+def test_choices_stop_at_the_first_other_line_and_none_without_a_dialog():
+    wrapped = DIALOG.replace("project\n", "project\n     and more\n   3. Hidden\n")
+    assert [c["n"] for c in approve.choices(wrapped)] == [1, 2]
+    assert approve.choices("❯ ls\n● done\n") is None
+
+
+async def test_answer_with_a_choice_sends_its_digit(monkeypatch):
+    got = []
+
+    async def fake_run(argv, stdin=None):
+        got.append(argv[-1])
+        return 0, DIALOG
+    monkeypatch.setattr(approve.prompts, "_run", fake_run)
+    shown = approve.request(DIALOG)
+    assert await approve.answer(hosts.LOCAL, "w", shown, True, choice=2) is None
+    assert got[-1] == "tmux send-keys -t =w: 2"
+    assert "3" in (await approve.answer(hosts.LOCAL, "w", shown, True, choice=3))  # not on screen
+    assert [g for g in got if "send-keys" in g] == ["tmux send-keys -t =w: 2"]  # nothing sent for 3

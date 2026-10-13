@@ -1,5 +1,6 @@
 package dev.sagun.tmls.chat
 
+import androidx.compose.ui.text.input.TextFieldValue
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -64,5 +65,23 @@ object Draft {
     fun fileName(name: String?, fallback: String): String {
         val clean = name.orEmpty().substringAfterLast('/').substringAfterLast('\\').trim().take(120)
         return clean.ifEmpty { fallback }
+    }
+}
+
+/** The unsent message of each session, so picking another session and coming back keeps it. */
+class Drafts {
+    private val map = HashMap<String, TextFieldValue>()
+
+    /** [current] is kept for [from] (if any); returns what [to] had, or an empty draft. */
+    fun swap(from: String?, current: TextFieldValue, to: String): TextFieldValue {
+        if (from != null) {
+            if (current.text.isEmpty()) map.remove(from) else map[from] = current
+        }
+        return map[to] ?: TextFieldValue("")
+    }
+
+    /** [key] was sent: nothing left to keep. */
+    fun clear(key: String) {
+        map.remove(key)
     }
 }

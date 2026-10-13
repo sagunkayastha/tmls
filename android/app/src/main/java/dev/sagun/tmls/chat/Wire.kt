@@ -12,6 +12,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
+/** One numbered choice of a permission prompt ("2. Yes, and always allow ..."). */
+data class Choice(val n: Int, val label: String)
+
 /** One session of one host, as /api/events lists it (rows.py), with the chat contract's three fields. */
 data class Row(
     val key: String,
@@ -22,6 +25,10 @@ data class Row(
     val line: String = "",
     /** The permission prompt's lines while the row waits on one, else null. */
     val shown: List<String>? = null,
+    /** Why it waits ("permission prompt", "input needed"), as the server words it. */
+    val waitingFor: String? = null,
+    /** The prompt's numbered choices, when the server lists them. */
+    val choices: List<Choice>? = null,
     /** Claude's own tmux pane ("%7"), for /api/approve. */
     val pane: String? = null,
     val online: Boolean = true,
@@ -129,6 +136,11 @@ object Wire {
             mark = o.str("mark") ?: "idle",
             line = o.str("line") ?: "",
             shown = o.strings("shown"),
+            waitingFor = o.str("waiting"),
+            choices = (o["choices"] as? JsonArray)?.mapNotNull {
+                val c = it as? JsonObject ?: return@mapNotNull null
+                Choice((c.long("n") ?: return@mapNotNull null).toInt(), c.str("label") ?: return@mapNotNull null)
+            },
             pane = o.str("pane"),
             online = o.bool("online") ?: true,
             background = o.bool("background") ?: false,
@@ -190,11 +202,12 @@ object Wire {
     fun seen(key: String): String = buildJsonObject { put("key", key) }.toString()
 
     /** /api/approve's body: the prompt as the row showed it, so the server refuses if it changed. */
-    fun approve(row: Row, yes: Boolean): String = buildJsonObject {
+    fun approve(row: Row, yes: Boolean, choice: Int? = null): String = buildJsonObject {
         put("host", row.host)
         put("name", row.name)
         put("shown", buildJsonArray { row.shown.orEmpty().forEach { add(JsonPrimitive(it)) } })
         put("yes", yes)
+        if (choice != null) put("choice", choice)
         put("pane", row.pane?.let { JsonPrimitive(it) } ?: JsonNull)
     }.toString()
 
