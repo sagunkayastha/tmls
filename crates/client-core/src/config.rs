@@ -178,6 +178,7 @@ fn local_name(dir: &Path) -> String {
     if name.is_empty() { hostname() } else { name }
 }
 
+#[cfg(unix)]
 fn hostname() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname writes at most `len` bytes into the buffer it is given.
@@ -185,6 +186,12 @@ fn hostname() -> String {
     let len = buf.iter().position(|&b| b == 0).unwrap_or(0);
     let name = String::from_utf8_lossy(&buf[..len]).into_owned();
     if ok && !name.is_empty() { name } else { "localhost".to_string() }
+}
+
+/// The same on Windows: `COMPUTERNAME` is the environment's name for this machine.
+#[cfg(windows)]
+fn hostname() -> String {
+    std::env::var("COMPUTERNAME").ok().filter(|name| !name.is_empty()).unwrap_or_else(|| "localhost".to_string())
 }
 
 /// Whether this machine can have tmux sessions at all (tmls: `shutil.which("tmux")`).

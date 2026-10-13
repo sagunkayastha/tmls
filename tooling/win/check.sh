@@ -12,5 +12,5 @@ mkdir -p "$TARGET_DIR"
 if [ $# -eq 0 ]; then
   set -- check --target x86_64-pc-windows-gnu -p desktop --message-format short
 fi
-exec docker run --rm -v "$PWD":/work:ro -v tmls-rs-cargo:/cargo -v "$TARGET_DIR":/t \
+exec docker run --rm -v "$PWD":/work -v tmls-rs-cargo:/cargo -v "$TARGET_DIR":/t \
   -e CARGO_TARGET_DIR=/t -w /work tmls-rs-win-probe:latest cargo "$@"

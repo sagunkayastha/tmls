@@ -8,7 +8,6 @@
 //! The clipboard's reader and the copy's runner are parameters, so no test reads a clipboard.
 
 use std::io::Write;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -83,14 +82,24 @@ pub fn stage(staging: &Path, now: SystemTime, read: Reader<'_>) -> Result<PathBu
     }
     let name = stamp_name(now, extension(mime)).ok_or_else(|| NO_IMAGE.to_string())?;
     let file = staging.join(name);
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(staging)
+    create_staging(staging)
         .and_then(|()| std::fs::OpenOptions::new().write(true).create_new(true).open(&file))
         .and_then(|mut out| out.write_all(&bytes))
         .map_err(|e| format!("couldn't write {}: {e}", file.display()))?;
     Ok(file)
+}
+
+/// Makes `staging`, and on Unix for the user alone (mode 0700).
+#[cfg(unix)]
+fn create_staging(staging: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(staging)
+}
+
+/// The same on Windows, which has no file modes.
+#[cfg(windows)]
+fn create_staging(staging: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(staging)
 }
 
 /// A pasted image: the staged file's name, and the path to paste into the session.

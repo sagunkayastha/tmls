@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -18,6 +20,20 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::listing::{HostSnapshot, LISTING_SCRIPT, listing_command, parse_listing};
+
+/// Windows has no process groups like Unix's; this keeps the shared `.process_group(0)` builder
+/// one, doing nothing.
+#[cfg(windows)]
+trait ProcessGroupShim {
+    fn process_group(&mut self, group: i32) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl ProcessGroupShim for Command {
+    fn process_group(&mut self, _group: i32) -> &mut Self {
+        self
+    }
+}
 
 /// `HostSnapshot::error` of a host whose ssh wants a password, a key or a host-key answer:
 /// the user has to sign in by hand.
@@ -303,6 +319,7 @@ fn snapshot(host: &str, status: ExitStatus, stdout: &[u8], stderr: &[u8]) -> Hos
 }
 
 /// SIGKILL to the listing's whole process group, then reaps the command.
+#[cfg(unix)]
 fn kill_group(child: &mut Child) {
     // SAFETY: plain syscall. The child is not reaped yet, so its pid (the group's id, from
     // `process_group(0)`) still names this group and nothing else.
@@ -311,12 +328,21 @@ fn kill_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// The same on Windows: the listing is just `ssh.exe`, so killing it is enough.
+#[cfg(windows)]
+fn kill_group(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// One of the child's output pipes, read without blocking.
+#[cfg(unix)]
 struct Pipe<R> {
     source: Option<R>,
     data: Vec<u8>,
 }
 
+#[cfg(unix)]
 impl<R: Read + AsRawFd> Pipe<R> {
     fn new(source: Option<R>) -> Pipe<R> {
         if let Some(source) = &source {
@@ -344,10 +370,57 @@ impl<R: Read + AsRawFd> Pipe<R> {
 }
 
 /// Sleeps one [`TICK`], less when a pipe has something to read.
+#[cfg(unix)]
 fn wait_readable<A: AsRawFd, B: AsRawFd>(a: &Pipe<A>, b: &Pipe<B>) {
     let open = [a.source.as_ref().map(AsRawFd::as_raw_fd), b.source.as_ref().map(AsRawFd::as_raw_fd)];
     let mut fds: Vec<libc::pollfd> =
         open.into_iter().flatten().map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     // SAFETY: `fds` is a valid array of `fds.len()` pollfd for the length of the call.
     unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, TICK.as_millis() as libc::c_int) };
+}
+
+/// The same on Windows, where a pipe cannot be set non-blocking: a thread of its own reads it
+/// into a buffer `read_available` takes from.
+#[cfg(windows)]
+struct Pipe<R> {
+    data: Vec<u8>,
+    shared: Arc<Mutex<Vec<u8>>>,
+    source: std::marker::PhantomData<R>,
+}
+
+#[cfg(windows)]
+impl<R: Read + Send + 'static> Pipe<R> {
+    fn new(source: Option<R>) -> Pipe<R> {
+        let shared = Arc::new(Mutex::new(Vec::new()));
+        if let Some(mut source) = source {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match source.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => shared.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        Pipe { data: Vec::new(), shared, source: std::marker::PhantomData }
+    }
+
+    /// Takes whatever the reading thread has put in the buffer so far.
+    fn read_available(&mut self) {
+        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let take = shared.len().min(MAX_OUTPUT.saturating_sub(self.data.len()));
+        self.data.extend_from_slice(&shared[..take]);
+        shared.drain(..take);
+    }
+}
+
+/// Sleeps one [`TICK`]: Windows pipes cannot be polled, so the reading thread is picked up on the
+/// next turn of [`run`]'s loop.
+#[cfg(windows)]
+fn wait_readable<A: Read + Send + 'static, B: Read + Send + 'static>(_a: &Pipe<A>, _b: &Pipe<B>) {
+    std::thread::sleep(TICK);
 }

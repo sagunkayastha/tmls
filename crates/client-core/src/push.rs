@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +24,20 @@ use serde_json::Value;
 
 use crate::listing::{HostSnapshot, SessionKey, Status};
 use crate::tmux::{script_argv, valid_pane};
+
+/// Windows has no process groups like Unix's; this keeps the shared `.process_group(0)` builder
+/// one, doing nothing.
+#[cfg(windows)]
+trait ProcessGroupShim {
+    fn process_group(&mut self, group: i32) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl ProcessGroupShim for Command {
+    fn process_group(&mut self, _group: i32) -> &mut Self {
+        self
+    }
+}
 
 /// How long after its reader ended a host's file is read again.
 pub const RESTART_AFTER: Duration = Duration::from_secs(10);
@@ -213,9 +228,21 @@ impl Tail {
     }
 }
 
+#[cfg(unix)]
 fn kill_group(pid: u32) {
     // SAFETY: plain syscall on a process group this module started and has not reaped.
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+}
+
+/// The same on Windows: `taskkill` takes the process and what it started (`/T`), `ssh` possibly
+/// having left something behind.
+#[cfg(windows)]
+fn kill_group(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn follow(argv: &[String], restart: Duration, stop: &AtomicBool, child: &Mutex<Option<u32>>, on_line: &dyn Fn(PushLine)) {

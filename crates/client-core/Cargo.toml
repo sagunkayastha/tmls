@@ -7,9 +7,15 @@ description = "tmls-rs desktop v0: hosts, session listing, status marks, tmux co
 
 [dependencies]
 anyhow = "1"
-libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# local_time only: FileTimeToSystemTime and SystemTimeToTzSpecificLocalTime
+windows-sys = { version = "0.52.0", features = ["Win32_Foundation", "Win32_System_Time"] }
 
 [dev-dependencies]
 # tests/tmux_real.rs runs the attach command on a PTY

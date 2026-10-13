@@ -182,6 +182,7 @@ pub struct LocalTime {
 }
 
 /// `secs` seconds since 1970 on this machine's clock; `None` for a time it cannot name.
+#[cfg(unix)]
 pub fn local_time(secs: u64) -> Option<LocalTime> {
     let secs = libc::time_t::try_from(secs).ok()?;
     // SAFETY: `tm` is plain numbers (and a pointer `localtime_r` sets), so all zeroes is one;
@@ -200,5 +201,37 @@ pub fn local_time(secs: u64) -> Option<LocalTime> {
         day: field(tm.tm_mday)?,
         hour: field(tm.tm_hour)?,
         minute: field(tm.tm_min)?,
+    })
+}
+
+/// The same on Windows: the seconds become a `FILETIME` (100 ns ticks from 1601), which
+/// `FileTimeToSystemTime` reads as UTC and `SystemTimeToTzSpecificLocalTime` moves to this
+/// machine's zone.
+#[cfg(windows)]
+pub fn local_time(secs: u64) -> Option<LocalTime> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // seconds between 1601-01-01 and 1970-01-01, in 100 ns ticks
+    const EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = secs.checked_mul(10_000_000)?.checked_add(EPOCH_TICKS)?;
+    let file = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    // SAFETY: both `SYSTEMTIME`s are plain numbers written by the calls below; `null` asks for
+    // this machine's own zone, and no pointer outlives the call.
+    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe {
+        if FileTimeToSystemTime(&file, &mut utc) == 0 {
+            return None;
+        }
+        if SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+    }
+    Some(LocalTime {
+        year: i32::from(local.wYear),
+        month: u32::from(local.wMonth),
+        day: u32::from(local.wDay),
+        hour: u32::from(local.wHour),
+        minute: u32::from(local.wMinute),
     })
 }

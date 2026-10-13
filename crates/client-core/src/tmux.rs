@@ -12,9 +12,10 @@
 
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -23,6 +24,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 
 use crate::listing::SessionKey;
+
+/// Windows has no process groups like Unix's; this keeps the shared `.process_group(0)` builders
+/// one, doing nothing.
+#[cfg(windows)]
+trait ProcessGroupShim {
+    fn process_group(&mut self, group: i32) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl ProcessGroupShim for Command {
+    fn process_group(&mut self, _group: i32) -> &mut Self {
+        self
+    }
+}
 
 /// Longest session name [`valid_session_name`] accepts, in characters. tmux has no limit of its
 /// own; a longer name fits no sidebar row or tab.
@@ -129,10 +144,19 @@ pub fn control_wanted(value: Option<&OsStr>) -> bool {
 /// Makes `dir` (mode 0700, also when it existed with another mode) and from then on every ssh
 /// this process starts shares one connection per host through it. Call once, at start; a
 /// second call changes nothing.
+#[cfg(unix)]
 pub fn use_control_master(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let _ = CONTROL.set(control_options(dir));
+    Ok(())
+}
+
+/// The same on Windows, which has no file modes.
+#[cfg(windows)]
+pub fn use_control_master(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
     let _ = CONTROL.set(control_options(dir));
     Ok(())
 }
@@ -595,6 +619,20 @@ pub fn run_with_stdin(argv: &[String], input: &[u8], timeout: Duration) -> anyho
     run_input(argv, Some(input), timeout).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
+/// SIGKILL to the command's whole process group.
+#[cfg(unix)]
+fn kill_group(child: &mut Child) {
+    // SAFETY: kill takes no pointers. The child has not been waited for, so its pid,
+    // which is also its process group's id, is still its own.
+    unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+}
+
+/// The same on Windows: the child itself (there is no process group to kill).
+#[cfg(windows)]
+fn kill_group(child: &mut Child) {
+    let _ = child.kill();
+}
+
 fn run_input(argv: &[String], input: Option<&[u8]>, timeout: Duration) -> anyhow::Result<Vec<u8>> {
     let (program, args) = argv.split_first().context("empty command")?;
     let mut child = Command::new(program)
@@ -620,9 +658,7 @@ fn run_input(argv: &[String], input: Option<&[u8]>, timeout: Duration) -> anyhow
             break status;
         }
         if Instant::now() >= deadline {
-            // SAFETY: kill takes no pointers. The child has not been waited for, so its pid,
-            // which is also its process group's id, is still its own.
-            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            kill_group(&mut child);
             let _ = child.wait();
             bail!("{program} timed out after {:.1} s", timeout.as_secs_f64());
         }
