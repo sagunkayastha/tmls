@@ -2,6 +2,47 @@
 
 Quick session log. Newest entry first.
 
+## 2026-10-12 (evening) — round 2 parity: six features + seven review fixes on `feat/parity-round2` @ `1b5c0b0`; e2e 236/236; NOT merged, PC has G1 only ⚠️
+
+The user cut G3 (quick select) and G8 (recent prompts), then "Just finish all". One Opus implementer per task in its
+own worktree, one at a time; I verified each (unit tests, clippy, fmt, headless e2e) and ran a whole-branch review.
+- **Merged to `main` before this (`8e2d05b`):** `Folder` in the file panel's header (local folder, or `sftp://HOST/…`
+  for another host); a clicked relative path is also looked for one directory below the pane's (unique match only);
+  a `/` or `~` path the session's host lacks is looked for on this machine (`(not on HOST: the one on HERE)`).
+  The user tested all three: "these worked".
+- **G1 `d71e5c4`:** row menu: New window, Rename window…, Split side by side, Split top / bottom, Kill pane….
+- **G2 `3a7411d`:** `game-mode status` every 30 s; while on, remote hosts every 300 s, `· game` on their header, no
+  notification, no sound.
+- **G6 `02930c9`:** `HOST ⚠ sign in` where `· offline` was (permission denied, host key, keyboard-interactive,
+  password + otp); a click opens a terminal with `ssh -t HOST true`. Click only.
+- **G7 `c0d3c91`:** alerts panel: `Desktop` / `Sound` / `Silence focused` switches (Space or click), saved to
+  `~/.config/tmls/notifications.json`; sound = `canberra-gtk-play -i message-new-instant`.
+- **G5 `c572d94`:** `background ▸ · N` per host for other tmux servers (`tmux -L NAME`), `b` opens; attach only.
+- **G4 `b936864`:** Alt+Shift+V: clipboard image → `~/.cache/tmls-rs/paste/` (kept) → host's `~/.cache/tmls/images/`
+  through the existing `imagedrop` path → path typed, no Enter.
+- **Review fixes `53b57bf`..`de325cc` + `1b5c0b0`:** kill pane by pane id (it could kill another pane); a failed
+  game-mode probe is not "off"; a refresh lists the one host it concerns (`refresh_host`; before: every host, which
+  defeated game mode); a failed background scan keeps the row; a flipped switch changes its one key (re-read first,
+  symlink and unknown keys kept, unreadable file refused); in game mode a host is listed fast only from the click on
+  its sign in until it answers; `HOST#NAME` never reaches an ssh argv.
+- **Checks:** 451 unit tests, clippy `-D warnings`, fmt; e2e `/data/scratch/tmls-rs-v0/round2/fix-e2e/` 0 of 236.
+  An e2e run while an agent compiles (load ≈ 6) failed four old help/clipboard checks; clean at load ≈ 1.
+- **PC:** binary from 17:29 = G1 only, and that build has the kill-pane defect. Not rebuilt: `game-mode status` = on.
+- **Not seen in the real window:** any of G2–G7, the fixes. No remote host was used by any test.
+
+**Laptop (Windows, `ssh laptop`):** the Linux binary in WSL Arch opens a window (GL on llvmpipe; with
+`GALLIUM_DRIVER=d3d12` on the RTX 3060) but WSLg's weston segfaulted in libpixman twice and took the app with it
+(`Io error: Broken pipe`); the user: "the whole thing" is buggy, too many layers. Decision: native Windows build,
+cross-compiled in Docker on archbox (`/data/scratch/tmls-rs-v0/win/`: `Dockerfile`, `probe.sh`), ported by DeepSeek
+agents (`ocb task`) that I check. First blocker: `wayland-sys` (my `dnd.rs`) is built on every platform.
+WSL started over ssh runs in session 0 and cannot show windows; a GUI test needs the user at the laptop.
+The copy at `~/tmls-rs-spike/` in WSL is left there.
+
+### NEXT
+1. PC build of `1b5c0b0` when game mode is off; the user tries G1–G7; then merge `feat/parity-round2`.
+2. Windows port on `feat/windows-client` (from `feat/parity-round2`): Linux-only deps gated, ConPTY, no ControlMaster.
+3. Open: e2e no longer has a remote host that answers in game mode (only `tests/poll.rs` covers the 300 s).
+
 ## 2026-10-12 (late afternoon) — Open button opens a terminal window; merged, `main` = `b6d54f6` ✅
 
 The user tested the Open button in the real KDE window ("it worked"); `fix/open-button` merged `--no-ff`.
