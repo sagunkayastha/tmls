@@ -38,6 +38,9 @@ sealed interface ChatPhase {
 /** A file on its way to the session's host; [fraction] is null while the size is unknown. */
 data class Upload(val name: String, val fraction: Float?)
 
+/** One thing picked to attach; [temp] is the camera's own file, deleted after the upload. */
+data class Picked(val uri: Uri, val fallbackName: String, val temp: File? = null)
+
 /**
  * Everything the screens show: the sessions, the selected one, its chat, the message being typed.
  * It owns the [ChatClient] for the server address in use and replaces it when that address changes
@@ -384,56 +387,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
      * A picked photo or file: sent to the session's host, its path there put into the message.
      * [temp] is the camera's own file in the app's cache, deleted once it is no longer needed.
      */
-    fun attach(uri: Uri, fallbackName: String, temp: File? = null) {
+    fun attach(uri: Uri, fallbackName: String, temp: File? = null) = attach(listOf(Picked(uri, fallbackName, temp)))
+
+    /** Several picked at once: sent one after the other, in the order picked; the first failure ends it. */
+    fun attach(picked: List<Picked>) {
         val c = client ?: return
         val key = selected ?: return
-        if (upload != null) return
+        if (upload != null || picked.isEmpty()) return
         val resolver = getApplication<Application>().contentResolver
-        upload = Upload(fallbackName, null)
+        upload = Upload(picked.first().fallbackName, null)
         viewModelScope.launch {
-            val reply = try {
-                val (name, size) = withContext(Dispatchers.IO) {
-                    var name: String? = null
-                    var size = -1L
-                    try {
-                        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-                            if (cursor.moveToFirst()) {
-                                name = cursor.getString(0)
-                                size = if (cursor.isNull(1)) -1L else cursor.getLong(1)
+            for ((index, item) in picked.withIndex()) {
+                val count = if (picked.size > 1) "${index + 1} of ${picked.size}: " else ""
+                val reply = try {
+                    val (name, size) = withContext(Dispatchers.IO) {
+                        var name: String? = null
+                        var size = -1L
+                        try {
+                            resolver.query(item.uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    name = cursor.getString(0)
+                                    size = if (cursor.isNull(1)) -1L else cursor.getLong(1)
+                                }
                             }
+                        } catch (e: RuntimeException) {
+                            // a provider that cannot be asked: the fallback name and an unknown size
                         }
-                    } catch (e: RuntimeException) {
-                        // a provider that cannot be asked: the fallback name and an unknown size
+                        if (size < 0 && item.temp != null) size = item.temp.length()
+                        Draft.fileName(name, item.fallbackName) to size
                     }
-                    if (size < 0 && temp != null) size = temp.length()
-                    Draft.fileName(name, fallbackName) to size
-                }
-                upload = Upload(name, if (size > 0) 0f else null)
-                var shown = -1
-                c.upload(key, name, size, open = { resolver.openInputStream(uri) ?: throw FileNotFoundException(name) }) { fraction ->
-                    val percent = (fraction * 100).toInt()
-                    if (percent != shown) {  // once per percent, not once per block
-                        shown = percent
-                        viewModelScope.launch { if (upload != null) upload = Upload(name, fraction) }
+                    upload = Upload(count + name, if (size > 0) 0f else null)
+                    var shown = -1
+                    c.upload(key, name, size, open = { resolver.openInputStream(item.uri) ?: throw FileNotFoundException(name) }) { fraction ->
+                        val percent = (fraction * 100).toInt()
+                        if (percent != shown) {  // once per percent, not once per block
+                            shown = percent
+                            viewModelScope.launch { if (upload != null) upload = Upload(count + name, fraction) }
+                        }
                     }
+                } catch (e: RuntimeException) { // the picker's grant is gone, the file was removed
+                    Reply(false, e.message ?: "could not read the file")
                 }
-            } catch (e: RuntimeException) { // the picker's grant is gone, the file was removed
-                Reply(false, e.message ?: "could not read the file")
+                withContext(Dispatchers.IO) { item.temp?.delete() }
+                val path = reply.path
+                if (reply.ok && path != null) {
+                    error = null
+                    if (selected == key) {
+                        val (text, cursor) = Draft.insert(draft.text, draft.selection.start, draft.selection.end, path)
+                        draft = TextFieldValue(text, TextRange(cursor))
+                    } else {
+                        drafts.insert(key, path)  // the session it was started in, not the one looked at now
+                    }
+                } else {
+                    if (!reply.login) error = "Upload failed: ${reply.error ?: "no path came back"}"
+                    break
+                }
             }
             upload = null
-            withContext(Dispatchers.IO) { temp?.delete() }
-            val path = reply.path
-            if (reply.ok && path != null) {
-                error = null
-                if (selected == key) {
-                    val (text, cursor) = Draft.insert(draft.text, draft.selection.start, draft.selection.end, path)
-                    draft = TextFieldValue(text, TextRange(cursor))
-                } else {
-                    drafts.insert(key, path)  // the session it was started in, not the one looked at now
-                }
-            } else if (!reply.login) {
-                error = "Upload failed: ${reply.error ?: "no path came back"}"
-            }
         }
     }
 

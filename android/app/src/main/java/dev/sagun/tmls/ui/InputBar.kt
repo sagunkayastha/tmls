@@ -52,10 +52,14 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import dev.sagun.tmls.chat.ChatViewModel
 import dev.sagun.tmls.chat.Choice
+import dev.sagun.tmls.chat.Picked
 import dev.sagun.tmls.chat.Row as SessionRow
 import dev.sagun.tmls.chat.Upload
 import dev.sagun.tmls.chat.denyAt
 import java.io.File
+
+/** The most photos or files taken from one pick. */
+private const val MAX_PICKED = 10
 
 /**
  * Under the chat: what went wrong, an upload on its way, the permission prompt Claude waits on,
@@ -77,11 +81,13 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
             else file.delete()
         }
     }
-    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) vm.attach(uri, "photo-${System.currentTimeMillis()}.jpg")
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_PICKED)) { uris ->
+        val now = System.currentTimeMillis()
+        vm.attach(uris.mapIndexed { i, uri -> Picked(uri, "photo-$now-${i + 1}.jpg") })
     }
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.attach(uri, "file-${System.currentTimeMillis()}")
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val now = System.currentTimeMillis()
+        vm.attach(uris.take(MAX_PICKED).mapIndexed { i, uri -> Picked(uri, "file-$now-${i + 1}") })
     }
 
     Column(
