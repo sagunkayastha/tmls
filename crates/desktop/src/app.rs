@@ -80,7 +80,7 @@ use client_core::{
     Config, HostSnapshot, KITTY, NewSession, Poller, Seen, SessionInfo, SessionKey, Status,
     default_color,
 };
-use client_core::{gamemode, imagedrop, tmux};
+use client_core::{gamemode, imagedrop, imagepaste, tmux};
 use s2_core::bench::Sampler;
 use s2_core::latency::Log;
 use s2_core::now_ns;
@@ -174,7 +174,8 @@ pub enum UserEvent {
     /// when it started (`Queue::sent` knows its name now).
     Sent(SendId, SessionKey, Result<String, String>),
     /// An image dropped on (or pasted into) a tab of another host was copied there, or not:
-    /// the tab's session, the file's name, and the path to paste on that host.
+    /// the tab's session, the file's name, and the path to paste on that host. Also the
+    /// clipboard's image (`paste_image`), which for a session here is the staged file.
     Dropped(SessionKey, String, Result<String, String>),
     /// Files were dropped on the window: the `text/uri-list` of them (`dnd`).
     FilesDropped(String),
@@ -2374,6 +2375,7 @@ impl Running {
                     self.ask_form(key);
                 }
             }
+            Global::PasteImage => self.paste_image(),
             Global::ZoomIn => self.zoom(ZoomDir::In),
             Global::ZoomOut => self.zoom(ZoomDir::Out),
             Global::Reattach => {
@@ -2876,7 +2878,52 @@ impl Running {
         true
     }
 
-    /// The copy `copy_image` started ended: the path on the host is pasted into the session
+    /// Alt+Shift+V: the clipboard's image becomes a file here (`imagepaste::stage`, in
+    /// `~/.cache/tmls-rs/paste/`), on a thread. For a session on another host it is then
+    /// copied there like a dropped image; `dropped` pastes its path either way. With no image,
+    /// no `wl-paste` or a copy that failed, the status line says so and nothing is pasted.
+    fn paste_image(&mut self) {
+        let live = self
+            .tabs
+            .active()
+            .filter(|&index| self.tabs.state(index) == TabState::Live);
+        let Some(key) = live.map(|index| self.tabs.key(index).clone()) else {
+            return self.say(Ok("no live session to paste an image into".to_string()));
+        };
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return self.say(Err(
+                "no HOME: nowhere to keep the clipboard's image".to_string()
+            ));
+        };
+        // A session of another tmux server reads files where its machine has them.
+        let machine = split_host(&key.host).0.to_string();
+        let here = machine == self.cfg.local_name || key.host == KITTY;
+        self.say(Ok("reading the clipboard's image …".to_string()));
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let read = |argv: &[String]| tmux::run_bytes(argv, imagepaste::TIMEOUT);
+            let feed = |argv: &[String], input: &[u8]| {
+                tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)
+            };
+            let note = |text: String| {
+                let _ = proxy.send_event(UserEvent::Said(Ok(text)));
+            };
+            let pasted = imagepaste::paste(
+                (!here).then_some(machine.as_str()),
+                &home.join(imagepaste::STAGING),
+                std::time::SystemTime::now(),
+                &read,
+                &feed,
+                &note,
+            );
+            let _ = proxy.send_event(match pasted {
+                Ok(image) => UserEvent::Dropped(key, image.name, Ok(image.path)),
+                Err(why) => UserEvent::Said(Err(why)),
+            });
+        });
+    }
+
+    /// The copy `copy_image` or `paste_image` started ended: the path on the host is pasted into the session
     /// it was for, if its tab is still open and live — in front or not, never somewhere else.
     fn dropped(&mut self, key: SessionKey, name: String, result: Result<String, String>) {
         let host = &key.host;

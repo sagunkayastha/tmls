@@ -15,6 +15,8 @@
 //!   click beside it closes it
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+A — the message form for the front tab's Claude session
+//! - Alt+Shift+V — the clipboard's image becomes a file on the front tab's host, and its path
+//!   is pasted into the session (Ctrl+Shift+V pastes text)
 //! - Alt+Shift+W — close the tab (tmls has no key for this; its tab bar has the `×` only)
 //! - Alt+Shift+X — close the file panel (tmls: Esc, with the keys in its viewer; here a file's
 //!   panel never has the keys, so Esc stays the terminal's)
@@ -74,6 +76,8 @@ pub enum Global {
     NextWaiting,
     /// The message form for the front tab's Claude session.
     Ask,
+    /// The clipboard's image to the front tab's host, its path pasted into the session.
+    PasteImage,
     Quit,
     ZoomIn,
     ZoomOut,
@@ -157,6 +161,7 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
             Key::Char(c) if c.eq_ignore_ascii_case(&'f') => Some(Global::ToggleFiles),
             Key::Char(c) if c.eq_ignore_ascii_case(&'a') => Some(Global::Ask),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'v') => Some(Global::PasteImage),
             _ => None,
         };
     }
@@ -441,6 +446,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Alt+Shift+↑", "the keys to the session list"),
             ("Alt+Shift+N", "next that waits, else unread"),
             ("Alt+Shift+A", "send a message to this tab"),
+            ("Alt+Shift+V", "paste the clipboard's image"),
             ("Alt+Shift+W", "close the tab (session lives)"),
             ("Alt+Shift+F", "images this session made"),
             ("Alt+Shift+X", "close the file panel"),

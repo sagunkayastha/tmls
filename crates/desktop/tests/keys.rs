@@ -645,7 +645,7 @@ fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     }
     let everywhere: Vec<&str> = HELP[0].1.iter().map(|(chord, _)| *chord).collect();
     assert_eq!(HELP[0].0, "Everywhere");
-    for c in ['n', 'w', 'x', 'f', 'a'] {
+    for c in ['n', 'w', 'x', 'f', 'a', 'v'] {
         assert!(
             global(&ch(c, ALT_SHIFT), Focus::Terminal).is_some(),
             "Alt+Shift+{c} is bound"
@@ -757,4 +757,20 @@ fn b_in_the_list_shows_or_hides_the_other_tmux_servers() {
     assert_eq!(list_key(&ch('b', NONE)), Some(ListKey::Background));
     assert_eq!(list_key(&repeat(&ch('b', NONE))), None);
     assert_eq!(list_key(&ch('B', SHIFT)), None);
+}
+
+#[test]
+fn alt_shift_v_pastes_an_image_outside_forms() {
+    assert_eq!(
+        global(&ch('v', ALT_SHIFT), Focus::Terminal),
+        Some(Global::PasteImage)
+    );
+    assert_eq!(
+        global(&ch('V', ALT_SHIFT), Focus::Sidebar),
+        Some(Global::PasteImage)
+    );
+    assert_eq!(global(&ch('v', ALT_SHIFT), Focus::Form), None);
+    assert_eq!(global(&repeat(&ch('v', ALT_SHIFT)), Focus::Terminal), None);
+    // Ctrl+Shift+V stays the text paste: it is no binding of the window's.
+    assert_eq!(global(&ch('V', CTRL_SHIFT), Focus::Terminal), None);
 }

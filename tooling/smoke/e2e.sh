@@ -26,6 +26,7 @@ ASK='tmlsrs-test-1ask'
 ASK_SID='2b5c1d2e-3f4a-4b6c-8d7e-9f0a1b2c3d4e'
 ASK2='tmlsrs-test-1asked'
 WIN='tmlsrs-test-00win'
+PASTE='tmlsrs-test-00paste'
 # The stand-ins for Claude processes, by session id: their status files are named after them.
 declare -A FAKE_PIDS=()
 NONCE="$$-$(date +%s)"
@@ -148,6 +149,7 @@ cleanup() {
   tmux kill-session -t "=$APPROVE" 2>/dev/null
   tmux kill-session -t "=$PUSH" 2>/dev/null
   tmux kill-session -t "=$ASK" 2>/dev/null
+  tmux kill-session -t "=$PASTE" 2>/dev/null
   tmux kill-session -t "=$ASK2" 2>/dev/null
   tmux kill-session -t "=$WIN" 2>/dev/null
   # The third run's second tmux server: this script's own, on its own socket directory.
@@ -1507,6 +1509,47 @@ check "screenshot 46-alert-switches (Sound ON; no player)" shot 46-alert-switche
 keys -k space
 check "Space again writes sound false" wait_for 3 notes_are '{"desktop": true, "sound": false, "silence_focused": true}'
 keys -k Escape
+
+# --- image paste (G4) ----------------------------------------------------------------------------
+# $PASTE's tab in front. With text on the clipboard Alt+Shift+V pastes nothing; with the first
+# screenshot as the clipboard's PNG it writes the file to ~/.cache/tmls-rs/paste/ and pastes that
+# path (this machine: no copy, and nothing under ~/.cache/tmls/images/).
+STAGED="$HOME/.cache/tmls-rs/paste"
+staged_count() { find "$STAGED" -type f 2>/dev/null | wc -l; }
+tmux new-session -d -s "$PASTE" -x 100 -y 30
+sleep 6
+key_focus_list
+check "the list's cursor finds $PASTE by its name" select_row "$PASTE"
+key_enter
+check "the tab of $PASTE opens" wait_for 8 attached_to "$PASTE"
+timeout 5 wl-copy "not-an-image-$NONCE"
+keys -M alt -M shift -k v -m shift -m alt
+no_image_said() { grep -qF 'tmls-rs: clipboard has no image' "$OUT/app.stderr"; }
+if wait_for 8 no_image_said && [ "$(staged_count)" -eq 0 ] && ! pane_text "$PASTE" | grep -qF "tmls-rs/paste"; then
+  pass "Alt+Shift+V with text on the clipboard says there is no image and pastes nothing"
+else
+  fail "Alt+Shift+V with text on the clipboard says there is no image and pastes nothing" \
+    "staged: $(staged_count); pane: $(pane_text "$PASTE" | grep -v '^$' | tail -2 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "screenshot 49-image-paste-none (clipboard has no image)" shot 49-image-paste-none
+timeout 5 wl-copy -t image/png <"$OUT/01-start.png"
+keys -M alt -M shift -k v -m shift -m alt
+pasted_image() { pane_text "$PASTE" | tr -d '\n' | grep -oE "$STAGED/[0-9]+-[0-9]{6}\.png" | head -1; }
+image_pasted() { [ -n "$(pasted_image)" ]; }
+if wait_for 8 image_pasted; then
+  pass "Alt+Shift+V pastes the staged image's path into the session"
+else
+  fail "Alt+Shift+V pastes the staged image's path into the session" \
+    "pane: $(pane_text "$PASTE" | grep -v '^$' | tail -2 | tr '\n' '|'); stderr: $(tail -2 "$OUT/app.stderr" | tr '\n' ' ')"
+fi
+check "the pasted path is the clipboard's image, byte for byte" cmp -s "$OUT/01-start.png" "$(pasted_image)"
+check "one file is staged, and it stays" [ "$(staged_count)" -eq 1 ]
+check "no Enter: the path waits at the prompt" bash -c '! grep -qE "command not found|Permission denied|No such file" <<<"$0"' "$(pane_text "$PASTE")"
+check "a session here needs no copy: nothing under ~/.cache/tmls/images" [ ! -e "$HOME/.cache/tmls/images" ]
+check "screenshot 50-image-paste (the path at the prompt; NAME is on HOST: pasted PATH)" shot 50-image-paste
+keys -M ctrl -k u -m ctrl
+key_close_tab
+tmux kill-session -t "=$PASTE"
 
 # --- quit ---------------------------------------------------------------------------------------
 sleep 0.7
