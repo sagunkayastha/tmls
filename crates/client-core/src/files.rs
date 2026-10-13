@@ -92,7 +92,7 @@ pub fn parse_located(out: &str) -> Option<Located> {
 pub fn read_argv(host: &str, path: &str, max_bytes: u64, local_name: &str) -> Vec<String> {
     let max = max_bytes.to_string();
     if host == local_name {
-        strings(&["head", "-c", &max, "--", path])
+        crate::local::here().argv(strings(&["head", "-c", &max, "--", path]))
     } else {
         ssh(host, format!("head -c {max} -- {}", quote(path)))
     }

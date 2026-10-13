@@ -1,5 +1,5 @@
 //! Readers for the files tmls keeps in `~/.config/tmls` (`hosts`, `name`, `pins`,
-//! `host-colors.json`, `agent-presets.json`, `sketchpad`) and the one writer v0 has: `pins`.
+//! `host-colors.json`, `agent-presets.json`, `sketchpad`, `wsl`) and the one writer v0 has: `pins`.
 //!
 //! Reading never fails: a missing or damaged file is that file's default.
 //!
@@ -17,13 +17,18 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
 use crate::listing::SessionKey;
+use crate::local::Local;
 use crate::sketchpad::Sketchpad;
 
 #[derive(Clone, Debug)]
 pub struct Config {
     /// What this machine is called: the `name` file, else its hostname. Its sessions' host.
     pub local_name: String,
-    /// Hosts to list, in order: this machine (when it has tmux), then the remote ssh hosts.
+    /// How this machine runs a command: as it is, or on Windows with the `wsl` file inside WSL
+    /// ([`Local::from_file`]). The app hands it to `local::use_local` at its start.
+    pub local: Local,
+    /// Hosts to list, in order: this machine (when it has tmux, or is WSL), then the remote
+    /// ssh hosts.
     pub hosts: Vec<String>,
     /// The user's accent colour per host; a host without one gets [`default_color`].
     pub host_colors: BTreeMap<String, HostColor>,
@@ -75,7 +80,9 @@ impl Config {
             cli_hosts.iter().map(|host| host.trim().to_string()).collect()
         };
         let mut hosts: Vec<String> = Vec::new();
-        if has_tmux() {
+        // WSL is not asked whether it has tmux: starting it takes seconds, and the listing says.
+        let local = Local::from_file(std::fs::read_to_string(dir.join("wsl")).ok().as_deref(), cfg!(windows));
+        if has_tmux() || local.is_wsl() {
             hosts.push(local_name.clone());
         }
         for host in named {
@@ -105,7 +112,7 @@ impl Config {
             })
             .collect();
         let pins = read("pins").split_whitespace().map(str::to_string).collect();
-        Config { local_name, hosts, host_colors, presets, pins }
+        Config { local_name, local, hosts, host_colors, presets, pins }
     }
 
     /// Whether the session is pinned, here or in tmls.

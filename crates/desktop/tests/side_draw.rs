@@ -184,6 +184,7 @@ fn long_wide_and_tabbed_lines_stay_in_their_columns() {
 fn sidebar() -> Sidebar {
     let cfg = Config {
         local_name: LOCAL.to_string(),
+        local: client_core::Local::Sh,
         hosts: vec![LOCAL.to_string()],
         host_colors: BTreeMap::new(),
         presets: Vec::new(),

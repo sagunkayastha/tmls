@@ -59,6 +59,18 @@ fn hosts_file_skips_comments_blank_lines_and_this_machine() {
 }
 
 #[test]
+fn the_wsl_file_changes_nothing_on_unix() {
+    let d = dir("wsl");
+    std::fs::write(d.join("hosts"), "nas\n").unwrap();
+    let before = Config::load(&d, &[]);
+    std::fs::write(d.join("wsl"), "archlinux\n").unwrap();
+    let after = Config::load(&d, &[]);
+    assert_eq!(after.local, client_core::Local::Sh);
+    assert_eq!(after.hosts, before.hosts);
+    done(d);
+}
+
+#[test]
 fn name_file_overrides_the_hostname() {
     let d = dir("name");
     std::fs::write(d.join("name"), "laptop\n").unwrap();

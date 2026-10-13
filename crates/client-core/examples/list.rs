@@ -14,6 +14,7 @@ fn main() {
     let dir = PathBuf::from(home).join(".config/tmls");
     let cli_hosts: Vec<String> = std::env::args().skip(1).collect();
     let cfg = Config::load(&dir, &cli_hosts);
+    client_core::local::use_local(cfg.local.clone());
     for host in &cfg.hosts {
         let snap = list_once(
             host,

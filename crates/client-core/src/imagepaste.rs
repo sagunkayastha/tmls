@@ -111,7 +111,8 @@ pub struct Pasted {
 
 /// The clipboard's image for a session: staged, then copied to `host` (`imagedrop::store`
 /// through `feed`; `note` gets the status line while that runs), or with `None` — a session on
-/// this machine — left where it was staged. `Err` is the status line, and then there is no
+/// this machine — left where it was staged (copied into the distro when this machine is
+/// WSL). `Err` is the status line, and then there is no
 /// path: nothing is to be typed. A staged file whose copy failed stays.
 pub fn paste(
     host: Option<&str>,
@@ -124,6 +125,11 @@ pub fn paste(
     let file = stage(staging, now, read)?;
     let name = file.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let path = match host {
+        // WSL: the staged file is one of Windows, the session reads a copy inside the distro
+        None if crate::local::here().is_wsl() => {
+            note(format!("copying {name} into WSL …"));
+            imagedrop::store_here(&file, now, feed).map_err(|why| format!("copy into WSL failed: {}", first_line(&why)))?
+        }
         None => file.to_string_lossy().into_owned(),
         Some(host) => {
             note(format!("copying {name} to {host} …"));

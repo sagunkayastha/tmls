@@ -2,7 +2,8 @@
 //! new session gets from its folder. Ported from tmls (`hosts.py`, `create.py`, `tmux_ops.py`).
 //!
 //! Every builder returns an argv, never a shell string. On this machine (`key.host ==
-//! local_name`) the argv is tmux itself, or `sh -c SCRIPT` where a script is needed. On any other
+//! local_name`) the argv is tmux itself, or `sh -c SCRIPT` where a script is needed — as this
+//! machine runs it (`local::here`: on Windows with WSL, after `wsl.exe -e`). On any other
 //! host it is `ssh … HOST COMMAND`: ssh hands COMMAND to the host's shell, so every word in it
 //! that comes from the user (session name, folder, preset) is single-quoted. Sessions are always
 //! targeted as `=NAME`, the exact name: a bare name is a prefix match in tmux.
@@ -24,6 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 
 use crate::listing::SessionKey;
+use crate::local::here;
 
 /// Windows has no process groups like Unix's; this keeps the shared `.process_group(0)` builders
 /// one, doing nothing.
@@ -200,9 +202,9 @@ pub(crate) fn ssh(host: &str, command: String) -> Vec<String> {
     argv
 }
 
-/// `script` run by sh, here or on `host`.
+/// `script` run by sh, here (as this machine runs one) or on `host`.
 pub(crate) fn script_argv(host: &str, script: String, local_name: &str) -> Vec<String> {
-    if host == local_name { vec!["sh".to_string(), "-c".to_string(), script] } else { ssh(host, script) }
+    if host == local_name { here().script(script) } else { ssh(host, script) }
 }
 
 /// Attaches to the session, for a PTY: `tmux -u attach -t =NAME` here, `ssh -t HOST "tmux -u
@@ -218,7 +220,7 @@ pub fn attach_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
             argv.extend(strings(&["-L", server]));
         }
         argv.extend(strings(&["attach", "-t", &target]));
-        argv
+        here().argv(argv)
     } else {
         let socket = server.map_or(String::new(), |server| format!(" -L {}", quote(server)));
         let mut argv = ssh_base(machine, &["-t"]);
@@ -237,7 +239,7 @@ pub fn attach_text(key: &SessionKey, local_name: &str) -> String {
     }
     tmux.extend(strings(&["attach", "-t", &format!("={}", key.name)]));
     if machine == local_name {
-        shlex_join(&tmux)
+        shlex_join(&here().argv(tmux))
     } else {
         shlex_join(&["ssh", "-t", machine, &shlex_join(&tmux)])
     }
@@ -332,7 +334,7 @@ pub fn new_session_argv(req: &NewSession, local_name: &str) -> Vec<String> {
 pub fn rename_argv(key: &SessionKey, new_name: &str, local_name: &str) -> Vec<String> {
     let target = format!("={}", key.name);
     if key.host == local_name {
-        strings(&["tmux", "rename-session", "-t", &target, "--", new_name])
+        here().argv(strings(&["tmux", "rename-session", "-t", &target, "--", new_name]))
     } else {
         ssh(&key.host, format!("tmux rename-session -t {} -- {}", quote(&target), quote(new_name)))
     }
@@ -342,7 +344,7 @@ pub fn rename_argv(key: &SessionKey, new_name: &str, local_name: &str) -> Vec<St
 pub fn kill_argv(key: &SessionKey, local_name: &str) -> Vec<String> {
     let target = format!("={}", key.name);
     if key.host == local_name {
-        strings(&["tmux", "kill-session", "-t", &target])
+        here().argv(strings(&["tmux", "kill-session", "-t", &target]))
     } else {
         ssh(&key.host, format!("tmux kill-session -t {}", quote(&target)))
     }
@@ -354,7 +356,7 @@ pub fn running_commands_argv(key: &SessionKey, local_name: &str) -> Vec<String> 
     let target = format!("={}", key.name);
     let format = "#{pane_current_command}";
     if key.host == local_name {
-        strings(&["tmux", "list-panes", "-s", "-t", &target, "-F", format])
+        here().argv(strings(&["tmux", "list-panes", "-s", "-t", &target, "-F", format]))
     } else {
         ssh(&key.host, format!("tmux list-panes -s -t {} -F {}", quote(&target), quote(format)))
     }
@@ -373,7 +375,7 @@ fn session_tmux(key: &SessionKey, args: &[&str], local_name: &str) -> Vec<String
     if key.host == local_name {
         let mut argv = strings(&["tmux"]);
         argv.extend(strings(args));
-        argv
+        here().argv(argv)
     } else {
         let words: Vec<String> = args.iter().map(|word| quote(word)).collect();
         ssh(&key.host, format!("tmux {}", words.join(" ")))
@@ -462,7 +464,7 @@ pub fn pane_target(key: &SessionKey, pane: Option<&str>) -> String {
 pub fn capture_argv(key: &SessionKey, pane: Option<&str>, local_name: &str) -> Vec<String> {
     let target = pane_target(key, pane);
     if key.host == local_name {
-        strings(&["tmux", "capture-pane", "-p", "-t", &target])
+        here().argv(strings(&["tmux", "capture-pane", "-p", "-t", &target]))
     } else {
         ssh(&key.host, format!("tmux capture-pane -p -t {}", quote(&target)))
     }
@@ -472,7 +474,7 @@ pub fn capture_argv(key: &SessionKey, pane: Option<&str>, local_name: &str) -> V
 pub fn send_keys_argv(key: &SessionKey, pane: Option<&str>, keys: &str, local_name: &str) -> Vec<String> {
     let target = pane_target(key, pane);
     if key.host == local_name {
-        strings(&["tmux", "send-keys", "-t", &target, keys])
+        here().argv(strings(&["tmux", "send-keys", "-t", &target, keys]))
     } else {
         ssh(&key.host, format!("tmux send-keys -t {} {}", quote(&target), quote(keys)))
     }

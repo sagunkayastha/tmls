@@ -597,7 +597,9 @@ pub fn folder_target(host: &str, path: &str, local_name: &str) -> Result<(String
         Some((folder, _)) => folder,
     };
     if host == local_name {
-        return Ok((folder.to_string(), format!("opened {folder}")));
+        // inside WSL on Windows: the folder's `//wsl.localhost/…` address
+        let target = client_core::local::desktop_path(folder)?;
+        return Ok((target, format!("opened {folder}")));
     }
     let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
     if host.is_empty() || host.starts_with('-') || !host.chars().all(plain) {
@@ -634,7 +636,8 @@ fn outside(
     }
     if host == local_name {
         return Ok(Opened::Outside {
-            target: path.to_string(),
+            // inside WSL on Windows: the file's `//wsl.localhost/…` address
+            target: client_core::local::desktop_path(path)?,
             said: format!("opened {path} in its app"),
         });
     }

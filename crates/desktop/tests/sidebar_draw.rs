@@ -73,6 +73,7 @@ fn sidebar(hosts: &[&str]) -> Sidebar {
 fn sidebar_with_pins(hosts: &[&str], pinned: &[SessionKey]) -> Sidebar {
     let cfg = Config {
         local_name: LOCAL.to_string(),
+        local: client_core::Local::Sh,
         hosts: hosts.iter().map(|host| host.to_string()).collect(),
         host_colors: BTreeMap::from([
             (LOCAL.to_string(), HostColor::Teal),

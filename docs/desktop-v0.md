@@ -81,6 +81,7 @@ All in `~/.config/tmls/`, the same files `tmls` uses. Every one is optional.
 | `notifications.json` | the alert switches `desktop` and `silence_focused` (both on by default) | read |
 | `pins` | pinned sessions, in tmls's format | read and **written** |
 | `sketchpad` | the sketchpad hub, first line: its address, or `ssh HOST ADDR:PORT` (e.g. `ssh archbox 192.168.0.162:8790`) for a hub reached through an ssh forward | read |
+| `wsl` | Windows only (ignored elsewhere): with this file, this machine is a WSL distro — its first line that is not blank or a `#` comment names the distro, a file without one means WSL's default. The machine is listed under its own name, and its tmux commands run as `wsl.exe [-d DISTRO] -e …`. One hidden `wsl.exe` (`tmls-keepalive` inside the distro) is left running so the distro and its tmux outlive the app; `pkill -f tmls-keepalive` in WSL ends it | read |
 | `prompts` | saved messages for the Send form, one per line; `#` starts a comment (default: `What's the progress?`) | read |
 
 `pins` is the only file v0 writes. Nothing else in that directory is created or changed.

@@ -690,6 +690,20 @@ impl Running {
             None => None,
         };
         let cfg = Config::load(config_dir, &args.hosts);
+        // On Windows with `~/.config/tmls/wsl`, this machine is a WSL distro: before anything
+        // builds a command for it. One hidden wsl.exe is left to hold the distro (and tmux in
+        // it) up after this window; asked for on a thread, WSL may take seconds to start.
+        client_core::local::use_local(cfg.local.clone());
+        if cfg.local.is_wsl() {
+            crate::errln(format_args!(
+                "tmls-rs: this machine's sessions are those of WSL ({:?})",
+                cfg.local
+            ));
+            std::thread::spawn(|| match client_core::local::ensure_keepalive() {
+                Ok(state) => crate::errln(format_args!("tmls-rs: WSL keep-alive: {state:?}")),
+                Err(why) => crate::errln(format_args!("tmls-rs: WSL keep-alive: {why}")),
+            });
+        }
         let sidebar = Sidebar::new(&cfg, config_dir.to_path_buf());
         let mut tabs = Tabs::new(&cfg.local_name);
         let wake_pending = Arc::new(AtomicBool::new(false));
@@ -2954,7 +2968,9 @@ impl Running {
         };
         // A session of another tmux server reads files where its machine has them.
         let machine = split_host(&key.host).0.to_string();
-        if machine == self.cfg.local_name || key.host == KITTY {
+        // Inside WSL it reads a copy too: the file is one of Windows.
+        let here = machine == self.cfg.local_name;
+        if (here && !self.cfg.local.is_wsl()) || key.host == KITTY {
             return false;
         }
         let Some(path) = imagedrop::dropped_image(text) else {
@@ -2970,7 +2986,11 @@ impl Running {
             let run = |argv: &[String], input: &[u8]| {
                 tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)
             };
-            let result = imagedrop::store(&machine, &path, std::time::SystemTime::now(), &run);
+            let now = std::time::SystemTime::now();
+            let result = match here {
+                true => imagedrop::store_here(&path, now, &run),
+                false => imagedrop::store(&machine, &path, now, &run),
+            };
             let _ = proxy.send_event(UserEvent::Dropped(key, name, result));
         });
         true

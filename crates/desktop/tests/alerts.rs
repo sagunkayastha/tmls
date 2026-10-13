@@ -986,6 +986,7 @@ fn deliver(
 fn a_session_that_finishes_in_the_list_alerts_and_its_alert_outlives_it() {
     let cfg = Config {
         local_name: "laptop".to_string(),
+        local: client_core::Local::Sh,
         hosts: vec!["laptop".to_string(), HOST.to_string()],
         host_colors: BTreeMap::new(),
         presets: Vec::new(),

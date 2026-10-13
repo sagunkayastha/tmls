@@ -124,6 +124,12 @@ pub fn store_argv(host: &str, name: &str) -> Vec<String> {
     tmux::ssh(host, format!("mkdir -p \"$HOME/{DIR}\" && cat > \"$HOME/{DIR}/{name}\""))
 }
 
+/// The same on this machine, for when it is WSL (`local::here`): the file is one of Windows,
+/// and a session inside WSL reads the copy.
+pub fn store_here_argv(name: &str) -> Vec<String> {
+    crate::local::here().script(format!("mkdir -p \"$HOME/{DIR}\" && cat > \"$HOME/{DIR}/{name}\""))
+}
+
 /// The path to paste for a copy named `name`: the host's shell and Claude both read `~/`.
 pub fn pasted_path(name: &str) -> String {
     format!("~/{DIR}/{name}")
@@ -141,6 +147,20 @@ pub fn store(
     now: SystemTime,
     run: Feed<'_>,
 ) -> Result<String, String> {
+    store_with(path, now, run, &|name| store_argv(host, name))
+}
+
+/// [`store`] into this machine's WSL ([`store_here_argv`]).
+pub fn store_here(path: &Path, now: SystemTime, run: Feed<'_>) -> Result<String, String> {
+    store_with(path, now, run, &store_here_argv)
+}
+
+fn store_with(
+    path: &Path,
+    now: SystemTime,
+    run: Feed<'_>,
+    argv: &dyn Fn(&str) -> Vec<String>,
+) -> Result<String, String> {
     let shown = path.display();
     let name = copy_name(now, path).ok_or_else(|| format!("{shown} is not an image file"))?;
     let size = std::fs::metadata(path).map_err(|e| format!("{shown}: {e}"))?.len();
@@ -148,7 +168,7 @@ pub fn store(
         return Err(format!("{shown} is larger than {} MiB", MAX_BYTES / (1024 * 1024)));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("{shown}: {e}"))?;
-    run(&store_argv(host, &name), &bytes).map_err(|e| format!("{e:#}"))?;
+    run(&argv(&name), &bytes).map_err(|e| format!("{e:#}"))?;
     Ok(pasted_path(&name))
 }
 

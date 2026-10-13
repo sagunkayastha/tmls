@@ -175,13 +175,15 @@ true
 "##;
 
 /// The command that lists `host`; the caller writes [`LISTING_SCRIPT`] to its stdin.
-/// This machine (`host == local_name`) runs `sh -s`; any other host runs it over ssh
+/// This machine (`host == local_name`) runs `sh -s` (inside WSL when that is this machine:
+/// `local::here`); any other host runs it over ssh
 /// (`tmux::ssh_base`: keepalive, the shared connection), which must not prompt (`BatchMode`) and
 /// gives up connecting after 5 s.
 pub fn listing_command(host: &str, local_name: &str) -> std::process::Command {
     if host == local_name {
-        let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-s");
+        let argv = crate::local::here().stdin_script();
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
         cmd
     } else {
         let argv = crate::tmux::ssh_base(host, &["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]);
