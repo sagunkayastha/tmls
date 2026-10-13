@@ -890,7 +890,7 @@ fn sign_in_opens_the_users_terminal_with_ssh() {
         started.push(argv.to_vec());
         Ok(())
     };
-    let said = forms::sign_in("ph", Some("foot"), &|_| false, &mut spawn);
+    let said = forms::sign_in("ph", true, Some("foot"), &|_| false, &mut spawn);
     assert_eq!(
         said,
         Ok("sign in to ph in foot; the list follows by itself".to_string())
@@ -901,8 +901,28 @@ fn sign_in_opens_the_users_terminal_with_ssh() {
     let mut broken = |_: &[String]| -> std::io::Result<()> {
         Err(std::io::Error::from(std::io::ErrorKind::NotFound))
     };
-    let said = forms::sign_in("ph", Some("foot"), &|_| false, &mut broken);
+    let said = forms::sign_in("ph", true, Some("foot"), &|_| false, &mut broken);
     assert!(said.unwrap_err().starts_with("couldn't start foot: "));
+}
+
+#[test]
+fn a_sign_in_without_a_shared_connection_does_not_promise_that_the_list_follows() {
+    // TMLS_RS_NO_CONTROLMASTER=1, or no place for the sockets: `ssh -t HOST true` leaves
+    // nothing behind for the listing's ssh, which will ask again and be refused.
+    let mut started = 0;
+    let mut spawn = |_: &[String]| -> std::io::Result<()> {
+        started += 1;
+        Ok(())
+    };
+    let said = forms::sign_in("ph", false, Some("foot"), &|_| false, &mut spawn);
+    assert_eq!(
+        said,
+        Ok(
+            "sign in to ph in foot; without a shared connection the sign-in does not carry over"
+                .to_string()
+        )
+    );
+    assert_eq!(started, 1, "the terminal opens all the same");
 }
 
 #[test]

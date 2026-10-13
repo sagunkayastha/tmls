@@ -137,6 +137,12 @@ pub fn use_control_master(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether `use_control_master` ran: only then does a sign-in in a terminal (`sign_in_argv`)
+/// leave a connection behind that the listing's ssh goes through.
+pub fn shares_connections() -> bool {
+    CONTROL.get().is_some()
+}
+
 /// The start of every ssh argv: `ssh`, the keepalive, the shared connection once switched on,
 /// `flags`, then `host`. The caller adds the remote command.
 pub fn ssh_base(host: &str, flags: &[&str]) -> Vec<String> {
@@ -202,7 +208,8 @@ pub fn attach_text(key: &SessionKey, local_name: &str) -> String {
 
 /// What the sign-in row runs in a terminal (tmls `SignInRow`): ssh with a terminal and without
 /// `BatchMode`, so it may ask for a password, a code or a host key, then `true`. Once in, the
-/// shared connection stays up and the next listing finds the host.
+/// shared connection stays up and the next listing finds the host; without one
+/// (`shares_connections`) nothing of the sign-in is left when `true` has run.
 pub fn sign_in_argv(host: &str) -> Vec<String> {
     let mut argv = ssh_base(host, &["-t"]);
     argv.push("true".to_string());

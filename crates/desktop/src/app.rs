@@ -1031,14 +1031,22 @@ impl Running {
         }
     }
 
+    /// Gives the remote host `host` the period it has now: 300 s in game mode, the poller's
+    /// own without it and while the host waits for a sign-in (`gamemode::remote_period`).
+    fn pace(&self, host: &str) {
+        let period = gamemode::remote_period(self.game, self.sign_in.contains(host));
+        self.poller.slow_down(&[host.to_string()], period);
+    }
+
     /// Game mode went on or off: the remote hosts' period follows (R1), this machine keeps 5 s.
     fn game_mode(&mut self, on: bool) {
         if on == self.game {
             return;
         }
         self.game = on;
-        self.poller
-            .slow_down(&self.remote_hosts(), on.then_some(gamemode::REMOTE_PERIOD));
+        for host in self.remote_hosts() {
+            self.pace(&host);
+        }
         crate::errln(format_args!(
             "tmls-rs: game mode {}",
             if on {
@@ -1053,10 +1061,14 @@ impl Running {
     /// A host's new listing, in the order the poller delivers them. The session of the tab in
     /// front is being watched: it gets no "finished unwatched" mark.
     fn snapshot(&mut self, mut snapshot: HostSnapshot) {
-        if snapshot.needs_sign_in() {
-            self.sign_in.insert(snapshot.host.clone());
-        } else {
-            self.sign_in.remove(&snapshot.host);
+        let changed = match snapshot.needs_sign_in() {
+            true => self.sign_in.insert(snapshot.host.clone()),
+            false => self.sign_in.remove(&snapshot.host),
+        };
+        // In game mode a host that waits for a sign-in is listed at the poller's period until
+        // it answers: the list follows the sign-in in seconds, not in 300.
+        if changed && self.game && snapshot.host != self.cfg.local_name {
+            self.pace(&snapshot.host);
         }
         push::carry_replies(&mut snapshot, &mut self.replies);
         self.listings
@@ -2603,11 +2615,13 @@ impl Running {
     }
 
     /// A click on `⚠ sign in`: a terminal with ssh to the host (R5), chosen as
-    /// `open_in_terminal` chooses it; the next listing clears the row once the user is in.
+    /// `open_in_terminal` chooses it; the next listing clears the row once the user is in, if
+    /// ssh shares its connections (the status line says when it does not).
     fn sign_in_to(&mut self, host: &str) {
         let terminal = std::env::var("TERMINAL").ok();
         let said = forms::sign_in(
             host,
+            tmux::shares_connections(),
             terminal.as_deref(),
             &forms::on_path,
             &mut forms::spawn_detached,

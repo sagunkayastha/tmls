@@ -29,6 +29,13 @@ pub fn answer(ran: anyhow::Result<String>) -> Option<bool> {
     ran.ok().map(|out| parse(&out))
 }
 
+/// The listing period of a remote host: [`REMOTE_PERIOD`] in game mode (`on`), `None` (the
+/// poller's own) otherwise — and for a host that waits for a sign-in (`sign_in`), which is not
+/// slowed: once the user has signed in, the list is to say so within seconds, not minutes.
+pub fn remote_period(on: bool, sign_in: bool) -> Option<Duration> {
+    (on && !sign_in).then_some(REMOTE_PERIOD)
+}
+
 /// Whether the remote hosts may be asked about their other tmux servers: not in game mode
 /// (`on`), and not before the first `game-mode status` is over (`known`), which may say on.
 pub fn remote_scan(known: bool, on: bool) -> bool {

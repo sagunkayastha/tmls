@@ -1677,13 +1677,17 @@ if wait_for 10 grep -qF 'tmls-rs: game mode on' "$OUT/app3.stderr"; then
 else
   fail "game-mode status says on: the app is in game mode" "stderr: $(tail -3 "$OUT/app3.stderr" | tr '\n' ' ')"
 fi
+# signhost waits for a sign-in, and such a host is not slowed: the list is to follow the sign-in
+# within seconds. So it is listed on every 5 s, game mode or not. (That a remote host which
+# answers waits out its 300 s is the poller's test, client-core tests/poll.rs: the stand-in ssh
+# refuses every host.)
 sleep 2
 CALLS=$(ssh_calls)
 sleep 12
-if [ "$(ssh_calls)" -eq "$CALLS" ]; then
-  pass "in game mode the remote host is not listed again within 12 s (without it: every 5 s)"
+if [ "$(ssh_calls)" -gt "$CALLS" ]; then
+  pass "in game mode a host that waits for a sign-in is not slowed: listed again within 12 s"
 else
-  fail "in game mode the remote host is not listed again within 12 s" "ssh calls $CALLS -> $(ssh_calls): $(tail -3 "$SSH_LOG" | tr '\n' '|')"
+  fail "in game mode a host that waits for a sign-in is not slowed: listed again within 12 s" "ssh calls $CALLS -> $(ssh_calls): $(tail -3 "$SSH_LOG" | tr '\n' '|')"
 fi
 check "screenshot 44-third-run (SIGNHOST ⚠ sign in)" shot 44-third-run
 # The list: line 0 this machine's header, line 1 background ▸ · 1, line 2 the gap, line 3

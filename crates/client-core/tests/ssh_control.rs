@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use client_core::listing::{SessionKey, listing_command};
 use client_core::tmux::{
-    attach_argv, control_dir, control_options, control_wanted, kill_argv, ssh_base, use_control_master,
+    attach_argv, control_dir, control_options, control_wanted, kill_argv, shares_connections, ssh_base,
+    use_control_master,
 };
 
 fn key(host: &str, name: &str) -> SessionKey {
@@ -73,7 +74,9 @@ fn once_switched_on_every_ssh_shares_the_connection() {
     std::fs::create_dir_all(&dir).unwrap();
     // An existing directory with loose permissions is made private.
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!shares_connections(), "not before it is switched on: a sign-in leaves nothing behind");
     use_control_master(&dir).expect("the socket directory");
+    assert!(shares_connections());
     assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
 
     let path = format!("ControlPath={}/cm-%C", dir.display());

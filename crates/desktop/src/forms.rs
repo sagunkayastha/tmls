@@ -1836,19 +1836,23 @@ pub fn open_terminal(
 }
 
 /// Opens a terminal running ssh to `host`, so the user can answer what it asks (R5), through
-/// `spawn`; says so for the status line.
+/// `spawn`; says so for the status line. `shared`: ssh shares one connection per host
+/// (`tmux::shares_connections`), so the listing goes through the one the sign-in leaves; without
+/// it the listing's own ssh is refused as before, and the status line does not say otherwise.
 pub fn sign_in(
     host: &str,
+    shared: bool,
     terminal: Option<&str>,
     on_path: &dyn Fn(&str) -> bool,
     spawn: &mut dyn FnMut(&[String]) -> std::io::Result<()>,
 ) -> Result<String, String> {
     let argv = terminal_argv(terminal, on_path, &tmux::sign_in_argv(host));
+    let then = match shared {
+        true => "the list follows by itself",
+        false => "without a shared connection the sign-in does not carry over",
+    };
     match spawn(&argv) {
-        Ok(()) => Ok(format!(
-            "sign in to {host} in {}; the list follows by itself",
-            argv[0]
-        )),
+        Ok(()) => Ok(format!("sign in to {host} in {}; {then}", argv[0])),
         Err(e) => Err(format!("couldn't start {}: {e}", argv[0])),
     }
 }
