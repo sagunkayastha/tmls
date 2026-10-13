@@ -9,7 +9,7 @@ use std::time::Duration;
 pub const PROGRAM: &str = "game-mode";
 /// The listing period of a remote host while game mode is on.
 pub const REMOTE_PERIOD: Duration = Duration::from_secs(300);
-/// How long `game-mode status` may take before it counts as off.
+/// How long `game-mode status` may take before it is given up on: no answer (see [`answer`]).
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `game-mode status`.
@@ -20,4 +20,11 @@ pub fn status_argv() -> Vec<String> {
 /// Whether what `game-mode status` printed (exit status 0) means on: `on`, nothing else.
 pub fn parse(out: &str) -> bool {
     out.trim().eq_ignore_ascii_case("on")
+}
+
+/// What a run of `game-mode status` says: on or off when it answered, `None` when it failed or
+/// took longer than [`TIMEOUT`]. No answer is not "off": under a game's load the script is
+/// slow, and game mode stays what it was.
+pub fn answer(ran: anyhow::Result<String>) -> Option<bool> {
+    ran.ok().map(|out| parse(&out))
 }

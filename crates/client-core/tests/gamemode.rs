@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use client_core::gamemode::{PROGRAM, REMOTE_PERIOD, TIMEOUT, parse, status_argv};
+use client_core::gamemode::{PROGRAM, REMOTE_PERIOD, TIMEOUT, answer, parse, status_argv};
 
 #[test]
 fn the_status_is_asked_and_only_on_is_on() {
@@ -16,4 +16,19 @@ fn the_status_is_asked_and_only_on_is_on() {
     }
     assert_eq!(REMOTE_PERIOD, Duration::from_secs(300));
     assert_eq!(TIMEOUT, Duration::from_secs(2));
+}
+
+/// A stand-in for the script, run as the app runs it: never the real `game-mode`.
+fn probe(script: &str, timeout: Duration) -> Option<bool> {
+    let argv = ["sh", "-c", script].map(str::to_string);
+    answer(client_core::tmux::run(&argv, timeout))
+}
+
+#[test]
+fn only_a_probe_that_answered_says_on_or_off() {
+    assert_eq!(probe("echo on", Duration::from_secs(5)), Some(true));
+    assert_eq!(probe("echo off", Duration::from_secs(5)), Some(false));
+    // Under a game's load the script can be slow or fail: that is no answer, and not "off".
+    assert_eq!(probe("sleep 5", Duration::from_millis(50)), None, "a probe that timed out");
+    assert_eq!(probe("echo on; exit 1", Duration::from_secs(5)), None, "a probe that failed");
 }

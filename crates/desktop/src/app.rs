@@ -967,15 +967,16 @@ impl Running {
             .any(|row| matches!(row, sidebar::Row::Host { host: h, online: true, .. } if h == host))
     }
 
-    /// Every 30 s: game mode is asked about on a thread (2 s at most; no answer is off), and
-    /// every host that answers about its other tmux servers.
+    /// Every 30 s: game mode is asked about on a thread (2 s at most; no answer leaves it as
+    /// it was), and every host that answers about its other tmux servers.
     fn tick(&mut self) {
         if self.game_probe {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
-                let on = tmux::run(&gamemode::status_argv(), gamemode::TIMEOUT)
-                    .is_ok_and(|out| gamemode::parse(&out));
-                let _ = proxy.send_event(UserEvent::GameMode(on));
+                let ran = tmux::run(&gamemode::status_argv(), gamemode::TIMEOUT);
+                if let Some(on) = gamemode::answer(ran) {
+                    let _ = proxy.send_event(UserEvent::GameMode(on));
+                }
             });
         }
         // The other tmux servers of every host that answers (R4: listed, attach only); not the
