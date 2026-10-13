@@ -69,5 +69,8 @@ class ChatUrlsTest {
         drafts.clear("a")
         assertEquals("", drafts.swap("b", TextFieldValue("more"), "a").text)
         assertEquals("more", drafts.swap("a", TextFieldValue(""), "b").text)
+        drafts.insert("b", "/x/p.png")  // an upload that finished after the user left "b"
+        drafts.insert("b", "/x/q.png")
+        assertEquals("/x/p.png /x/q.png more", drafts.swap(null, TextFieldValue(""), "b").text)
     }
 }

@@ -8,27 +8,33 @@ import asyncio
 import re
 import secrets
 import shlex
+import sys
+import traceback
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import PurePosixPath
 
 from aiohttp import WSMsgType, web
 
-from tmls import hosts, image_paste, prompts
+from tmls import approve, hosts, image_paste, prompts
 from tmls.web import record
 
 WINDOW = 16 << 20       # bytes of the record's end read for the history: records grow to 100 MB
 LINE_MAX = 32 << 20     # one line holds a whole base64 screenshot
 BLOB_BYTES = 64 << 20   # images kept per chat; the oldest go first
 UPLOAD_MAX = 32 << 20
-KEYS = ("Escape", "Enter", "Up", "Down", "1", "2", "3", "4")
+KEYS = ("Escape", "Enter")
 FIRST_POLL = 10         # seconds a request waits for the first listing after a server start
 HEAD_TIMEOUT = 10       # seconds for the host to say how long the record is
 QUIET = 2               # seconds without a line that end the history early (the record shrank)
 WATCH = 1               # seconds between looks for a new record or a gone session
-RETRY = 2               # seconds between looks for a record Claude has not started yet
+RETRY = 15              # seconds between looks for a record Claude has not started yet
+QUICK_LOOKS = 20        # the first looks come every 2 s: a new session's first message shows at once
 MISSING, LOST, CHANGED = "record not found", "host unreachable", "changed"
 _ID = re.compile(r"[A-Za-z0-9-]+")
+SHELLS = ("bash", "zsh", "sh", "fish", "dash", "ksh")
+UNSAFE = re.compile("[\x00-\x08\x0b-\x1f\x7f\x9b]")  # C0 but \n and \t; ESC [ 201 ~ would end the paste
+MARK = "\n@@tmls-command@@\n"
 
 
 class Blobs:
@@ -119,17 +125,47 @@ def _sent(error):
     return web.json_response({"ok": True})
 
 
+async def _guard(request, data, found, escape=False):
+    """None when Claude's pane takes input, else the 409: the session moved to another
+    conversation, a permission dialog is up (escape: Escape is still fine), or the pane is a shell.
+    One host round trip: the screen and the pane's foreground command."""
+    host, name, row = found
+    session, claude = data.get("session"), request.app["claudes"].get(data.get("key"))
+    if isinstance(session, str) and claude is not None and claude.session_id != session:
+        return _fail(409, f"{name} is on another conversation now")
+    target = shlex.quote(_pane(row) or f"={name}:")
+    script = (f"tmux capture-pane -p -t {target} && printf '{MARK}' && "
+              f"tmux display-message -p -t {target} '#{{pane_current_command}}'")
+    code, out = await prompts._run(prompts._run_argv(host, script))
+    if code is None:
+        return _fail(502, out)
+    if code != 0:
+        return _fail(409, out.strip() or f"couldn't read {name}")
+    screen, _, command = out.partition(MARK)
+    if command.strip() in SHELLS:
+        return _fail(409, f"Claude is not running in {name} any more")
+    if not escape and approve.request(screen) is not None:
+        return _fail(409, f"{name} is asking for permission: answer that first")
+
+
 async def send(request):
     """Paste text into Claude's pane and press Enter. prompts.send hands the text to tmux on
     stdin (load-buffer, bracketed paste), so no shell ever reads it."""
     data = await _body(request)
     text = data.get("text")
-    if not isinstance(text, str) or not text.strip() or "\0" in text:
+    if not isinstance(text, str):
+        return _fail(400, "invalid request")
+    text = UNSAFE.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
+    if not text.strip():
         return _fail(400, "invalid request")
     found = await _row(request.app, data.get("key"), claude=True)
     if isinstance(found, web.Response):
         return found
     host, name, row = found
+    refused = await _guard(request, data, found)
+    if refused is not None:
+        return refused
+    request.app["chat_sent"][key] = asyncio.get_running_loop().time()  # an empty chat looks again soon
     return _sent(await prompts.send(host, name, text, pane=_pane(row)))
 
 
@@ -143,6 +179,9 @@ async def press(request):
     if isinstance(found, web.Response):
         return found
     host, name, row = found
+    refused = await _guard(request, data, found, escape=key_name == "Escape")
+    if refused is not None:
+        return refused
     target = shlex.quote(_pane(row) or f"={name}:")
     code, out = await prompts._run(prompts._run_argv(host, f"tmux send-keys -t {target} {key_name}"))
     return _sent(None if code == 0 else out.strip() or f"couldn't send to {name}")
@@ -211,7 +250,11 @@ async def _line(out):
 
 
 def _take(line, blobs):
-    events, images = record.read(line)
+    try:
+        events, images = record.read(line)
+    except Exception:  # one bad line is skipped, not fatal
+        traceback.print_exc(file=sys.stderr)
+        return []
     for image in images:
         blobs.put(*image)
     return events
@@ -223,8 +266,12 @@ async def _pump(ws, key, claude, proc, blobs):
     out, head = proc.stdout, b""
     try:
         for _ in range(50):  # a login script may print first
-            head = (await asyncio.wait_for(out.readline(), HEAD_TIMEOUT)).strip()
-            if head.isdigit() or head in (b"none", b""):
+            raw = await asyncio.wait_for(out.readline(), HEAD_TIMEOUT)
+            if not raw:  # the end of the output: a blank line is only a login script's
+                head = b""
+                break
+            head = raw.strip()
+            if head.isdigit() or head == b"none":
                 break
     except (asyncio.TimeoutError, ValueError):
         return LOST
@@ -296,6 +343,7 @@ async def _serve(app, ws, key):
     if not row["online"]:
         return LOST
     empty = None  # the session id an empty chat was shown for: Claude writes no record before the first message
+    looks = 0
     while True:
         claude = app["claudes"].get(key)
         if claude is None or not _ID.fullmatch(claude.session_id or ""):
@@ -325,7 +373,9 @@ async def _serve(app, ws, key):
                 empty = claude.session_id
                 await ws.send_json({"t": "open", "key": key, "session": claude.session_id, "title": claude.title})
                 await ws.send_json({"t": "items", "reset": True, "items": []})
-            await asyncio.sleep(RETRY)
+            looks += 1
+            typed = asyncio.get_running_loop().time() - app["chat_sent"].get(key, float("-inf")) < 60
+            await asyncio.sleep(min(RETRY, 2) if typed or looks <= QUICK_LOOKS else RETRY)
         elif ended != CHANGED:
             return ended
 
@@ -337,6 +387,13 @@ async def _stream(app, ws, key):
         await ws.close()
     except (ConnectionError, RuntimeError):  # the app went away mid-send
         pass
+    except Exception:  # never leave the socket open and silent
+        traceback.print_exc(file=sys.stderr)
+        try:
+            await ws.send_json({"t": "none", "reason": "reader failed"})
+            await ws.close()
+        except (ConnectionError, RuntimeError):
+            pass
 
 
 async def chat(request):
@@ -374,7 +431,7 @@ async def _stop(app):
 
 def setup(app):
     app["chat_argv"], app["chat_blobs"], app["chat_children"] = follow_argv, {}, set()
-    app["chat_sockets"] = set()
+    app["chat_sockets"], app["chat_sent"] = set(), {}
     app.on_shutdown.append(_stop)
     app.router.add_get("/api/chat", chat)
     app.router.add_get("/api/chat/blob", blob)

@@ -226,6 +226,12 @@ class ChatClientTest {
         onMain { client.stop() }
     }
 
+    @Test fun onlyTheHistoryResetsTheBackoff() {
+        assertTrue(ChatClient.resetsBackoff(ChatMsg.Items(true, emptyList())))
+        assertFalse(ChatClient.resetsBackoff(ChatMsg.Open("pc/a", "s", null)))
+        assertFalse(ChatClient.resetsBackoff(ChatMsg.None("host unreachable")))
+    }
+
     @Test fun sendKeyAndApprovePostJsonWithTheOrigin() {
         serve(mapOf(
             "/api/chat/send" to listOf(MockResponse().setBody("""{"ok":true}""")),

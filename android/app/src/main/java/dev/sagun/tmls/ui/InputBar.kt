@@ -54,6 +54,7 @@ import dev.sagun.tmls.chat.ChatViewModel
 import dev.sagun.tmls.chat.Choice
 import dev.sagun.tmls.chat.Row as SessionRow
 import dev.sagun.tmls.chat.Upload
+import dev.sagun.tmls.chat.denyAt
 import java.io.File
 
 /**
@@ -89,7 +90,8 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
     ) {
         vm.error?.let { ErrorLine(it) { vm.error = null } }
         vm.upload?.let { UploadLine(it) }
-        row.prompt?.let { PromptCard(it, row.choices, vm.answering, vm::answer) }
+        val prompt = row.prompt?.takeIf { row.key !in vm.answered }
+        prompt?.let { PromptCard(it, row.choices, vm.answering, vm::answer) }
         if (row.waiting && row.prompt == null) {
             WaitingCard(row.waitingFor ?: "input needed", onShowTerminal = { vm.showTerminal(true) })
         }
@@ -105,7 +107,7 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     decorationBox = { field ->
                         Box {
-                            if (vm.draft.text.isEmpty()) Text("Message", style = Tm.Body.copy(color = Tm.Faint))
+                            if (vm.draft.text.isEmpty()) Text(if (row.asking) "Answer the prompt above first" else "Message", style = Tm.Body.copy(color = Tm.Faint))
                             field()
                         }
                     },
@@ -125,7 +127,7 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    val ready = vm.draft.text.isNotBlank() && !vm.sending
+                    val ready = vm.draft.text.isNotBlank() && !vm.sending && !row.asking
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).background(if (ready || vm.sending) Tm.Accent else Tm.Accent.copy(alpha = 0.35f))
                             .clickable(enabled = ready, role = Role.Button, onClickLabel = "Send", onClick = vm::send),
@@ -241,15 +243,20 @@ private fun PromptCard(lines: List<String>, choices: List<Choice>?, busy: Boolea
                     Button(onClick = { onAnswer(true, null) }, enabled = !busy) { Text("Allow") }
                 }
             } else {
+                val deny = denyAt(choices)
                 choices.forEachIndexed { i, choice ->
                     when {
                         i == 0 -> Button(onClick = { onAnswer(true, choice.n) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Allow") }
-                        choice.label.startsWith("No") ->
+                        i == deny ->
                             OutlinedButton(onClick = { onAnswer(false, null) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line),
                                 modifier = Modifier.fillMaxWidth()) { Text("Deny", color = Tm.Text) }
                         else -> OutlinedButton(onClick = { onAnswer(true, choice.n) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line),
                             modifier = Modifier.fillMaxWidth()) { Text(choice.label, color = Tm.Text, maxLines = 3, overflow = TextOverflow.Ellipsis) }
                     }
+                }
+                if (deny == null) {  // the prompt lists no "No": Escape still denies
+                    OutlinedButton(onClick = { onAnswer(false, null) }, enabled = !busy, border = BorderStroke(1.dp, Tm.Line),
+                        modifier = Modifier.fillMaxWidth()) { Text("Deny", color = Tm.Text) }
                 }
             }
         }

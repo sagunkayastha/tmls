@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 from unittest.mock import AsyncMock
 
 from tmls import approve, hosts, image_paste, prompts
@@ -266,21 +267,25 @@ async def test_key_sends_only_the_named_keys(aiohttp_client, monkeypatch, tmp_pa
 
     async def run(argv, stdin=None):
         seen.append(argv[-1])
-        return (None, "couldn't reach the host") if "Down" in argv[-1] else (1 if "Up" in argv[-1] else 0, "no pane\n")
+        if "send-keys" not in argv[-1]:
+            return 0, "screen\n"
+        return (None, "couldn't reach the host") if "Enter" in argv[-1] and fail else (1 if "Escape" in argv[-1] and fail else 0, "no pane\n")
 
+    fail = False
     monkeypatch.setattr(prompts, "_run", run)
+    assert chat.KEYS == ("Escape", "Enter")
     for name in chat.KEYS:
-        if name not in ("Up", "Down"):
-            answer = await client.post("/api/chat/key", json={"key": "box/work", "name": name})
-            assert answer.status == 200 and await answer.json() == {"ok": True}
-            assert seen[-1] == f"tmux send-keys -t %7 {name}"
+        answer = await client.post("/api/chat/key", json={"key": "box/work", "name": name})
+        assert answer.status == 200 and await answer.json() == {"ok": True}
+        assert seen[-1] == f"tmux send-keys -t %7 {name}"
     assert (await client.post("/api/chat/key", json={"key": "box/my session", "name": "Escape"})).status == 200
     assert seen[-1] == "tmux send-keys -t '=my session:' Escape"
-    failed = await client.post("/api/chat/key", json={"key": "box/work", "name": "Up"})
+    fail = True
+    failed = await client.post("/api/chat/key", json={"key": "box/work", "name": "Escape"})
     assert failed.status == 409 and (await failed.json())["error"] == "no pane"
-    assert (await client.post("/api/chat/key", json={"key": "box/work", "name": "Down"})).status == 502
+    assert (await client.post("/api/chat/key", json={"key": "box/work", "name": "Enter"})).status == 502
     seen.clear()
-    for name in ("C-c", "5", "Enter; rm -rf ~", "escape", "", None, 1, ["Enter"], "Enter Enter"):
+    for name in ("C-c", "5", "Up", "Down", "Enter; rm -rf ~", "escape", "", None, 1, ["Enter"], "Enter Enter"):
         assert (await client.post("/api/chat/key", json={"key": "box/work", "name": name})).status == 400, name
     assert (await client.post("/api/chat/key", json={"key": "elsewhere/work", "name": "Enter"})).status == 400
     assert (await client.post("/api/chat/key", json={"key": "box/gone", "name": "Enter"})).status == 404
@@ -345,3 +350,91 @@ def test_follow_argv_quotes_and_runs_on_the_sessions_host():
     argv = chat.follow_argv("nas", SID)
     assert argv[0] == "ssh" and argv[-2] == "nas" and f"{SID}.jsonl" in argv[-1] and "tail -c +" in argv[-1]
     assert chat.follow_argv(hosts.LOCAL, SID)[:2] == ["sh", "-c"]
+
+
+DIALOG = "x\nDo you want to proceed?\n \u276f 1. Yes\n   2. No\n Esc to cancel\n"
+
+
+def pane_script(monkeypatch, screen, command="claude"):
+    seen = []
+
+    async def run(argv, stdin=None):
+        seen.append((argv[-1], stdin))
+        if "capture-pane" in argv[-1]:
+            return 0, screen + chat.MARK + command + "\n"
+        return 0, ""
+
+    monkeypatch.setattr(prompts, "_run", run)
+    return seen
+
+
+async def test_send_and_key_refuse_a_dialog_a_shell_and_another_conversation(aiohttp_client, monkeypatch, tmp_path):
+    client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])})
+    await asyncio.sleep(0.2)  # the poll fills app["claudes"]
+    seen = pane_script(monkeypatch, DIALOG)
+    asking = {"ok": False, "error": "work is asking for permission: answer that first"}
+    send = await client.post("/api/chat/send", json={"key": "box/work", "text": "hi"})
+    assert send.status == 409 and await send.json() == asking
+    enter = await client.post("/api/chat/key", json={"key": "box/work", "name": "Enter"})
+    assert enter.status == 409 and await enter.json() == asking
+    assert (await client.post("/api/chat/key", json={"key": "box/work", "name": "Escape"})).status == 200
+    assert [c for c, _ in seen if "send-keys" in c] == ["tmux send-keys -t %7 Escape"]
+    assert len([c for c, _ in seen if "capture-pane" in c]) == 3  # one round trip each
+    seen = pane_script(monkeypatch, "just waiting\n> \n", command="zsh")
+    gone = {"ok": False, "error": "Claude is not running in work any more"}
+    for path, body in (("send", {"text": "hi"}), ("key", {"name": "Escape"})):
+        answer = await client.post(f"/api/chat/{path}", json={"key": "box/work", **body})
+        assert answer.status == 409 and await answer.json() == gone
+    seen = pane_script(monkeypatch, "just waiting\n> \n")
+    assert (await client.post("/api/chat/send", json={"key": "box/work", "text": "hi", "session": SID})).status == 200
+    before = len(seen)
+    other = await client.post("/api/chat/send", json={"key": "box/work", "text": "hi", "session": "older"})
+    assert other.status == 409 and (await other.json())["error"] == "work is on another conversation now"
+    other = await client.post("/api/chat/key", json={"key": "box/work", "name": "Escape", "session": "older"})
+    assert other.status == 409 and len(seen) == before
+
+
+async def test_send_cleans_the_text_before_pasting(aiohttp_client, monkeypatch, tmp_path):
+    client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])})
+    send = AsyncMock(return_value=None)
+    monkeypatch.setattr(prompts, "send", send)
+    dirty = "a\r\nb\rc\td\x1b[201~e\x9bf\x7fg\x00h\x08i"
+    assert (await client.post("/api/chat/send", json={"key": "box/work", "text": dirty})).status == 200
+    send.assert_awaited_once_with("box", "work", "a\nb\nc\td[201~efghi", pane="%7")
+    for text in ("\x1b\x7f", "\x00 \x9b\n"):
+        assert (await client.post("/api/chat/send", json={"key": "box/work", "text": text})).status == 400
+    assert send.await_count == 1
+
+
+async def test_a_blank_line_before_the_size_is_not_an_unreachable_host(aiohttp_client, monkeypatch, tmp_path):
+    client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])})
+    record_file(tmp_path).write_text(say(1))
+    client.app["chat_argv"] = lambda host, sid: ["sh", "-c", "echo; echo; exec " + shlex.join(chat.follow_argv(hosts.LOCAL, sid))]
+    ws = await client.ws_connect("/api/chat?key=box/work")
+    assert (await get(ws))["t"] == "open"
+    assert (await get(ws))["items"][0]["text"] == "reply 1"
+
+
+async def test_a_reader_that_fails_says_so_and_a_bad_line_is_skipped(aiohttp_client, monkeypatch, tmp_path, capsys):
+    client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])})
+    record_file(tmp_path).write_text(say(1) + say(2))
+    real = chat.record.read
+
+    def read(raw):
+        if b"reply 1" in raw:
+            raise ValueError("bad line")
+        return real(raw)
+
+    monkeypatch.setattr(chat.record, "read", read)
+    ws = await client.ws_connect("/api/chat?key=box/work")
+    assert (await get(ws))["t"] == "open"
+    assert [i["text"] for i in (await get(ws))["items"]] == ["reply 2"]
+
+    async def explode(*a, **k):
+        raise KeyError("boom")
+
+    monkeypatch.setattr(chat, "_serve", explode)
+    ws = await client.ws_connect("/api/chat?key=box/work")
+    assert await get(ws) == {"t": "none", "reason": "reader failed"}
+    assert await closed(ws) == 1000
+    assert "KeyError" in capsys.readouterr().err

@@ -1,5 +1,6 @@
 package dev.sagun.tmls.chat
 
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -78,6 +79,13 @@ class Drafts {
             if (current.text.isEmpty()) map.remove(from) else map[from] = current
         }
         return map[to] ?: TextFieldValue("")
+    }
+
+    /** [path] into [key]'s draft at its cursor, as it is put into the one being typed. */
+    fun insert(key: String, path: String) {
+        val cur = map[key] ?: TextFieldValue("")
+        val (text, cursor) = Draft.insert(cur.text, cur.selection.start, cur.selection.end, path)
+        map[key] = TextFieldValue(text, TextRange(cursor))
     }
 
     /** [key] was sent: nothing left to keep. */

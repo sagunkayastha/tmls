@@ -101,9 +101,23 @@ class WireTest {
         assertTrue(Wire.reply(401, """{"ok":false,"error":"login"}""").login)
     }
 
+    @Test fun aDialogIsUpOnlyWhenTheRowShowsOne() {
+        assertTrue(Row("pc/x", "pc", "desk", "x", "waiting", shown = listOf("a")).asking)
+        assertFalse(Row("pc/x", "pc", "desk", "x", "waiting").asking)
+    }
+
+    @Test fun denyIsOneOfTheChoicesOrNone() {
+        assertEquals(2, denyAt(listOf(Choice(1, "Yes"), Choice(2, "Yes, always"), Choice(4, "No"))))
+        assertEquals(1, denyAt(listOf(Choice(1, "Yes"), Choice(2, "No"), Choice(3, "No, and tell Claude"))))
+        assertNull(denyAt(listOf(Choice(1, "Yes"), Choice(2, "Yes, always"))))
+        assertNull(denyAt(listOf(Choice(1, "No way"))))  // the first choice is the Allow button
+    }
+
     @Test fun bodies() {
         assertEquals("""{"key":"h/n","text":"a \"b\"\nc"}""", Wire.send("h/n", "a \"b\"\nc"))
         assertEquals("""{"key":"h/n","name":"Escape"}""", Wire.key("h/n", "Escape"))
+        assertEquals("""{"key":"h/n","text":"x","session":"s1"}""", Wire.send("h/n", "x", "s1"))
+        assertEquals("""{"key":"h/n","name":"Escape","session":"s1"}""", Wire.key("h/n", "Escape", "s1"))
         val row = Row("pc/x", "pc", "desk", "x", "waiting", shown = listOf("a", "b"), pane = "%3")
         assertEquals("""{"host":"pc","name":"x","shown":["a","b"],"yes":true,"pane":"%3"}""", Wire.approve(row, true))
         assertEquals("""{"host":"pc","name":"x","shown":["a","b"],"yes":false,"pane":null}""", Wire.approve(row.copy(pane = null), false))

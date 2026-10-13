@@ -43,7 +43,12 @@ data class Row(
     val working: Boolean get() = mark == "running"
     /** Waiting on a permission prompt the app can answer. */
     val prompt: List<String>? get() = if (waiting) shown else null
+    /** A permission dialog is up: a message typed now would answer it, so none is sent. */
+    val asking: Boolean get() = shown != null
 }
+
+/** The button of a permission prompt that denies: the first choice after the first that starts with "No", else none. */
+fun denyAt(choices: List<Choice>): Int? = choices.indexOfFirst { it.label.startsWith("No") }.takeIf { it > 0 }
 
 data class HostInfo(val host: String, val label: String, val online: Boolean, val background: Boolean)
 
@@ -195,9 +200,12 @@ object Wire {
         return Reply(ok, if (ok) null else o?.str("error") ?: "HTTP $code", o?.str("path"))
     }
 
-    fun send(key: String, text: String): String = buildJsonObject { put("key", key); put("text", text) }.toString()
+    /** [session]: the id from the chat's `open`; the server refuses when Claude is on another conversation now. */
+    fun send(key: String, text: String, session: String? = null): String =
+        buildJsonObject { put("key", key); put("text", text); if (session != null) put("session", session) }.toString()
 
-    fun key(key: String, name: String): String = buildJsonObject { put("key", key); put("name", name) }.toString()
+    fun key(key: String, name: String, session: String? = null): String =
+        buildJsonObject { put("key", key); put("name", name); if (session != null) put("session", session) }.toString()
 
     fun seen(key: String): String = buildJsonObject { put("key", key) }.toString()
 

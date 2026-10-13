@@ -45,8 +45,10 @@ def choices(screen):
         m = CHOICE.fullmatch(line)
         if m:
             out.append({"n": int(m.group(1)), "label": m.group(2).strip()})
-        elif line:
+        elif line.startswith(("Esc to cancel", "──")):
             break
+        elif line and out:  # a label that wrapped onto the next line
+            out[-1]["label"] += " " + line
     return out
 
 

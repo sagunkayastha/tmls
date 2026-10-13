@@ -214,7 +214,7 @@ class ChatClient(
             Feed(http, scope, { ws(urls.chat(k)) }, { text -> Wire.chat(text)?.also(sink::prepare) }, object : Feed.Listener<ChatMsg> {
                 override fun onMessage(message: ChatMsg): Boolean {
                     sink.onChat(k, message)
-                    if (message !is ChatMsg.None) return true
+                    if (message !is ChatMsg.None) return resetsBackoff(message)
                     // "none" is followed by a close. A host that did not answer is asked again, ever
                     // less often; the other reasons (session ended, no Claude in it) will not change
                     // by asking: the feed rests until it is opened again.
@@ -230,10 +230,10 @@ class ChatClient(
         if (started) chat?.start()
     }
 
-    suspend fun send(key: String, text: String): Reply = post("api/chat/send", Wire.send(key, text))
+    suspend fun send(key: String, text: String, session: String? = null): Reply = post("api/chat/send", Wire.send(key, text, session))
 
-    /** One of the contract's key names: Escape, Enter, Up, Down, 1-4. */
-    suspend fun key(key: String, name: String): Reply = post("api/chat/key", Wire.key(key, name))
+    /** One of the contract's key names: Escape or Enter. */
+    suspend fun key(key: String, name: String, session: String? = null): Reply = post("api/chat/key", Wire.key(key, name, session))
 
     suspend fun approve(row: Row, yes: Boolean, choice: Int? = null): Reply = post("api/approve", Wire.approve(row, yes, choice))
 
@@ -313,6 +313,9 @@ class ChatClient(
         private const val UPLOAD_ANSWER_S = 120L
         /** This many failed tries of the session list in a row, and the addresses are asked again. */
         const val UNREACHABLE_AFTER = 3
+
+        /** The chat shows it works once its history arrives; `open` alone (an empty chat, a broken reader) does not. */
+        fun resetsBackoff(message: ChatMsg): Boolean = message is ChatMsg.Items
 
         /** A "none" that asking again can cure. */
         fun retryable(reason: String): Boolean = reason.contains("unreachable", ignoreCase = true)

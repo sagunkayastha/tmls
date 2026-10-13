@@ -98,9 +98,14 @@ def test_choices_when_the_marker_is_on_another_line():
     assert approve.choices(moved) == approve.choices(DIALOG)
 
 
-def test_choices_stop_at_the_first_other_line_and_none_without_a_dialog():
-    wrapped = DIALOG.replace("project\n", "project\n     and more\n   3. Hidden\n")
-    assert [c["n"] for c in approve.choices(wrapped)] == [1, 2]
+def test_choices_join_a_wrapped_label_and_stop_at_the_footer_or_a_rule():
+    wrapped = DIALOG.replace("project\n", "project\n     and more\n   3. Third\n")
+    assert approve.choices(wrapped)[1:] == [
+        {"n": 2, "label": "Yes, and always allow access to /tmp from this project and more"},
+        {"n": 3, "label": "Third"}, {"n": 4, "label": "No"}]
+    ruled = DIALOG.replace(" Esc to cancel", "────────\n   5. Hidden\n Esc to cancel")
+    assert [c["n"] for c in approve.choices(ruled)] == [1, 2, 4]
+    assert [c["n"] for c in approve.choices(DIALOG + "   6. After footer\n")] == [1, 2, 4]
     assert approve.choices("❯ ls\n● done\n") is None
 
 

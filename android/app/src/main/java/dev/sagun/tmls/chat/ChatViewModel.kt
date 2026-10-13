@@ -56,6 +56,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     private var log = ChatLog()
     /** The session whose chat feed is open (null: none). */
     private var chatKey: String? = null
+    /** Claude's session id from the last `open` of that chat: sent with messages, so a new conversation refuses them. */
+    private var chatSession: String? = null
     private val parsed = ConcurrentHashMap<String, Pair<String, List<Block>>>()
     /** Logins the server asked for without the session list ever arriving in between. */
     private var bounces = 0
@@ -97,6 +99,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     var upload by mutableStateOf<Upload?>(null)
         private set
     var answering by mutableStateOf(false)
+        private set
+    /** Rows whose permission card is hidden: answered, and no rows message for them has come since. */
+    var answered by mutableStateOf<Set<String>>(emptySet())
         private set
     var stopping by mutableStateOf(false)
         private set
@@ -175,6 +180,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
             c.logout()
             c.stop()
             needLogin = true
+            images.memoryCache?.clear()  // pictures of the chats of the account that left
+            withContext(Dispatchers.IO) { images.diskCache?.clear() }
         }
     }
 
@@ -208,6 +215,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
             is EventMsg.Hosts -> hosts = message.hosts
             is EventMsg.Rows -> {
                 rows = Sessions.apply(rows, message)
+                if (answered.isNotEmpty()) answered = answered - message.set.mapTo(HashSet()) { it.key }
                 if (message.full) listed = true
             }
             is EventMsg.Renamed -> if (selected == message.old) remember(message.new)
@@ -226,6 +234,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         if (key != chatKey) return
         when (message) {
             is ChatMsg.Open -> {
+                chatSession = message.session.ifEmpty { null }
                 title = message.title
                 phase = ChatPhase.Open
             }
@@ -310,6 +319,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     }
 
     private fun resetChat() {
+        chatSession = null
         title = null
         phase = ChatPhase.Idle
         unfolded.clear()
@@ -323,10 +333,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         val c = client ?: return
         val key = selected ?: return
         val text = draft.text
-        if (text.isBlank() || sending) return
+        if (text.isBlank() || sending || row?.asking == true) return
+        val session = chatSession
         sending = true
         viewModelScope.launch {
-            val reply = c.send(key, text)
+            val reply = c.send(key, text, session)
             sending = false
             if (reply.ok) {
                 error = null
@@ -344,9 +355,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         val c = client ?: return
         val key = selected ?: return
         if (stopping) return
+        val session = chatSession
         stopping = true
         viewModelScope.launch {
-            val reply = c.key(key, "Escape")
+            val reply = c.key(key, "Escape", session)
             stopping = false
             if (!reply.ok && !reply.login) error = "Not stopped: ${reply.error}"
         }
@@ -361,7 +373,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         viewModelScope.launch {
             val reply = c.approve(r, yes, choice)
             answering = false
-            if (reply.ok) error = null else if (!reply.login) error = reply.error ?: "The answer did not get through."
+            if (reply.ok) {
+                error = null
+                answered = answered + r.key  // a second tap must not answer the prompt that follows
+            } else if (!reply.login) error = reply.error ?: "The answer did not get through."
         }
     }
 
@@ -410,8 +425,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
             val path = reply.path
             if (reply.ok && path != null) {
                 error = null
-                val (text, cursor) = Draft.insert(draft.text, draft.selection.start, draft.selection.end, path)
-                draft = TextFieldValue(text, TextRange(cursor))
+                if (selected == key) {
+                    val (text, cursor) = Draft.insert(draft.text, draft.selection.start, draft.selection.end, path)
+                    draft = TextFieldValue(text, TextRange(cursor))
+                } else {
+                    drafts.insert(key, path)  // the session it was started in, not the one looked at now
+                }
             } else if (!reply.login) {
                 error = "Upload failed: ${reply.error ?: "no path came back"}"
             }
