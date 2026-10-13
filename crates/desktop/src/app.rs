@@ -1547,16 +1547,13 @@ impl Running {
                 self.approve(&key);
             }
             PanelResult::Settings(wanted) => {
-                let dir = self.config_dir.clone();
                 let player = forms::on_path(alerts::SOUND_PLAYER);
-                let (now, said) = alerts::switch(
-                    self.alerts.settings(),
-                    wanted,
-                    &mut |settings| settings.save(&dir),
-                    player,
-                );
+                // Applied to the file as it is now: tmls may have written it since the start.
+                let (now, said) =
+                    alerts::switch(self.alerts.settings(), wanted, &self.config_dir, player);
                 self.alerts.set_settings(now);
-                // A switch that could not be saved is shown as it was.
+                // A switch that could not be saved is shown as it was, and one tmls changed
+                // meanwhile as the file has it.
                 if let Some((Modal::Alerts(panel), _)) = &mut self.modal {
                     panel.set_settings(now);
                 }

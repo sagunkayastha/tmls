@@ -502,7 +502,8 @@ fn settings_are_read_from_notifications_json_and_written_when_switched() {
         sound: true,
         silence_focused: false,
     };
-    saved.save(&dir).unwrap();
+    let nothing_else = serde_json::Map::new();
+    saved.save(&dir, &nothing_else).unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         "{\"desktop\": true, \"sound\": true, \"silence_focused\": false}\n"
@@ -511,7 +512,7 @@ fn settings_are_read_from_notifications_json_and_written_when_switched() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     // A config directory that does not exist yet is made.
     let fresh = dir.join("fresh");
-    on.save(&fresh).unwrap();
+    on.save(&fresh, &nothing_else).unwrap();
     assert_eq!(Settings::load(&fresh), on);
 }
 
@@ -519,57 +520,172 @@ fn settings_are_read_from_notifications_json_and_written_when_switched() {
 fn a_switch_that_cannot_be_saved_stays_and_says_why() {
     let on = Settings::default();
     let wanted = Settings { sound: true, ..on };
-    let mut failing = |_: &Settings| -> std::io::Result<()> {
-        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-    };
-    let (kept, said) = alerts::switch(on, wanted, &mut failing, true);
+    const ON: &str = "{\"desktop\": true, \"sound\": false, \"silence_focused\": true}\n";
+    // A read-only config directory: the save fails, the old file stays.
+    // (The test container runs as uid 1000: the mode is enforced.)
+    let dir = scratch("readonly");
+    let file = dir.join("notifications.json");
+    std::fs::write(&file, ON).unwrap();
+    std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+    let (kept, said) = alerts::switch(on, wanted, &dir, true);
+    std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
     assert_eq!(kept, on);
     assert!(
         said.unwrap_err()
             .starts_with("couldn't save the alert switches: ")
     );
-    // A read-only config directory: the real save fails the same way, the old file stays.
-    // (The test container runs as uid 1000: the mode is enforced.)
-    let dir = scratch("readonly");
-    let file = dir.join("notifications.json");
-    std::fs::write(&file, "{\"desktop\": fal").unwrap();
-    std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
-    let result = wanted.save(&dir);
-    std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
-    assert!(result.is_err());
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"desktop\": fal");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), ON);
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
         1,
         "no temp file left"
     );
     // Saved: the new settings, and the status line says which switch.
-    let mut ok = |_: &Settings| -> std::io::Result<()> { Ok(()) };
     assert_eq!(
-        alerts::switch(on, wanted, &mut ok, true),
+        alerts::switch(on, wanted, &dir, true),
         (wanted, Ok("Sound ON".to_string()))
     );
+    assert_eq!(Settings::load(&dir), wanted);
     assert_eq!(
-        alerts::switch(wanted, on, &mut ok, true),
+        alerts::switch(wanted, on, &dir, true),
         (on, Ok("Sound OFF".to_string()))
     );
-    let quiet = Settings {
-        desktop: false,
-        ..on
-    };
-    assert_eq!(
-        alerts::switch(on, quiet, &mut ok, false),
-        (quiet, Ok("Desktop OFF".to_string()))
-    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), ON);
     // Sound with no player: on all the same, and it says there will be none.
     assert_eq!(
-        alerts::switch(on, wanted, &mut ok, false),
+        alerts::switch(on, wanted, &dir, false),
         (
             wanted,
             Ok(format!(
                 "Sound ON, but {SOUND_PLAYER} is not installed: no sound"
             ))
         )
+    );
+    // No file at all: the defaults, and the flip makes it.
+    let fresh = scratch("first-flip");
+    let quiet = Settings {
+        desktop: false,
+        ..on
+    };
+    assert_eq!(
+        alerts::switch(on, quiet, &fresh, false),
+        (quiet, Ok("Desktop OFF".to_string()))
+    );
+    assert_eq!(
+        std::fs::read_to_string(fresh.join("notifications.json")).unwrap(),
+        "{\"desktop\": false, \"sound\": false, \"silence_focused\": true}\n"
+    );
+}
+
+#[test]
+fn a_flip_changes_its_one_switch_in_the_file_as_it_is_now() {
+    // Read at start: all defaults.
+    let dir = scratch("flip-now");
+    let file = dir.join("notifications.json");
+    let at_start = Settings::load(&dir);
+    // Since then tmls turned Desktop off, and the file has keys tmls-rs does not know.
+    std::fs::write(
+        &file,
+        "{\"desktop\": false, \"sound\": false, \"silence_focused\": true, \"volume\": 3, \"extra\": {\"a\": [1, \"x\"]}}\n",
+    )
+    .unwrap();
+    let wanted = Settings {
+        sound: true,
+        ..at_start
+    };
+    let (now, said) = alerts::switch(at_start, wanted, &dir, true);
+    assert_eq!(said, Ok("Sound ON".to_string()));
+    assert_eq!(
+        now,
+        Settings {
+            desktop: false,
+            sound: true,
+            silence_focused: true
+        },
+        "Sound as flipped; Desktop as tmls left it, not as it was at start"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{\"desktop\": false, \"sound\": true, \"silence_focused\": true, \"extra\": {\"a\":[1,\"x\"]}, \"volume\": 3}\n",
+        "tmls's three keys as tmls writes them, then what else the file had"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}
+
+#[test]
+fn a_settings_file_that_cannot_be_understood_is_left_alone_and_the_flip_refused() {
+    let on = Settings::default();
+    let wanted = Settings { sound: true, ..on };
+    for damaged in ["{\"desktop\": fal", "", "[false, false]", "\"on\""] {
+        let dir = scratch("damaged");
+        let file = dir.join("notifications.json");
+        std::fs::write(&file, damaged).unwrap();
+        assert_eq!(
+            alerts::switch(on, wanted, &dir, true),
+            (
+                on,
+                Err(
+                    "couldn't switch: notifications.json is not a JSON object; it is left as it is"
+                        .to_string()
+                )
+            ),
+            "{damaged:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), damaged);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+    // There, but not to be read (uid 1000: the mode is enforced).
+    let dir = scratch("unreadable");
+    let file = dir.join("notifications.json");
+    std::fs::write(&file, "{\"sound\": false}").unwrap();
+    std::fs::set_permissions(&file, Permissions::from_mode(0o000)).unwrap();
+    let (kept, said) = alerts::switch(on, wanted, &dir, true);
+    std::fs::set_permissions(&file, Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(kept, on);
+    let said = said.unwrap_err();
+    assert!(
+        said.starts_with("couldn't switch: notifications.json cannot be read: ")
+            && said.ends_with("; it is left as it is"),
+        "{said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{\"sound\": false}"
+    );
+}
+
+#[test]
+fn a_symlinked_settings_file_stays_a_link_and_keeps_its_mode() {
+    // Dotfiles kept elsewhere: notifications.json is a link to the real file.
+    let dir = scratch("linked");
+    std::fs::create_dir_all(dir.join("real")).unwrap();
+    let real = dir.join("real/notes.json");
+    std::fs::write(&real, "{\"sound\": false}\n").unwrap();
+    std::fs::set_permissions(&real, Permissions::from_mode(0o600)).unwrap();
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let link = config.join("notifications.json");
+    std::os::unix::fs::symlink("../real/notes.json", &link).unwrap();
+    let on = Settings::default();
+    let wanted = Settings { sound: true, ..on };
+    assert_eq!(
+        alerts::switch(on, wanted, &config, true),
+        (wanted, Ok("Sound ON".to_string()))
+    );
+    assert!(link.is_symlink(), "the link is not replaced by a file");
+    assert_eq!(
+        std::fs::read_to_string(&real).unwrap(),
+        "{\"desktop\": true, \"sound\": true, \"silence_focused\": true}\n"
+    );
+    assert_eq!(
+        std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let count = |dir: &std::path::Path| std::fs::read_dir(dir).unwrap().count();
+    assert_eq!(
+        (count(&config), count(&dir.join("real"))),
+        (1, 1),
+        "no temp file left"
     );
 }
 

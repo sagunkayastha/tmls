@@ -17,8 +17,11 @@
 //! **Settings** are tmls's `~/.config/tmls/notifications.json`: `desktop` (default on), `sound`
 //! (default off: `canberra-gtk-play`, when it is installed) and `silence_focused` (default on).
 //! A missing or damaged file, or a value that is not a boolean, is the default. The three
-//! switches head the alerts list; Space flips one, and the file is written then, whole, as
-//! tmls writes it (`switch`).
+//! switches head the alerts list; Space flips one, and the file is written then (`switch`):
+//! read again first, so only that switch changes in it (tmls may have written it since the
+//! start), with tmls's three keys as tmls writes them and every other key it had kept. A file
+//! that is there but cannot be read, or is not a JSON object, is never written over: the flip
+//! is refused.
 //!
 //! **Approvals** (tmls's Yes / No on a permission prompt): `y` on an alert asks the app to
 //! answer its session's prompt (`PanelResult::Approve`); nothing here sends a key to a session.
@@ -68,35 +71,74 @@ impl Settings {
 
     /// The settings a `notifications.json` with this text gives.
     pub fn parse(text: &str) -> Settings {
-        let defaults = Settings::default();
-        let json: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-        let switch =
-            |name: &str, default: bool| json.get(name).and_then(|v| v.as_bool()).unwrap_or(default);
-        Settings {
-            desktop: switch("desktop", defaults.desktop),
-            sound: switch("sound", defaults.sound),
-            silence_focused: switch("silence_focused", defaults.silence_focused),
+        match serde_json::from_str(text) {
+            Ok(serde_json::Value::Object(object)) => Settings::of(&object),
+            _ => Settings::default(),
         }
     }
 
-    /// Writes `notifications.json` in `config_dir` as tmls does (`json.dumps(asdict(…))`):
-    /// the text goes to a temp file that is renamed over the old one, so a reader sees the old
-    /// switches or the new ones; a write that fails leaves the old file and no temp file.
-    pub fn save(&self, config_dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(config_dir)?;
-        let text = format!(
-            "{{\"desktop\": {}, \"sound\": {}, \"silence_focused\": {}}}\n",
-            self.desktop, self.sound, self.silence_focused
-        );
-        let temp = config_dir.join(format!(".notifications.json.tmp-{}", std::process::id()));
-        let written = std::fs::write(&temp, text)
-            .and_then(|()| std::fs::rename(&temp, config_dir.join("notifications.json")));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temp);
+    /// The settings in the file's object: each key that is a boolean, else its default.
+    fn of(object: &Object) -> Settings {
+        let defaults = Settings::default();
+        let switch = |name: &str, default: bool| {
+            object
+                .get(name)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default)
+        };
+        Settings {
+            desktop: switch(KEYS[0], defaults.desktop),
+            sound: switch(KEYS[1], defaults.sound),
+            silence_focused: switch(KEYS[2], defaults.silence_focused),
         }
-        written
+    }
+
+    /// What `notifications.json` in `config_dir` holds now, for a flip: its object, `None`
+    /// when there is no file (the defaults; the flip makes it), or why it cannot be changed —
+    /// it is there but cannot be read, or is not a JSON object. Never writes.
+    pub fn stored(config_dir: &Path) -> Result<Option<Object>, String> {
+        let text = match std::fs::read_to_string(config_dir.join(FILE)) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("cannot be read: {e}")),
+        };
+        match serde_json::from_str(&text) {
+            Ok(serde_json::Value::Object(object)) => Ok(Some(object)),
+            _ => Err("is not a JSON object".to_string()),
+        }
+    }
+
+    /// Writes `notifications.json` in `config_dir`: tmls's three keys as tmls writes them
+    /// (`json.dumps(asdict(…))`), then every other key of `kept`, the object the file had,
+    /// so nothing tmls-rs does not know is dropped. Written as `pins` is
+    /// (`config::replace_file`): a reader sees the old switches or the new ones, a link stays
+    /// a link, and a write that fails leaves the old file and no temp file.
+    pub fn save(&self, config_dir: &Path, kept: &Object) -> std::io::Result<()> {
+        std::fs::create_dir_all(config_dir)?;
+        let mut entries = vec![
+            format!("\"{}\": {}", KEYS[0], self.desktop),
+            format!("\"{}\": {}", KEYS[1], self.sound),
+            format!("\"{}\": {}", KEYS[2], self.silence_focused),
+        ];
+        for (key, value) in kept.iter().filter(|(key, _)| !KEYS.contains(&key.as_str())) {
+            entries.push(format!(
+                "{}: {value}",
+                serde_json::Value::from(key.as_str())
+            ));
+        }
+        let text = format!("{{{}}}\n", entries.join(", "));
+        client_core::config::replace_file(&config_dir.join(FILE), &text)
     }
 }
+
+/// tmls's settings file in `~/.config/tmls`.
+const FILE: &str = "notifications.json";
+
+/// Its keys, in the order tmls writes them: [`Settings`]' three switches.
+const KEYS: [&str; SWITCHES] = ["desktop", "sound", "silence_focused"];
+
+/// A JSON object: what `notifications.json` holds.
+pub type Object = serde_json::Map<String, serde_json::Value>;
 
 /// One line of the alerts list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,17 +245,38 @@ fn flipped(settings: Settings, index: usize) -> Settings {
     }
 }
 
-/// From `current` to `wanted`: saved through `save` (the app: `Settings::save` in
-/// `~/.config/tmls`). Returns the settings to use from now on and the status line. A switch
-/// that cannot be saved stays as it was; Sound turned on without a `player` is on all the
-/// same, and says there will be no sound.
+/// From `current` to `wanted`, in `notifications.json` in `config_dir` (the app:
+/// `~/.config/tmls`). The file is read again first and only the switches that differ between
+/// the two change in it: what tmls wrote there since the start stays. Returns the settings to
+/// use from now on (the file's, with the flip) and the status line. A switch that cannot be
+/// saved stays as it was, and so does one whose file cannot be understood (`Settings::stored`),
+/// which is left untouched; Sound turned on without a `player` is on all the same, and says
+/// there will be no sound.
 pub fn switch(
     current: Settings,
     wanted: Settings,
-    save: &mut dyn FnMut(&Settings) -> std::io::Result<()>,
+    config_dir: &Path,
     player: bool,
 ) -> (Settings, Result<String, String>) {
-    if let Err(e) = save(&wanted) {
+    let kept = match Settings::stored(config_dir) {
+        Ok(kept) => kept.unwrap_or_default(),
+        Err(why) => {
+            let said = format!("couldn't switch: {FILE} {why}; it is left as it is");
+            return (current, Err(said));
+        }
+    };
+    let stored = Settings::of(&kept);
+    let flip = |was: bool, wants: bool, has: bool| if was != wants { wants } else { has };
+    let now = Settings {
+        desktop: flip(current.desktop, wanted.desktop, stored.desktop),
+        sound: flip(current.sound, wanted.sound, stored.sound),
+        silence_focused: flip(
+            current.silence_focused,
+            wanted.silence_focused,
+            stored.silence_focused,
+        ),
+    };
+    if let Err(e) = now.save(config_dir, &kept) {
         return (
             current,
             Err(format!("couldn't save the alert switches: {e}")),
@@ -229,7 +292,7 @@ pub fn switch(
     if wanted.sound && !current.sound && !player {
         said = format!("{said}, but {SOUND_PLAYER} is not installed: no sound");
     }
-    (wanted, Ok(said))
+    (now, Ok(said))
 }
 
 /// Who is looking at what, when a listing arrives.
