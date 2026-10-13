@@ -20,8 +20,9 @@
 //!
 //! A path is only text: whether there is such a file is the host's to say (`viewer`).
 //!
-//! Opening runs `xdg-open TARGET` with the target as one argument, without a shell: a URL only
-//! if it is `http://` or `https://` (`open`), a file only by its absolute path (`open_path`).
+//! Opening runs the desktop's opener (`xdg-open` on Unix, `explorer.exe` on Windows) with the
+//! target as one argument, without a shell: a URL only if it is `http://` or `https://`
+//! (`open`), a file only by its absolute path (`open_path`).
 
 use std::io;
 use std::process::{Command, Stdio};
@@ -364,6 +365,25 @@ pub fn link_in_frame(frame: &Frame, at_cell: (u16, u16)) -> Option<Link> {
         .or_else(|| link_at(&text, at_cell.0 as usize))
 }
 
+/// The program and the single argument that opens `target`: `xdg-open` on Unix, `explorer.exe`
+/// on Windows, where a local path's `/` becomes `\` and a URL or an address stays as it is.
+#[cfg(unix)]
+fn opener(target: &str) -> (&'static str, Vec<String>) {
+    ("xdg-open", vec![target.to_string()])
+}
+
+/// The same on Windows (see above).
+#[cfg(windows)]
+fn opener(target: &str) -> (&'static str, Vec<String>) {
+    let local = !target.contains("://");
+    let target = if local {
+        target.replace('/', "\\")
+    } else {
+        target.to_string()
+    };
+    ("explorer.exe", vec![target])
+}
+
 /// Opens `url` with `spawn(program, arguments)` if it is `allowed`; anything else is refused
 /// and nothing is run.
 pub fn open_with(
@@ -373,7 +393,9 @@ pub fn open_with(
     if !allowed(url) {
         return Err(format!("not opened (only http and https links are): {url}"));
     }
-    spawn("xdg-open", &[url]).map_err(|e| format!("xdg-open failed: {e}"))
+    let (program, args) = opener(url);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    spawn(program, &args).map_err(|e| format!("{program} failed: {e}"))
 }
 
 /// Opens `url` in the user's browser: `xdg-open` in a process group of its own, with no
@@ -416,7 +438,7 @@ fn detached(program: &str, args: &[&str]) -> io::Result<()> {
 }
 
 /// Opens the file or folder at `path` on this machine with `spawn(program, arguments)`. Only
-/// an absolute path is taken: `xdg-open` has no `--`, and reads anything else as an option or
+/// an absolute path is taken: the opener has no `--`, and reads anything else as an option or
 /// an address.
 pub fn open_path_with(
     path: &str,
@@ -425,12 +447,14 @@ pub fn open_path_with(
     if !path.starts_with('/') || path.contains('\0') {
         return Err(format!("not opened (not an absolute path): {path}"));
     }
-    spawn("xdg-open", &[path]).map_err(|e| format!("xdg-open failed: {e}"))
+    let (program, args) = opener(path);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    spawn(program, &args).map_err(|e| format!("{program} failed: {e}"))
 }
 
 /// Opens a folder with `spawn(program, arguments)`: an absolute path on this machine, or the
 /// `sftp://` address of one on another host (`viewer::folder_target`). Anything else is
-/// refused and nothing is run.
+/// refused and nothing is run; Explorer cannot open an `sftp://` address on Windows.
 pub fn open_folder_with(
     target: &str,
     spawn: &mut dyn FnMut(&str, &[&str]) -> io::Result<()>,
@@ -444,7 +468,14 @@ pub fn open_folder_with(
     if target.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(format!("not opened (not an address): {target}"));
     }
-    spawn("xdg-open", &[target]).map_err(|e| format!("xdg-open failed: {e}"))
+    #[cfg(windows)]
+    return Err("not opened: Windows has no file manager for sftp addresses".to_string());
+    #[cfg(not(windows))]
+    {
+        let (program, args) = opener(target);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        spawn(program, &args).map_err(|e| format!("{program} failed: {e}"))
+    }
 }
 
 /// Opens a folder in the desktop's file manager (`open_folder_with`).

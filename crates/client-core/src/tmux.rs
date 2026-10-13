@@ -136,9 +136,10 @@ pub fn control_options(dir: &Path) -> Vec<String> {
     ]
 }
 
-/// Whether to share connections, from `TMLS_RS_NO_CONTROLMASTER`: off only for `1`.
+/// Whether to share connections, from `TMLS_RS_NO_CONTROLMASTER`: off only for `1`, and never
+/// on Windows, whose OpenSSH has no `ControlMaster` (every ssh with those options fails).
 pub fn control_wanted(value: Option<&OsStr>) -> bool {
-    value != Some(OsStr::new("1"))
+    !cfg!(windows) && value != Some(OsStr::new("1"))
 }
 
 /// Makes `dir` (mode 0700, also when it existed with another mode) and from then on every ssh

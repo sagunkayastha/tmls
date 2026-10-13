@@ -8,6 +8,7 @@
 //! holds those slugs as they are; a session pinned in tmls is pinned here and the other way round.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 
@@ -173,6 +174,23 @@ pub fn tmls_slug(key: &SessionKey, local_name: &str) -> String {
     format!("{readable}-{hash}")
 }
 
+/// Where the user's files are: `HOME` when it is set and not empty, else on Windows
+/// `USERPROFILE`. `None` when neither is set to anything but empty.
+pub fn home_var() -> Option<OsString> {
+    home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+/// [`home_var`]'s rule, on values: `HOME` when set and not empty, else on Windows
+/// `USERPROFILE` when set and not empty. Pure, so a test needs no environment of its own.
+fn home_from(home: Option<OsString>, profile: Option<OsString>) -> Option<OsString> {
+    let home = home.filter(|value| !value.is_empty());
+    if cfg!(windows) {
+        home.or_else(|| profile.filter(|value| !value.is_empty()))
+    } else {
+        home
+    }
+}
+
 fn local_name(dir: &Path) -> String {
     let name = std::fs::read_to_string(dir.join("name")).unwrap_or_default().trim().to_string();
     if name.is_empty() { hostname() } else { name }
@@ -335,5 +353,20 @@ mod tests {
         let key = |host: &str, name: &str| SessionKey { host: host.into(), name: name.into() };
         assert_eq!(tmls_slug(&key("laptop", "Agent Thing"), "laptop"), "local-Agent_Thing-0ffb10f9");
         assert_eq!(tmls_slug(&key("laanta-chy", "café: x"), "laptop"), "laanta-chy-caf___x-404715a3");
+    }
+
+    #[test]
+    fn home_is_home_and_only_windows_falls_back_to_the_profile() {
+        let os = |s: &str| OsString::from(s);
+        let home = os("/home/u");
+        let profile = os(r"C:\Users\u");
+        // `HOME` when it is set and not empty, whatever `USERPROFILE` says.
+        assert_eq!(home_from(Some(home.clone()), Some(profile.clone())), Some(home.clone()));
+        // An empty `HOME` is no home; the profile is the fallback only on Windows.
+        let fallback = cfg!(windows).then(|| profile.clone());
+        assert_eq!(home_from(Some(os("")), Some(profile.clone())), fallback);
+        assert_eq!(home_from(None, Some(profile)), fallback);
+        assert_eq!(home_from(Some(os("")), None), None);
+        assert_eq!(home_from(None, None), None);
     }
 }

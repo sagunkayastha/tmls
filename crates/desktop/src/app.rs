@@ -653,7 +653,9 @@ impl Running {
         // The widths dragged in an earlier run. The layout keeps them within the window.
         let ui_path = uistate::path(
             std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
-            std::env::var("HOME").ok().as_deref(),
+            client_core::config::home_var()
+                .and_then(|h| h.into_string().ok())
+                .as_deref(),
         );
         let ui = ui_path.as_deref().map(uistate::load).unwrap_or_default();
         let mut theme = Theme::default();
@@ -698,7 +700,7 @@ impl Running {
         ) {
             let dir = client_core::tmux::control_dir(
                 std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
-                std::env::var_os("HOME").as_deref(),
+                client_core::config::home_var().as_deref(),
             );
             match dir.map(|dir| client_core::tmux::use_control_master(&dir).map(|()| dir)) {
                 Some(Ok(dir)) => crate::errln(format_args!(
@@ -712,6 +714,11 @@ impl Running {
                     "tmls-rs: ssh without shared connections: no place for the sockets"
                 )),
             }
+        } else if cfg!(windows) {
+            // OpenSSH for Windows has no ControlMaster: sharing is off there always.
+            crate::errln(format_args!(
+                "tmls-rs: ssh does not share connections on Windows"
+            ));
         }
         let poller = Poller::start(
             &cfg,
@@ -825,7 +832,7 @@ impl Running {
             back_for: None,
             view_cache: viewer::cache_dir(
                 std::env::var_os("XDG_CACHE_HOME").as_deref(),
-                std::env::var_os("HOME").as_deref(),
+                client_core::config::home_var().as_deref(),
             ),
         })
     }
@@ -2942,7 +2949,7 @@ impl Running {
         let Some(key) = live.map(|index| self.tabs.key(index).clone()) else {
             return self.say(Ok("no live session to paste an image into".to_string()));
         };
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        let Some(home) = client_core::config::home_var().map(PathBuf::from) else {
             return self.say(Err(
                 "no HOME: nowhere to keep the clipboard's image".to_string()
             ));

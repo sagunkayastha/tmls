@@ -113,7 +113,9 @@ pub fn detach_command(_exe: &Path, _args: &[String], _log: File) -> io::Result<C
 /// Starts this program again detached (see [`detach_command`]), its log truncated, and returns
 /// once it is spawned. An error means nothing was started: the caller runs in the foreground.
 pub fn detach(args: &[String]) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = client_core::config::home_var()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_default();
     let xdg = std::env::var("XDG_CACHE_HOME").ok();
     let path = log_path(xdg.as_deref(), &home);
     if let Some(dir) = path.parent() {

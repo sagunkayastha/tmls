@@ -32,7 +32,7 @@ fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
 /// `~/.config/tmls`, the directory tmls keeps its files in (`$XDG_CONFIG_HOME` is not used by
 /// tmls either).
 fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/tmls")
+    PathBuf::from(client_core::config::home_var().unwrap_or_default()).join(".config/tmls")
 }
 
 /// Starts the window as its own process and returns the exit code to leave with, unless this
