@@ -27,6 +27,7 @@
 pub mod alerts;
 pub mod app;
 pub mod clip;
+#[cfg(target_os = "linux")]
 pub mod dnd;
 pub mod draw;
 pub mod forms;

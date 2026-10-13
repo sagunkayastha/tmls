@@ -371,6 +371,7 @@ impl ApplicationHandler<UserEvent> for App {
 /// The listener for files dropped on the window, on Wayland (`dnd`). `None` elsewhere, with
 /// `TMLS_RS_NO_DND`, and when it cannot start — which the log says, and nothing else: the
 /// app is the same without it.
+#[cfg(target_os = "linux")]
 fn start_drops(
     event_loop: &ActiveEventLoop,
     proxy: &EventLoopProxy<UserEvent>,
@@ -469,6 +470,7 @@ struct Running {
     note: Option<String>,
     /// Listens for files dropped on the window (`dnd`); `None` off Wayland, with
     /// `TMLS_RS_NO_DND`, or when it could not start.
+    #[cfg(target_os = "linux")]
     drops: Option<crate::dnd::Drops>,
     /// What the session's row under the pointer says in full (`sidebar::hover_text`), for the
     /// status line while nothing else is said there.
@@ -603,6 +605,7 @@ impl Running {
         );
         // Nothing is open yet and the keys are the list's, which takes no composed text.
         window.set_ime_allowed(false);
+        #[cfg(target_os = "linux")]
         let drops = start_drops(event_loop, &proxy);
 
         let instance =
@@ -772,6 +775,7 @@ impl Running {
             problem: None,
             note: None,
             hover: None,
+            #[cfg(target_os = "linux")]
             drops,
             modal: None,
             focus_before: Focus::Sidebar,
@@ -3478,6 +3482,7 @@ impl Running {
         self.tails.clear(); // the readers are killed before the window goes
         // The drop listener reads the window's connection: its thread ends here, while the
         // connection is still there.
+        #[cfg(target_os = "linux")]
         drop(self.drops.take());
         // Stops the sampler thread first, so its last line is in before the final flush.
         drop(self.sampler.take());

@@ -6,31 +6,57 @@
 //! Prints `ready` once the window is up, `sent` when the target asked for the data, then
 //! `finished` (exit 0) when the target took the drop, or `cancelled` (exit 1) when it was
 //! refused or dropped nowhere. Not part of the app.
+//!
+//! Only the Wayland build has the window: elsewhere this is an empty `main`.
 
+#[cfg(not(target_os = "linux"))]
+fn main() {}
+
+#[cfg(target_os = "linux")]
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
+#[cfg(target_os = "linux")]
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_buffer::WlBuffer;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_compositor::WlCompositor;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_data_offer::WlDataOffer;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_pointer::{self, WlPointer};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_registry::WlRegistry;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_seat::{self, WlSeat};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_shm::{Format, WlShm};
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_shm_pool::WlShmPool;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_surface::WlSurface;
+#[cfg(target_os = "linux")]
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop, event_created_child,
 };
+#[cfg(target_os = "linux")]
 use wayland_protocols::xdg::shell::client::xdg_surface::{self, XdgSurface};
+#[cfg(target_os = "linux")]
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self, XdgToplevel};
+#[cfg(target_os = "linux")]
 use wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
 
+#[cfg(target_os = "linux")]
 struct State {
     kind: String,
     text: String,
@@ -45,6 +71,7 @@ struct State {
     source: Option<WlDataSource>,
 }
 
+#[cfg(target_os = "linux")]
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(kind), Some(text)) = (args.next(), args.next()) else {
@@ -87,6 +114,7 @@ fn main() {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl State {
     /// One flat colour, the size the compositor asked for.
     fn draw(&mut self, handle: &QueueHandle<State>) {
@@ -114,6 +142,7 @@ impl State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<XdgSurface, ()> for State {
     fn event(
         state: &mut State,
@@ -130,6 +159,7 @@ impl Dispatch<XdgSurface, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<XdgToplevel, ()> for State {
     fn event(
         state: &mut State,
@@ -147,6 +177,7 @@ impl Dispatch<XdgToplevel, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<XdgWmBase, ()> for State {
     fn event(
         _: &mut State,
@@ -162,6 +193,7 @@ impl Dispatch<XdgWmBase, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<WlSeat, ()> for State {
     fn event(
         state: &mut State,
@@ -183,6 +215,7 @@ impl Dispatch<WlSeat, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<WlPointer, ()> for State {
     fn event(
         state: &mut State,
@@ -214,6 +247,7 @@ impl Dispatch<WlPointer, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<WlDataSource, ()> for State {
     fn event(
         state: &mut State,
@@ -241,6 +275,7 @@ impl Dispatch<WlDataSource, ()> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<WlRegistry, GlobalListContents> for State {
     fn event(
         _: &mut State,
@@ -253,16 +288,24 @@ impl Dispatch<WlRegistry, GlobalListContents> for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlCompositor);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlShm);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlShmPool);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlBuffer);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlSurface);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlDataDeviceManager);
+#[cfg(target_os = "linux")]
 delegate_noop!(State: ignore WlDataOffer);
 
 // The source's own window is a target too while the pointer is over it: its offers arrive
 // here and are left alone.
+#[cfg(target_os = "linux")]
 impl Dispatch<WlDataDevice, ()> for State {
     fn event(
         _: &mut State,
