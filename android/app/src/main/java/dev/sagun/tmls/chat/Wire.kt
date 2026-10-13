@@ -1,0 +1,203 @@
+package dev.sagun.tmls.chat
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+
+/** One session of one host, as /api/events lists it (rows.py), with the chat contract's three fields. */
+data class Row(
+    val key: String,
+    val host: String,
+    val label: String,
+    val name: String,
+    val mark: String,
+    val line: String = "",
+    /** The permission prompt's lines while the row waits on one, else null. */
+    val shown: List<String>? = null,
+    /** Claude's own tmux pane ("%7"), for /api/approve. */
+    val pane: String? = null,
+    val online: Boolean = true,
+    val background: Boolean = false,
+    /** A Claude Code session runs in it: a chat exists. An older server never says so: terminal only. */
+    val claude: Boolean = false,
+    /** Percent of Claude's context in use. */
+    val context: Int? = null,
+    val model: String? = null,
+) {
+    val waiting: Boolean get() = mark == "waiting"
+    val working: Boolean get() = mark == "running"
+    /** Waiting on a permission prompt the app can answer. */
+    val prompt: List<String>? get() = if (waiting) shown else null
+}
+
+data class HostInfo(val host: String, val label: String, val online: Boolean, val background: Boolean)
+
+data class Blob(val id: String, val mime: String)
+
+enum class Kind { USER, ASSISTANT, TOOL, NOTE }
+
+/** One item of a chat (CONTRACT.md, ITEM). Fields a kind does not carry keep their defaults. */
+data class ChatItem(
+    val id: String,
+    val ts: Long,
+    val kind: Kind,
+    val text: String = "",
+    val images: List<Blob> = emptyList(),
+    val tool: String = "",
+    val summary: String = "",
+    val input: String = "",
+    /** A tool's result; null until a patch brings it. */
+    val output: String? = null,
+    val error: Boolean = false,
+)
+
+/** What /api/events sends. */
+sealed interface EventMsg {
+    data class Hosts(val hosts: List<HostInfo>) : EventMsg
+    data class Rows(val full: Boolean, val set: List<Row>, val gone: List<String>) : EventMsg
+    data class Renamed(val old: String, val new: String) : EventMsg
+    data class Killed(val key: String) : EventMsg
+    /** version, alerts and whatever comes later: the feed is alive, nothing to do. */
+    data object Other : EventMsg
+}
+
+/** What /api/chat sends. */
+sealed interface ChatMsg {
+    data class Open(val key: String, val session: String, val title: String?) : ChatMsg
+    data class None(val reason: String) : ChatMsg
+    data class Items(val reset: Boolean, val items: List<ChatItem>) : ChatMsg
+    data class Patch(val id: String, val output: String?, val error: Boolean, val images: List<Blob>) : ChatMsg
+}
+
+/** The answer to a POST: {"ok":true,...} or {"ok":false,"error":...}; [login] for a 401. */
+data class Reply(val ok: Boolean, val error: String? = null, val path: String? = null, val login: Boolean = false)
+
+/** Contract messages to data classes and back. Anything not understood is null, never an exception. */
+object Wire {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private fun obj(text: String): JsonObject? = try {
+        json.parseToJsonElement(text) as? JsonObject
+    } catch (e: IllegalArgumentException) { // includes SerializationException
+        null
+    }
+
+    private fun JsonObject.str(name: String): String? = (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    private fun JsonObject.bool(name: String): Boolean? = (this[name] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+    private fun JsonObject.long(name: String): Long? = (this[name] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    private fun JsonObject.list(name: String): List<JsonElement> = (this[name] as? JsonArray) ?: emptyList()
+    private fun JsonObject.strings(name: String): List<String>? =
+        (this[name] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+
+    fun event(text: String): EventMsg? {
+        val o = obj(text) ?: return null
+        return when (o.str("t")) {
+            "hosts" -> EventMsg.Hosts(o.list("hosts").mapNotNull { host(it as? JsonObject ?: return@mapNotNull null) })
+            "rows" -> EventMsg.Rows(
+                full = o.bool("full") ?: false,
+                set = o.list("set").mapNotNull { row(it as? JsonObject ?: return@mapNotNull null) },
+                gone = o.strings("gone") ?: emptyList(),
+            )
+            "renamed" -> EventMsg.Renamed(o.str("old") ?: return null, o.str("new") ?: return null)
+            "killed" -> EventMsg.Killed(o.str("key") ?: return null)
+            null -> null
+            else -> EventMsg.Other
+        }
+    }
+
+    private fun host(o: JsonObject): HostInfo? {
+        val host = o.str("host") ?: return null
+        return HostInfo(host, o.str("label") ?: host, o.bool("online") ?: true, o.bool("background") ?: false)
+    }
+
+    fun row(o: JsonObject): Row? {
+        val key = o.str("key") ?: return null
+        val host = o.str("host") ?: key.substringBefore('/')
+        return Row(
+            key = key,
+            host = host,
+            label = o.str("label") ?: host,
+            name = o.str("name") ?: key.substringAfter('/'),
+            mark = o.str("mark") ?: "idle",
+            line = o.str("line") ?: "",
+            shown = o.strings("shown"),
+            pane = o.str("pane"),
+            online = o.bool("online") ?: true,
+            background = o.bool("background") ?: false,
+            claude = o.bool("claude") ?: false,
+            context = o.long("context")?.toInt(),
+            model = o.str("model"),
+        )
+    }
+
+    fun chat(text: String): ChatMsg? {
+        val o = obj(text) ?: return null
+        return when (o.str("t")) {
+            "open" -> ChatMsg.Open(o.str("key") ?: "", o.str("session") ?: "", o.str("title"))
+            "none" -> ChatMsg.None(o.str("reason") ?: "")
+            "items" -> ChatMsg.Items(
+                reset = o.bool("reset") ?: false,
+                items = o.list("items").mapNotNull { item(it as? JsonObject ?: return@mapNotNull null) },
+            )
+            "patch" -> ChatMsg.Patch(o.str("id") ?: return null, o.str("output"), o.bool("error") ?: false, blobs(o))
+            else -> null
+        }
+    }
+
+    private fun blobs(o: JsonObject): List<Blob> = o.list("images").mapNotNull {
+        val b = it as? JsonObject ?: return@mapNotNull null
+        Blob(b.str("id") ?: return@mapNotNull null, b.str("mime") ?: "image/png")
+    }
+
+    /** A kind this app does not know becomes a grey line when it has text, and is dropped when not. */
+    private fun item(o: JsonObject): ChatItem? {
+        val id = o.str("id") ?: return null
+        val ts = o.long("ts") ?: 0L
+        val text = o.str("text") ?: ""
+        return when (o.str("kind")) {
+            "user" -> ChatItem(id, ts, Kind.USER, text = text, images = blobs(o))
+            "assistant" -> ChatItem(id, ts, Kind.ASSISTANT, text = text)
+            "tool" -> ChatItem(
+                id, ts, Kind.TOOL, images = blobs(o), tool = o.str("tool") ?: "",
+                summary = o.str("summary") ?: o.str("tool") ?: "Tool", input = o.str("input") ?: "",
+                output = o.str("output"), error = o.bool("error") ?: false,
+            )
+            "note" -> ChatItem(id, ts, Kind.NOTE, text = text)
+            else -> if (text.isBlank()) null else ChatItem(id, ts, Kind.NOTE, text = text)
+        }
+    }
+
+    /** A POST's answer. A body that is not the contract's JSON (a proxy's error page) is "HTTP code". */
+    fun reply(code: Int, body: String): Reply {
+        if (code == 401) return Reply(ok = false, error = "login", login = true)
+        val o = obj(body)
+        val ok = code in 200..299 && o?.bool("ok") == true
+        return Reply(ok, if (ok) null else o?.str("error") ?: "HTTP $code", o?.str("path"))
+    }
+
+    fun send(key: String, text: String): String = buildJsonObject { put("key", key); put("text", text) }.toString()
+
+    fun key(key: String, name: String): String = buildJsonObject { put("key", key); put("name", name) }.toString()
+
+    fun seen(key: String): String = buildJsonObject { put("key", key) }.toString()
+
+    /** /api/approve's body: the prompt as the row showed it, so the server refuses if it changed. */
+    fun approve(row: Row, yes: Boolean): String = buildJsonObject {
+        put("host", row.host)
+        put("name", row.name)
+        put("shown", buildJsonArray { row.shown.orEmpty().forEach { add(JsonPrimitive(it)) } })
+        put("yes", yes)
+        put("pane", row.pane?.let { JsonPrimitive(it) } ?: JsonNull)
+    }.toString()
+
+    /** [s] as a JavaScript string literal, for scripts handed to the terminal page. */
+    fun quote(s: String): String = JsonPrimitive(s).toString().replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+}

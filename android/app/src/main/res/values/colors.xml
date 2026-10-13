@@ -1,5 +1,6 @@
 <resources>
-    <!-- The terminal's own background (tmls-web's xterm theme), so nothing flashes lighter. -->
-    <color name="bg">#FF15191F</color>
+    <!-- The chat's background (Tm.Bg), so nothing flashes lighter or cooler on the way in. -->
+    <color name="bg">#FF1A1917</color>
+    <!-- The icon keeps the terminal's own colour (tmls-web's xterm theme). -->
     <color name="ic_launcher_background">#FF15191F</color>
 </resources>

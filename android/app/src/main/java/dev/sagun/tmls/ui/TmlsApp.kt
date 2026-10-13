@@ -12,13 +12,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imeAnimationSource
 import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
-import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -29,7 +26,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,7 +38,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -61,7 +56,7 @@ private sealed interface Screen {
     data class Unreachable(val urls: List<String>) : Screen
 }
 
-private val Bg = Color(BG)
+private val Bg = Tm.Bg
 
 private const val REACH_TRIES = 3
 private const val REACH_PAUSE_MS = 1_500L
@@ -108,48 +103,40 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
         attempt++
     }
 
-    LifecycleStartEffect(Unit) {
-        val web = screen as? Screen.Web
-        if (web != null && stoppedAt > 0 && SystemClock.elapsedRealtime() - stoppedAt > RECHECK_AFTER_MS) {
-            scope.launch {
-                // Only switch when another address answers: a page on the right server reconnects itself.
-                val url = Reach.first(servers.list(), client)
-                if (url != null && url != web.url && screen == web) show(url, servers.list())
-            }
+    // Only switch when another address answers: a client on the right server reconnects itself.
+    fun recheck() {
+        val web = screen as? Screen.Web ?: return
+        scope.launch {
+            val url = Reach.first(servers.list(), client)
+            if (url != null && url != web.url && screen == web) show(url, servers.list())
         }
+    }
+
+    LifecycleStartEffect(Unit) {
+        if (stoppedAt > 0 && SystemClock.elapsedRealtime() - stoppedAt > RECHECK_AFTER_MS) recheck()
         onStopOrDispose { stoppedAt = SystemClock.elapsedRealtime() }
     }
 
-    MaterialTheme(colorScheme = darkColorScheme(background = Bg, surface = Bg)) {
+    TmlsTheme {
         // The Surface gives text its light colour; the Box only stacks the site and the overlay.
         Surface(Modifier.fillMaxSize(), color = Bg) { Box(Modifier.fillMaxSize()) {
             val web = screen as? Screen.Web
-            var painted by remember(web) { mutableStateOf(false) }
-            if (web != null) key(web) {
-                val keyboard = rememberKeyboard()
-                Column(
-                    Modifier.fillMaxSize()
-                        // The bars' stable size: Samsung's navigation inset animates 0 -> 15 dp as the
-                        // keyboard hides, and following it relaid the page 3-4 more times.
-                        .windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout))
-                        .padding(bottom = keyboard.settledDp),
-                ) {
-                    UpdateBanner(updater)
-                    WebScreen(
-                        web.url,
-                        Modifier.fillMaxSize(),
-                        keyboardOffsetDp = { keyboard.slidingDp },
-                        onPainted = { painted = true },
-                        onSignedIn = updater::checkNow,
-                        onUpdateRequested = updater::checkManual,
-                        onLeave = onLeave,
-                        onCrashed = { attempt++ },
-                    )
-                }
+            // The chat, its drawer and the site's own pages (MainScreen). Where the site's page fills
+            // the screen, the bars' stable size is used: Samsung's navigation inset animates
+            // 0 -> 15 dp as the keyboard hides, and following it relaid the page 3-4 more times.
+            if (web != null) key(web.gen) {
+                MainScreen(
+                    web.url,
+                    updater,
+                    onLeave = onLeave,
+                    onChangeServer = { screen = Screen.Setup(null) },
+                    // The address stopped answering while the app was open (Wi-Fi to mobile data).
+                    onUnreachable = ::recheck,
+                )
             }
-            // Everything that is not the site sits on top and fades away once the site has painted.
+            // Everything that is not the app proper sits on top and fades away once a server answers.
             AnimatedVisibility(
-                visible = web == null || !painted,
+                visible = web == null,
                 enter = fadeIn(tween(150)),
                 exit = fadeOut(tween(200)),
             ) {
@@ -179,14 +166,14 @@ fun TmlsApp(servers: Servers, updater: Updater, onServer: (String?) -> Unit, onL
  * keyboard is fully up; while closing it takes the new size at once. [slidingDp]: how far the
  * keyboard currently reaches above that, which the page's key bar follows with a transform.
  */
-private class Keyboard(private val settled: () -> Float, private val sliding: () -> Float) {
+internal class Keyboard(private val settled: () -> Float, private val sliding: () -> Float) {
     val settledDp: Dp get() = settled().dp
     val slidingDp: Float get() = sliding()
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun rememberKeyboard(): Keyboard {
+internal fun rememberKeyboard(): Keyboard {
     val density = LocalDensity.current
     val ime = WindowInsets.ime
     val source = WindowInsets.imeAnimationSource

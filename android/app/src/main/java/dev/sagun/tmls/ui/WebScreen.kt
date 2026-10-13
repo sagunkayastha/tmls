@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -50,6 +51,10 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import dev.sagun.tmls.Origins
 import dev.sagun.tmls.Screenshots
+import dev.sagun.tmls.chat.Wire
+import kotlin.coroutines.resume
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,12 +62,52 @@ import kotlinx.coroutines.withContext
 /** The terminal's background; the WebView paints it before the page has. */
 const val BG = 0xFF15191F.toInt()
 
+/** What the page should show once it has loaded: the app's drawer picks, the page follows. */
+sealed interface WebTarget {
+    /** The terminal of the session with this key. */
+    data class Session(val key: String) : WebTarget
+    /** The page's New session form for this host. */
+    data class New(val host: String, val label: String) : WebTarget
+
+    /** Run until it answers true: the page knows its sessions only once its feed has brought them. */
+    fun script(): String = when (this) {
+        // select() attaches and closes the page's own list; the same session again only closes the list.
+        is Session -> "(function(k){try{if(!rows.has(k))return false;if(current!==k)select(k);else openRows(false);return true}" +
+            "catch(e){return false}})(${Wire.quote(key)})"
+        is New -> "(function(h,l){try{if(!hostList.length)return false;openRows(false);openNew(h,l);return true}" +
+            "catch(e){return false}})(${Wire.quote(host)},${Wire.quote(label)})"
+    }
+
+    companion object {
+        /** The session the page is attached to, as a JSON string, or null. */
+        const val CURRENT = "(function(){try{return current||null}catch(e){return null}})()"
+        /** Closes the page's open dialog, if one is (tmlsBack's first cases, without its "back to the list"). */
+        const val CLOSE_DIALOG = "(function(){try{for(const id of ['copyview','new','manage','alerts','settings-menu']){" +
+            "const el=document.getElementById(id);if(el&&!el.hidden)return tmlsBack()===true}return false}catch(e){return false}})()"
+
+        /** evaluateJavascript's answer for a string: JSON. */
+        fun string(result: String?): String? =
+            if (result != null && result.length >= 2 && result.startsWith('"')) try {
+                (kotlinx.serialization.json.Json.parseToJsonElement(result) as? kotlinx.serialization.json.JsonPrimitive)?.content
+            } catch (e: IllegalArgumentException) {
+                null
+            } else null
+    }
+}
+
+private suspend fun WebView.eval(script: String): String? = suspendCancellableCoroutine { cont ->
+    evaluateJavascript(script) { if (cont.isActive) cont.resume(it) }
+}
+
 /**
  * tmls-web, full screen. The site's own login page signs in; the WebView's cookie jar keeps the
  * session. No pull-to-refresh and no zoom: a swipe belongs to the terminal.
  * [onPainted] fires once the first page is on screen (the app shows a plain dark screen until then),
  * [onSignedIn] once a page other than /login has loaded, [onUpdateRequested] for the site's
  * "Check for updates", [onLeave] when Back has nothing left to close, [onCrashed] if the page's renderer died.
+ * Under the chat's top bar ([nativeBack]): the page shows [target], Back closes the page's dialogs
+ * and then is [onBack]'s (the page's own list is not a stop on the way: the app has its drawer),
+ * and [onCurrent] hears of the session the New session form made.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -75,17 +120,52 @@ fun WebScreen(
     onUpdateRequested: () -> Unit,
     onLeave: () -> Unit,
     onCrashed: () -> Unit,
+    target: WebTarget? = null,
+    nativeBack: Boolean = false,
+    backEnabled: Boolean = true,
+    onBack: () -> Unit = {},
+    onCurrent: (String) -> Unit = {},
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     val baseUri = remember(url) { Uri.parse(url) }
     val signedIn by rememberUpdatedState(onSignedIn)
+    val current by rememberUpdatedState(onCurrent)
+    /** Counts pages loaded past the login: each one has to be told the target again. */
+    var loaded by remember { mutableIntStateOf(0) }
 
     // Back closes the site's modal / alert list, or on a session goes back to the list (tmlsBack in
     // app.js); only when nothing is left does the app go to the background, keeping the terminal.
-    BackHandler {
-        val web = webView ?: return@BackHandler onLeave()
-        web.evaluateJavascript("typeof tmlsBack === 'function' && tmlsBack()") { handled ->
-            if (handled != "true") onLeave()
+    BackHandler(enabled = backEnabled) {
+        val leave = if (nativeBack) onBack else onLeave
+        val web = webView ?: return@BackHandler leave()
+        val script = if (nativeBack) WebTarget.CLOSE_DIALOG else "typeof tmlsBack === 'function' && tmlsBack()"
+        web.evaluateJavascript(script) { handled ->
+            if (handled != "true") leave()
+        }
+    }
+
+    // The page follows the app's pick. Asked until the page can (its session list arrives a moment
+    // after it loads); after its New session form, the session it made is the app's pick too.
+    LaunchedEffect(webView, target, loaded) {
+        val web = webView ?: return@LaunchedEffect
+        if (target == null || loaded == 0) return@LaunchedEffect
+        var shown = false
+        for (i in 0 until TARGET_TRIES) {
+            if (web.eval(target.script()) == "true") {
+                shown = true
+                break
+            }
+            delay(TARGET_PAUSE_MS)
+        }
+        if (!shown || target !is WebTarget.New) return@LaunchedEffect
+        val before = WebTarget.string(web.eval(WebTarget.CURRENT))
+        while (true) {
+            delay(NEW_PAUSE_MS)
+            val now = WebTarget.string(web.eval(WebTarget.CURRENT))
+            if (now != null && now != before) {
+                current(now)
+                break
+            }
         }
     }
 
@@ -269,6 +349,7 @@ fun WebScreen(
                     override fun onPageFinished(view: WebView, finishedUrl: String?) {
                         CookieManager.getInstance().flush()
                         val path = Uri.parse(finishedUrl ?: "").path
+                        if (path != "/login") loaded++
                         if (!signedInFired && path != "/login") {
                             signedInFired = true
                             signedIn()
@@ -295,5 +376,9 @@ fun WebScreen(
         },
     )
 }
+
+private const val TARGET_TRIES = 80
+private const val TARGET_PAUSE_MS = 250L
+private const val NEW_PAUSE_MS = 700L
 
 private fun sameOrigin(a: Uri, b: Uri): Boolean = a.scheme == b.scheme && a.host == b.host && a.port == b.port
