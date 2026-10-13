@@ -1870,6 +1870,7 @@ pub fn copy_attach(
 }
 
 /// Whether `program` is an executable on `$PATH`.
+#[cfg(unix)]
 pub fn on_path(program: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     let Some(path) = std::env::var_os("PATH") else {
@@ -1881,8 +1882,28 @@ pub fn on_path(program: &str) -> bool {
     })
 }
 
+/// Whether `program` is a program on `%PATH%`: a file of that name, or that name with one of
+/// the extensions in `%PATHEXT%` (default `.COM;.EXE;.BAT;.CMD`), in a `%PATH%` directory.
+#[cfg(windows)]
+pub fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let exts: Vec<&str> = exts.split(';').filter(|ext| !ext.is_empty()).collect();
+    std::env::split_paths(&path).any(|dir| {
+        let name = dir.join(program);
+        std::fs::metadata(&name).is_ok_and(|meta| meta.is_file())
+            || exts.iter().any(|ext| {
+                std::fs::metadata(format!("{}{ext}", name.display()))
+                    .is_ok_and(|meta| meta.is_file())
+            })
+    })
+}
+
 /// Starts `argv` on its own: no terminal, no pipes, its own process group, so it outlives
 /// this window. The app's spawner for `open_terminal`.
+#[cfg(unix)]
 pub fn spawn_detached(argv: &[String]) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     let (program, args) = argv
@@ -1894,6 +1915,29 @@ pub fn spawn_detached(argv: &[String]) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
+        .spawn()?;
+    // Reaped when it ends, however long that takes.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Starts `argv` on its own (a `DETACHED_PROCESS`), with no terminal, so it outlives this
+/// window. The app's spawner for `open_terminal`.
+#[cfg(windows)]
+pub fn spawn_detached(argv: &[String]) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS)
         .spawn()?;
     // Reaped when it ends, however long that takes.
     std::thread::spawn(move || {

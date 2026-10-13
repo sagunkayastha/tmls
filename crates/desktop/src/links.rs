@@ -383,6 +383,7 @@ pub fn open(url: &str) -> Result<(), String> {
 }
 
 /// Starts `program` in a process group of its own, with no terminal and no shell.
+#[cfg(unix)]
 fn detached(program: &str, args: &[&str]) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
     let mut child = Command::new(program)
@@ -391,6 +392,23 @@ fn detached(program: &str, args: &[&str]) -> io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
+        .spawn()?;
+    // Reaped when it ends, without waiting for it here.
+    std::thread::spawn(move || drop(child.wait()));
+    Ok(())
+}
+
+/// Starts `program` detached (a `DETACHED_PROCESS`), with no terminal and no shell.
+#[cfg(windows)]
+fn detached(program: &str, args: &[&str]) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS)
         .spawn()?;
     // Reaped when it ends, without waiting for it here.
     std::thread::spawn(move || drop(child.wait()));

@@ -4,9 +4,12 @@
 
 use std::fs::File;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 
 /// The flags that keep `tmls-rs` in the foreground; the detached child gets `--foreground`.
 pub fn is_foreground_flag(arg: &str) -> bool {
@@ -40,6 +43,7 @@ pub fn subcommand(args: &[String]) -> Option<Result<&str, String>> {
 /// Stays: with `--bench` (the e2e and bench scripts read its stderr), `--foreground`/`--fg`,
 /// `TMLS_RS_FOREGROUND` set to anything but empty or `0`, or a subcommand as the first
 /// argument (`tmls-rs keys`).
+#[cfg(unix)]
 pub fn wants_foreground(args: &[String], env_fg: Option<&str>) -> bool {
     if env_fg.is_some_and(|v| !v.is_empty() && v != "0") {
         return true;
@@ -52,6 +56,12 @@ pub fn wants_foreground(args: &[String], env_fg: Option<&str>) -> bool {
     }
     args.iter()
         .any(|arg| arg == "--bench" || is_foreground_flag(arg))
+}
+
+/// Always true: Windows has no detached launch, so every run stays in the foreground.
+#[cfg(windows)]
+pub fn wants_foreground(_args: &[String], _env_fg: Option<&str>) -> bool {
+    true
 }
 
 /// `$XDG_CACHE_HOME/tmls-rs/tmls-rs.log`, else `~/.cache/tmls-rs/tmls-rs.log` (an empty or
@@ -67,6 +77,7 @@ pub fn log_path(xdg_cache_home: Option<&str>, home: &str) -> PathBuf {
 /// The command that runs `exe` again with `args` and `--foreground` (added only if no
 /// foreground flag is there already), in a new session, stdin from `/dev/null`, stdout and
 /// stderr to `log`. The working directory and environment are inherited.
+#[cfg(unix)]
 pub fn detach_command(exe: &Path, args: &[String], log: File) -> io::Result<Command> {
     let mut cmd = Command::new(exe);
     cmd.args(args);
@@ -87,6 +98,16 @@ pub fn detach_command(exe: &Path, args: &[String], log: File) -> io::Result<Comm
         });
     }
     Ok(cmd)
+}
+
+/// There is no detached launch on Windows: nothing is started, and every run stays in the
+/// foreground ([`wants_foreground`]).
+#[cfg(windows)]
+pub fn detach_command(_exe: &Path, _args: &[String], _log: File) -> io::Result<Command> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "detaching is not supported on Windows; run in the foreground",
+    ))
 }
 
 /// Starts this program again detached (see [`detach_command`]), its log truncated, and returns

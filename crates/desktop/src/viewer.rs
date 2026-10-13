@@ -700,6 +700,7 @@ pub fn cache_path(cache: &Path, host: &str, path: &str) -> Option<PathBuf> {
 }
 
 /// Writes the copy; only the user can read it, and it cannot be run.
+#[cfg(unix)]
 fn save(cache: &Path, host: &str, path: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let copy = cache_path(cache, host, path).ok_or("it has no name to keep")?;
@@ -716,6 +717,24 @@ fn save(cache: &Path, host: &str, path: &str, bytes: &[u8]) -> Result<PathBuf, S
         .create(true)
         .truncate(true)
         .mode(0o600)
+        .open(&copy)
+        .map_err(said)?;
+    file.write_all(bytes).map_err(said)?;
+    Ok(copy)
+}
+
+/// Writes the copy into the user's own cache (Windows has no folder or file modes).
+#[cfg(windows)]
+fn save(cache: &Path, host: &str, path: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let copy = cache_path(cache, host, path).ok_or("it has no name to keep")?;
+    let dir = copy.parent().ok_or("it has no name to keep")?;
+    let said =
+        |e: std::io::Error| format!("the copy could not be written to {}: {e}", dir.display());
+    std::fs::create_dir_all(dir).map_err(said)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
         .open(&copy)
         .map_err(said)?;
     file.write_all(bytes).map_err(said)?;
