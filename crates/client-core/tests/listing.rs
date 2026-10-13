@@ -2,8 +2,8 @@
 //! (`tests/data/*.txt`). Cases ported from tmls's `tests/test_hosts.py` keep its inputs.
 
 use client_core::listing::{
-    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, listing_command, parse_background,
-    parse_listing, split_host, valid_server_name,
+    HostSnapshot, LISTING_SCRIPT, SessionInfo, SessionKey, Status, Tool, background_sessions, listing_command,
+    parse_background, parse_listing, split_host, valid_server_name,
 };
 
 fn fixture(name: &str) -> String {
@@ -504,6 +504,19 @@ fn other_tmux_servers_parse_into_one_snapshot_each() {
     assert!(snaps[2].sessions.is_empty());
     assert!(parse_background("nas", "").is_empty());
     assert!(parse_background("nas", "background web:\nsite:1:0:5\n").is_empty(), "no clock, nothing");
+}
+
+#[test]
+fn a_scan_for_other_servers_that_failed_is_no_answer() {
+    let names = |ran: anyhow::Result<String>| -> Option<Vec<String>> {
+        Some(background_sessions("nas", ran)?.into_iter().map(|s| format!("{}/{}", s.key.host, s.key.name)).collect())
+    };
+    let two = "1000\nbackground web:\nsite:1:1:995\nbackground jobs:\ncron:1:0:100\n";
+    assert_eq!(names(Ok(two.to_string())), Some(vec!["nas#web/site".to_string(), "nas#jobs/cron".to_string()]));
+    // The host answered and has none: its `background` row goes.
+    assert_eq!(names(Ok("1000\n".to_string())), Some(Vec::new()));
+    // An ssh hiccup or the timeout says nothing about its servers: the last answer stays.
+    assert_eq!(names(Err(anyhow::anyhow!("ssh timed out after 10.0 s"))), None);
 }
 
 #[test]

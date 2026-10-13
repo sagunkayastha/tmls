@@ -266,6 +266,14 @@ pub fn parse_background(host: &str, output: &str) -> Vec<HostSnapshot> {
     out
 }
 
+/// What a run of `tmux::server_sockets_argv` on `host` says: the sessions of all its other
+/// tmux servers together ([`parse_background`]), none when it has no other server. `None` when
+/// the command failed or timed out: that is no answer, and what the host said last stays.
+pub fn background_sessions(host: &str, ran: anyhow::Result<String>) -> Option<Vec<SessionInfo>> {
+    let found = parse_background(host, &ran.ok()?);
+    Some(found.into_iter().flat_map(|snap| snap.sessions).collect())
+}
+
 /// One Claude Code session, from its status file and the lines the script printed after it.
 struct Claude {
     session: String,

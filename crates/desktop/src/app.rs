@@ -73,7 +73,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use client_core::listing::{parse_background, split_host};
+use client_core::listing::{background_sessions, split_host};
 use client_core::push::{self, Applied, PushLine};
 use client_core::tmux::Split;
 use client_core::{
@@ -999,11 +999,12 @@ impl Running {
             let (proxy, local) = (self.proxy.clone(), self.cfg.local_name.clone());
             std::thread::spawn(move || {
                 let argv = tmux::server_sockets_argv(&host, &local);
-                let found = tmux::run(&argv, POLL_TIMEOUT)
-                    .map(|out| parse_background(&host, &out))
-                    .unwrap_or_default();
-                let sessions = found.into_iter().flat_map(|snap| snap.sessions).collect();
-                let _ = proxy.send_event(UserEvent::Background(host, sessions));
+                // A scan that failed says nothing: the row stays as the last answer made it.
+                // (A host that stops answering loses its row in `snapshot`.)
+                let ran = tmux::run(&argv, POLL_TIMEOUT);
+                if let Some(sessions) = background_sessions(&host, ran) {
+                    let _ = proxy.send_event(UserEvent::Background(host, sessions));
+                }
             });
         }
     }
