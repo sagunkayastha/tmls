@@ -17,7 +17,20 @@ pub struct Sampler {
     thread: Option<JoinHandle<()>>,
 }
 
+/// Clock ticks per second, used to turn `cpu_ticks` into a percentage.
+#[cfg(unix)]
+fn ticks_per_sec() -> f64 {
+    // SAFETY: sysconf with a valid name has no preconditions.
+    unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f64
+}
+
+#[cfg(windows)]
+fn ticks_per_sec() -> f64 {
+    1.0
+}
+
 /// utime + stime of this process, in clock ticks.
+#[cfg(unix)]
 fn cpu_ticks() -> Option<u64> {
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
     // Fields after the ")" that closes comm; utime and stime are the 14th and 15th overall.
@@ -26,10 +39,23 @@ fn cpu_ticks() -> Option<u64> {
     Some(fields.next()?.parse::<u64>().ok()? + fields.next()?.parse::<u64>().ok()?)
 }
 
+/// Not measured on Windows (`/proc` does not exist).
+#[cfg(windows)]
+fn cpu_ticks() -> Option<u64> {
+    None
+}
+
+#[cfg(unix)]
 fn rss_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
     line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Not measured on Windows (`/proc` does not exist).
+#[cfg(windows)]
+fn rss_kb() -> Option<u64> {
+    None
 }
 
 /// (utilisation %, power W) of the first GPU, or `None` without a working `nvidia-smi`.
@@ -48,8 +74,7 @@ impl Sampler {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::spawn(move || {
-            // SAFETY: sysconf with a valid name has no preconditions.
-            let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f64;
+            let ticks_per_sec = ticks_per_sec();
             let (mut last_t, mut last_cpu, mut last_frames) = (now_ns(), cpu_ticks().unwrap_or(0), log.frames_logged());
             while !stopped.load(Ordering::Relaxed) {
                 std::thread::sleep(PERIOD);

@@ -16,9 +16,17 @@ pub use keys::{Key, KeyEvent, Mods, MouseButton, MouseKind, Named};
 pub use pty::{Pty, PtyWriter};
 
 /// CLOCK_MONOTONIC in nanoseconds; every timestamp in every log uses this.
+#[cfg(unix)]
 pub fn now_ns() -> u128 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: `ts` is a valid timespec and CLOCK_MONOTONIC always exists on Linux.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     ts.tv_sec as u128 * 1_000_000_000 + ts.tv_nsec as u128
+}
+
+/// Nanoseconds since a process-wide `Instant` taken once; every timestamp in every log uses this.
+#[cfg(windows)]
+pub fn now_ns() -> u128 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_nanos()
 }
