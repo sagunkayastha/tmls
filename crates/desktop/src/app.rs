@@ -2925,6 +2925,11 @@ impl Running {
             return self.say(Ok("no live session to paste into".to_string()));
         }
         let got = self.clip.get();
+        // A picture copied in a browser: its HTML is on the clipboard too, the picture is meant.
+        #[cfg(windows)]
+        if got.as_deref().is_ok_and(clip::is_image_html) && clip::windows_has_image() {
+            return self.paste_image();
+        }
         self.paste_text(got);
     }
 
@@ -3019,6 +3024,9 @@ impl Running {
         self.say(Ok("reading the clipboard's image …".to_string()));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
+            #[cfg(windows)]
+            let read = clip::windows_image;
+            #[cfg(not(windows))]
             let read = |argv: &[String]| tmux::run_bytes(argv, imagepaste::TIMEOUT);
             let feed = |argv: &[String], input: &[u8]| {
                 tmux::run_with_stdin(argv, input, imagedrop::TIMEOUT)

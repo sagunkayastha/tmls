@@ -28,6 +28,11 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 # Decodes the pictures the file panel shows (`viewer::decode`): these five formats and no others.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
+[target.'cfg(windows)'.dependencies]
+# Image paste on Windows reads the clipboard's picture through arboard (`clip::windows_image`):
+# there is no wl-paste there.
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+
 [target.'cfg(unix)'.dependencies]
 # setsid() for the detached launch (`launch`); std has no stable setsid. Already in the tree via client-core.
 libc = "0.2"

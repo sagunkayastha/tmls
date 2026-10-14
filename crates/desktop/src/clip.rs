@@ -68,6 +68,41 @@ pub fn wl_paste(run: Runner) -> Result<String, String> {
     }
 }
 
+/// The text a browser's "Copy image" leaves beside the picture: an HTML snippet with an `<img`
+/// in it. A text paste of it is never what was meant; the picture is (Windows, `App::paste`).
+pub fn is_image_html(text: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with('<') && text.to_ascii_lowercase().contains("<img")
+}
+
+/// Whether the Windows clipboard holds a picture.
+#[cfg(windows)]
+pub fn windows_has_image() -> bool {
+    arboard::Clipboard::new().is_ok_and(|mut clipboard| clipboard.get_image().is_ok())
+}
+
+/// `imagepaste::stage`'s reader on Windows, where there is no `wl-paste`: answers the two
+/// questions stage asks it (`--list-types`, then `--type image/png`) from the clipboard's
+/// picture through arboard, encoded as PNG. Runs on the paste's own thread.
+#[cfg(windows)]
+pub fn windows_image(argv: &[String]) -> anyhow::Result<Vec<u8>> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let picture = match clipboard.get_image() {
+        Ok(picture) => picture,
+        // stage turns "no type" into "clipboard has no image"
+        Err(arboard::Error::ContentNotAvailable) => return Ok(Vec::new()),
+        Err(e) => anyhow::bail!("{e}"),
+    };
+    if argv.iter().any(|arg| arg == "--list-types") {
+        return Ok(b"image/png\n".to_vec());
+    }
+    let rgba = image::RgbaImage::from_raw(picture.width as u32, picture.height as u32, picture.bytes.into_owned())
+        .ok_or_else(|| anyhow::anyhow!("the clipboard's picture has a wrong size"))?;
+    let mut png = Vec::new();
+    rgba.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    Ok(png)
+}
+
 /// The window's clipboard.
 pub struct Clipboard {
     arboard: Option<arboard::Clipboard>,

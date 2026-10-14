@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use desktop::clip::{WL_TIMEOUT, copy_with, paste_with, wl_copy, wl_paste};
+use desktop::clip::{WL_TIMEOUT, copy_with, is_image_html, paste_with, wl_copy, wl_paste};
 
 #[test]
 fn copy_says_what_happened() {
@@ -82,4 +82,15 @@ fn wl_paste_reads_without_a_newline_and_empty_is_no_error() {
 fn the_fallback_fails_fast() {
     // It runs on the UI thread: a hung wl-copy or wl-paste may freeze the window this long.
     assert!(WL_TIMEOUT <= Duration::from_secs(1), "{WL_TIMEOUT:?}");
+}
+
+#[test]
+fn a_browsers_copied_image_html_is_known() {
+    // What Chrome / Edge leave as text beside a copied picture.
+    let html = r#"<meta http-equiv="content-type" content="text/html; charset=utf-8"><img alt="x" src="https://example.org/a.png">"#;
+    assert!(is_image_html(html));
+    assert!(is_image_html("  <IMG src=\"a.png\">"));
+    assert!(!is_image_html("plain text with <img> in it"));
+    assert!(!is_image_html("<b>bold</b>"));
+    assert!(!is_image_html(""));
 }
