@@ -88,6 +88,13 @@ class Drafts {
         map[key] = TextFieldValue(text, TextRange(cursor))
     }
 
+    /** [old] (an upload path) became [new] (where it was kept) in [key]'s draft. */
+    fun replace(key: String, old: String, new: String) {
+        val cur = map[key] ?: return
+        val text = cur.text.replace(old, new)
+        if (text != cur.text) map[key] = TextFieldValue(text, TextRange(text.length))
+    }
+
     /** [key] was sent: nothing left to keep. */
     fun clear(key: String) {
         map.remove(key)

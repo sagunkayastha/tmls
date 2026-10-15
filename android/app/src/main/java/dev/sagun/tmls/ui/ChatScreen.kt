@@ -56,6 +56,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -81,6 +82,7 @@ import dev.sagun.tmls.chat.ChatPhase
 import dev.sagun.tmls.chat.ChatRow
 import dev.sagun.tmls.chat.ChatRows
 import dev.sagun.tmls.chat.ChatViewModel
+import dev.sagun.tmls.chat.Uploads
 import dev.sagun.tmls.chat.Row as SessionRow
 import java.time.ZoneId
 import kotlinx.coroutines.delay
@@ -271,8 +273,39 @@ private fun UserBubble(vm: ChatViewModel, sessionKey: String, item: ChatItem, ac
             Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
                 Pictures(vm, sessionKey, item.images, actions)
                 if (item.text.isNotBlank()) Text(item.text, style = Tm.Body)
+                // Keep: a photo sent is in Claude's record itself, a file by its upload path.
+                item.images.forEachIndexed { i, blob ->
+                    val name = Uploads.photoName(item.ts, if (item.images.size > 1) i + 1 else null)
+                    KeepChip(if (item.images.size > 1) "Keep photo ${i + 1}" else "Keep photo", vm.keptSent[Uploads.blobKey(blob.id)]) {
+                        vm.keepSent(Uploads.blobKey(blob.id), blob = blob.id, name = name)
+                    }
+                }
+                val uploads = remember(item.text) { Uploads.inText(item.text) }
+                uploads.forEach { KeepChip("Keep ${Uploads.displayName(it)}", vm.keptSent[it]) { vm.keepSent(it) } }
             }
         }
+    }
+}
+
+/** A file or photo of a sent message, not kept yet: Keep copies it to ~/Documents/tmls/ on the host. */
+@Composable
+private fun KeepChip(label: String, kept: String?, onKeep: () -> Unit) {
+    Row(
+        Modifier.padding(top = 8.dp).clip(RoundedCornerShape(14.dp)).background(Tm.Raised)
+            .clickable(enabled = kept == null, role = Role.Button, onClickLabel = "$label in Documents", onClick = onKeep)
+            .padding(start = 10.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(if (kept.isNullOrEmpty()) Glyphs.Keep else Glyphs.KeepOn, null, Modifier.size(16.dp), tint = if (kept.isNullOrEmpty()) Tm.Dim else Tm.Accent)
+        Text(
+            when {
+                kept == null -> label
+                kept.isEmpty() -> "Keeping…"
+                else -> "Kept: ${Uploads.short(kept)}"
+            },
+            style = Tm.Small.copy(color = if (kept.isNullOrEmpty()) Tm.Dim else Tm.Text), maxLines = 2, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

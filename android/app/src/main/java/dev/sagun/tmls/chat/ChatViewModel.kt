@@ -46,7 +46,7 @@ data class Picked(val uri: Uri, val fallbackName: String, val temp: File? = null
  * It owns the [ChatClient] for the server address in use and replaces it when that address changes
  * (home/away, see TmlsApp). All of it lives on the main thread; Markdown is parsed off it.
  */
-class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
+class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, Voice.Sink {
     private val prefs = app.getSharedPreferences("chat", Context.MODE_PRIVATE)
     val http: OkHttpClient = ChatClient.http().cookieJar(WebkitCookieJar()).build()
     /** Pictures of a chat: fetched with the same client, so with the same login. */
@@ -110,6 +110,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         private set
     /** The last thing that went wrong, shown above the input until dismissed or something works. */
     var error by mutableStateOf<String?>(null)
+    /** Something worth a line that did not go wrong (where a file was kept), until dismissed. */
+    var notice by mutableStateOf<String?>(null)
+
+    /** Uploaded files named in each session's draft, with their Keep marks (see [Attachments]). */
+    var attached by mutableStateOf<Map<String, List<Attached>>>(emptyMap())
+        private set
+    /** Uploads in messages already sent that were kept: upload path -> kept path ("" while on its way). */
+    val keptSent = mutableStateMapOf<String, String>()
+
+    private val voice = Voice(app, this)
+    /** Speech is being turned into text in the message box. */
+    var listening by mutableStateOf(false)
+        private set
+    /** The session the words go to, and the draft around the cursor when listening began. */
+    private var voiceKey: String? = null
+    private var voiceBefore = ""
+    private var voiceAfter = ""
+    /** Stop was asked; the recognizer's last words are still to come. */
+    private var voiceStopping = false
 
     /** The terminal instead of the chat, by the user's choice ("Show terminal"). */
     var terminal by mutableStateOf(false)
@@ -157,6 +176,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     /** Sockets only while the app is looked at. */
     fun foreground(on: Boolean) {
         foreground = on
+        if (!on) stopVoice(cancel = true)  // never keep the microphone in the background
         if (on && !needLogin && !webOnly) client?.start() else if (!on) client?.stop()
     }
 
@@ -284,6 +304,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         creating = null
         terminal = false
         if (key == selected) return
+        stopVoice(cancel = true)
         draft = drafts.swap(selected, draft, key)
         remember(key)
         error = null
@@ -335,21 +356,145 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     fun send() {
         val c = client ?: return
         val key = selected ?: return
-        val text = draft.text
-        if (text.isBlank() || sending || row?.asking == true) return
+        val typed = draft.text
+        if (typed.isBlank() || sending || row?.asking == true) return
+        stopVoice(cancel = true)
         val session = chatSession
         sending = true
         viewModelScope.launch {
+            // Files marked Keep are stored for good first, and Claude is given the kept path.
+            var text = typed
+            for (item in Attachments.shown(attached[key], typed).filter { it.keep && !it.kept }) {
+                val kept = c.keep(key, item.path, item.name)
+                val path = kept.path
+                if (!kept.ok || path == null) {
+                    sending = false
+                    if (!kept.login) error = "Not sent: could not keep ${item.name}: ${kept.error ?: "no path came back"}"
+                    return@launch
+                }
+                text = text.replace(item.path, path)
+                attached = attached + (key to Attachments.keptAs(attached[key].orEmpty(), item.path, path))
+                // the box (or the stored draft, after a switch) names the kept file too, whatever else changed
+                if (selected == key) {
+                    val now = draft.text.replace(item.path, path)
+                    if (now != draft.text) draft = TextFieldValue(now, TextRange(now.length))
+                } else {
+                    drafts.replace(key, item.path, path)
+                }
+            }
             val reply = c.send(key, text, session)
             sending = false
             if (reply.ok) {
                 error = null
+                attached = attached - key
                 if (selected != key) drafts.clear(key)  // sent after switching away: don't bring it back
                 else if (draft.text == text) draft = TextFieldValue("")
                 toBottom++
             } else if (!reply.login) {
                 error = "Not sent: ${reply.error}"
             }
+        }
+    }
+
+    /** Keep or don't keep an attachment of the message being typed. */
+    fun toggleKeep(path: String) {
+        val key = selected ?: return
+        attached = attached + (key to Attachments.toggle(attached[key].orEmpty(), path))
+    }
+
+    /**
+     * Keep a file from a message already sent: copied to ~/Documents/tmls/ on its host, and said where.
+     * [path] is its upload path, or for a photo of the chat ([blob]) its [Uploads.blobKey].
+     */
+    fun keepSent(path: String, blob: String? = null, name: String? = null) {
+        val c = client ?: return
+        val key = chatKey ?: return
+        if (keptSent[path] != null) return
+        keptSent[path] = ""
+        viewModelScope.launch {
+            val reply = if (blob != null) c.keepPicture(key, blob, name) else c.keep(key, path)
+            val kept = reply.path
+            if (reply.ok && kept != null) {
+                keptSent[path] = kept
+                error = null
+                notice = "Kept at ${Uploads.short(kept)}"
+            } else {
+                keptSent.remove(path)
+                if (!reply.login) error = "Not kept: ${reply.error ?: "no path came back"}"
+            }
+        }
+    }
+
+    // ---- voice input ----
+
+    /** Start turning speech into text at the cursor (the caller has the microphone permission). */
+    fun startVoice() {
+        val key = selected ?: return
+        if (listening) return
+        if (!voice.available()) {
+            error = "Speech recognition isn't available on this phone."
+            return
+        }
+        val text = draft.text
+        val a = minOf(draft.selection.start, draft.selection.end).coerceIn(0, text.length)
+        val b = maxOf(draft.selection.start, draft.selection.end).coerceIn(0, text.length)
+        voiceKey = key
+        voiceBefore = text.substring(0, a)
+        voiceAfter = text.substring(b)
+        error = null
+        voiceStopping = false
+        listening = voice.start()
+        if (!listening) {
+            voiceKey = null
+            error = "Speech recognition isn't available on this phone."
+        }
+    }
+
+    /** Stop listening: what was heard stays in the message box ([cancel]: at once, without the last words). */
+    fun stopVoice(cancel: Boolean = false) {
+        if (!listening) return
+        // A second tap while the recognizer is still finishing: don't wait for it any longer.
+        if (cancel || voiceStopping) {
+            voice.cancel()
+            listening = false
+            voiceStopping = false
+            voiceKey = null
+        } else {
+            voiceStopping = true
+            voice.stop()
+        }
+    }
+
+    override fun onWords(text: String, final: Boolean) {
+        if (voiceKey == null || voiceKey != selected || text.isBlank()) return
+        val (value, cursor) = Draft.insert(voiceBefore + voiceAfter, voiceBefore.length, voiceBefore.length, text.trim())
+        draft = TextFieldValue(value, TextRange(cursor))
+    }
+
+    override fun onVoiceEnd(error: String?) {
+        listening = false
+        voiceStopping = false
+        voiceKey = null
+        if (error != null) this.error = error
+    }
+
+    // ---- shared into the app ----
+
+    /**
+     * What another app shared, sent to session [key]: that session is opened, the text goes into
+     * its message box after what was there, and the files are uploaded like picked ones.
+     */
+    fun receiveShare(key: String, share: Share, message: String) {
+        select(key)
+        stopVoice(cancel = true)
+        val piece = share.compose(message)
+        if (piece.isNotEmpty()) {
+            val text = Share.append(draft.text, piece)
+            draft = TextFieldValue(text, TextRange(text.length))
+        }
+        if (share.files.isNotEmpty()) {
+            if (upload != null) error = "Another upload is still running: share the files again when it is done."
+            else attach(share.files)
         }
     }
 
@@ -399,6 +544,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         viewModelScope.launch {
             for ((index, item) in picked.withIndex()) {
                 val count = if (picked.size > 1) "${index + 1} of ${picked.size}: " else ""
+                var fileName = Draft.fileName(null, item.fallbackName)
                 val reply = try {
                     val (name, size) = withContext(Dispatchers.IO) {
                         var name: String? = null
@@ -416,6 +562,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
                         if (size < 0 && item.temp != null) size = item.temp.length()
                         Draft.fileName(name, item.fallbackName) to size
                     }
+                    fileName = name
                     upload = Upload(count + name, if (size > 0) 0f else null)
                     var shown = -1
                     c.upload(key, name, size, open = { resolver.openInputStream(item.uri) ?: throw FileNotFoundException(name) }) { fraction ->
@@ -432,6 +579,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
                 val path = reply.path
                 if (reply.ok && path != null) {
                     error = null
+                    if (voiceKey == key) stopVoice(cancel = true)  // its next words would rebuild the box without the path
+                    attached = attached + (key to (attached[key].orEmpty() + Attached(path, fileName)))
                     if (selected == key) {
                         val (text, cursor) = Draft.insert(draft.text, draft.selection.start, draft.selection.end, path)
                         draft = TextFieldValue(text, TextRange(cursor))
@@ -448,6 +597,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     }
 
     override fun onCleared() {
+        voice.cancel()
         client?.stop()
         images.shutdown()
     }
