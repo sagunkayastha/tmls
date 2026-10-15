@@ -707,7 +707,9 @@ impl Running {
                 Err(why) => crate::errln(format_args!("tmls-rs: WSL keep-alive: {why}")),
             });
         }
-        let sidebar = Sidebar::new(&cfg, config_dir.to_path_buf());
+        let mut sidebar = Sidebar::new(&cfg, config_dir.to_path_buf());
+        // The hosts folded in an earlier run.
+        sidebar.set_folded(ui.folded.clone());
         let mut tabs = Tabs::new(&cfg.local_name);
         let wake_pending = Arc::new(AtomicBool::new(false));
         let (pending, wake_proxy) = (wake_pending.clone(), proxy.clone());
@@ -950,6 +952,7 @@ impl Running {
                 false => Some(list),
             },
             panel_cols: self.panel_cols,
+            folded: self.ui.folded.clone(),
         };
         if dragged == self.ui {
             return;
@@ -962,6 +965,29 @@ impl Running {
         // Saved: nothing to say, and what the status line says of something else stays.
         match saved {
             Ok(()) => self.ui = dragged,
+            Err(_) => self.report(saved),
+        }
+    }
+
+    /// The folded hosts changed, or may have: written to `~/.config/tmls-rs/ui` with the
+    /// widths as they were saved, if they differ from the file's. A file that cannot be
+    /// written shows in the status line.
+    fn save_folded(&mut self) {
+        let folded = self.sidebar.folded();
+        if *folded == self.ui.folded {
+            return;
+        }
+        let state = UiState {
+            folded: folded.clone(),
+            ..self.ui.clone()
+        };
+        let Some(path) = self.ui_path.clone() else {
+            return;
+        };
+        let saved = uistate::save(&path, &state)
+            .with_context(|| format!("the folded hosts were not saved: {}", path.display()));
+        match saved {
+            Ok(()) => self.ui = state,
             Err(_) => self.report(saved),
         }
     }
@@ -1635,6 +1661,7 @@ impl Running {
                 self.close_modal();
                 self.sidebar.select_key(&key);
                 self.act(sidebar::Action::Attach(key));
+                self.save_folded();
             }
         }
         self.invalidate();
@@ -2568,6 +2595,9 @@ impl Running {
             .next_waiting(front)
             .or_else(|| self.sidebar.next_unread(front, &|key| seen.unread(key)));
         if let Some(key) = next {
+            // Its host unfolds, even when the session has no tab to come to the front.
+            self.sidebar.select_key(&key);
+            self.save_folded();
             self.open(&key);
         }
     }
@@ -2589,6 +2619,12 @@ impl Running {
             ListKey::Background => self.sidebar.toggle_background(),
             ListKey::Help => self.open_help(),
             ListKey::GoTo => self.open_goto(),
+            ListKey::Fold => {
+                self.sidebar.fold_selected();
+            }
+            ListKey::UnfoldAll => {
+                self.sidebar.unfold_all();
+            }
             ListKey::Menu => {
                 // A session outside tmux has no menu: nothing in it applies. Nor has one of
                 // another tmux server (R4), and the status line says so.
@@ -2616,6 +2652,8 @@ impl Running {
                 }
             }
         }
+        // `z`, `Z`, `n` and opening a session fold or unfold hosts.
+        self.save_folded();
         self.invalidate();
     }
 
@@ -2658,23 +2696,27 @@ impl Running {
             self.invalidate();
             return;
         }
-        // A click on the header of a host that does not answer says why.
+        // A click on a host's header folds or unfolds it; on the `· offline` of a host that
+        // does not answer it says why instead.
         if button == MouseButton::Left
-            && let sidebar::Row::Host {
-                host,
-                online: false,
-                ..
-            } = &self.sidebar.rows()[row]
+            && let sidebar::Row::Host { host, online, .. } = &self.sidebar.rows()[row]
+            && !(*online && self.layout.on_add(col))
         {
-            let note = self.sidebar.offline_note(host, Instant::now());
-            if let Some(note) = note {
-                self.say(Err(note));
+            let host = host.clone();
+            let badge = draw::header_spans(&host, false, self.layout.list_cols, &self.theme)
+                .last()
+                .map_or(usize::MAX, |span| span.col);
+            match self.sidebar.offline_note(&host, Instant::now()) {
+                Some(note) if col >= badge => self.say(Err(note)),
+                _ => {
+                    self.sidebar.toggle_fold(&host);
+                    self.save_folded();
+                }
             }
+            self.invalidate();
             return;
         }
-        let header = matches!(self.sidebar.rows()[row], sidebar::Row::Host { .. });
         let action = match button {
-            MouseButton::Left if header && !self.layout.on_add(col) => None,
             MouseButton::Left => self.sidebar.click(row),
             MouseButton::Right => {
                 // No menu for a session of another tmux server (R4): said, not silent.
@@ -2933,6 +2975,8 @@ impl Running {
                 false => self.show_made(),
             }
         }
+        // The cursor went to the tab's session, which unfolds its host.
+        self.save_folded();
         self.invalidate();
     }
 

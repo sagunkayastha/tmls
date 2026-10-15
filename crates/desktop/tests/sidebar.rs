@@ -1160,3 +1160,96 @@ fn this_machines_background_row_comes_after_its_sessions_outside_tmux() {
         ]
     );
 }
+
+/// The rows shown, as `shape` writes them: a folded host's sessions left out.
+fn shown(s: &Sidebar) -> Vec<String> {
+    let all = shape(s);
+    (0..all.len())
+        .filter(|row| !s.hidden(*row))
+        .map(|row| all[row].clone())
+        .collect()
+}
+
+#[test]
+fn a_folded_host_hides_its_sessions_and_the_cursor_never_lands_there() {
+    let mut s = sidebar(&[LOCAL, "nas", "pc"]);
+    s.apply(idle(LOCAL, &["work"]));
+    let mut nas = idle("nas", &["media", "backup"]);
+    nas.sessions[1].status = Status::Waiting;
+    s.apply(nas);
+    s.apply(idle("pc", &["build"]));
+    s.select_key(&key("nas", "media"));
+
+    // `z` folds the cursor's host: the cursor goes to the nearest session shown.
+    assert_eq!(s.fold_selected().as_deref(), Some("nas"));
+    assert!(s.is_folded("nas"));
+    assert_eq!(
+        shown(&s),
+        ["[laptop]", "work", "-", "[nas]", "-", "[pc]", "build"]
+    );
+    assert_eq!(s.fold_counts("nas"), (2, 1));
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+    s.move_by(1);
+    assert_eq!(selected(&s), at("pc", "build"), "over the folded host");
+    s.move_by(-1);
+    assert_eq!(selected(&s), at(LOCAL, "work"));
+
+    // A folded host's rows take no line: the click under its header is the next header.
+    assert_eq!(s.row_at(3, 20), Some(3), "[nas]");
+    assert_eq!(s.row_at(4, 20), Some(6), "the gap after it");
+    assert_eq!(s.row_at(5, 20), Some(7), "[pc]");
+
+    // A listing of a folded host keeps it folded.
+    s.apply(idle("nas", &["media", "backup", "new"]));
+    assert!(s.hidden(6));
+    assert_eq!(s.fold_counts("nas"), (3, 0));
+
+    // `n` goes into it, and putting the cursor there unfolds it.
+    s.select_key(&key("nas", "new"));
+    assert!(!s.is_folded("nas"));
+    assert_eq!(selected(&s), at("nas", "new"));
+
+    // A click on the header folds and unfolds; every host folded: nothing selected.
+    assert!(s.toggle_fold("nas"));
+    s.toggle_fold(LOCAL);
+    s.toggle_fold("pc");
+    assert_eq!(s.selected(), None);
+    assert_eq!(s.activate(), None);
+    s.move_by(1);
+    assert_eq!(s.selected(), None);
+    assert!(!s.toggle_fold("pc"));
+    s.move_by(1);
+    assert_eq!(selected(&s), at("pc", "build"));
+    assert!(s.unfold_all());
+    assert!(s.folded().is_empty());
+    assert!(!s.unfold_all());
+
+    // Folded at the start (a set from an earlier run): the cursor leaves it.
+    s.select_key(&key(LOCAL, "work"));
+    s.set_folded([LOCAL.to_string()].into());
+    assert_eq!(selected(&s), at("nas", "media"));
+
+    // The tab walk skips folded hosts too.
+    assert_eq!(
+        s.list_step(Some(&key("pc", "build")), 1),
+        Some(key("nas", "media"))
+    );
+}
+
+#[test]
+fn the_sessions_outside_tmux_fold_apart_from_this_machine() {
+    let mut s = sidebar(&[LOCAL, "nas"]);
+    let mut local = idle(LOCAL, &["a"]);
+    local.sessions.push(outside("notes", 21, Status::Idle));
+    s.apply(local);
+    s.select_key(&key(KITTY, "notes"));
+    s.fold_selected();
+    assert!(s.is_folded(KITTY));
+    assert!(!s.is_folded(LOCAL));
+    assert_eq!(selected(&s), at(LOCAL, "a"));
+    assert_eq!(
+        kinds(&s),
+        ["[laptop]", "a", "[kitty]", "notes", "-", "[nas]"]
+    );
+    assert!(s.hidden(3) && !s.hidden(1) && !s.hidden(2));
+}

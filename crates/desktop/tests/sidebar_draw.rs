@@ -1057,3 +1057,34 @@ fn an_offline_header_says_how_old_its_rows_are_and_stale_rows_are_dim() {
         "{spans:?}"
     );
 }
+
+#[test]
+fn a_folded_header_says_how_many_sessions_and_how_many_wait() {
+    let theme = Theme::default();
+    let look = HeaderLook {
+        folded: Some((5, 2)),
+        polled: true,
+        ..HeaderLook::default()
+    };
+    let said = header_spans_look("nas", true, look, SIDEBAR_COLS, &theme);
+    let count = find(&said, "▸ 5");
+    assert_eq!((count.col, count.colour), (5, theme.dim_fg));
+    let waits = find(&said, "2?");
+    assert_eq!((waits.col, waits.colour), (9, mark_rgb(Status::Waiting)));
+    assert_eq!(find(&said, POLL_ONLY).col, 12, "the tags after the count");
+    assert!(said.iter().any(|span| span.text == "+"));
+    assert_within(&said);
+    // None waits: the count alone.
+    let quiet = HeaderLook {
+        folded: Some((5, 0)),
+        ..HeaderLook::default()
+    };
+    let said = header_spans_look("nas", true, quiet, SIDEBAR_COLS, &theme);
+    assert!(said.iter().all(|span| !span.text.ends_with('?')));
+    // Offline: after the badge.
+    let said = header_spans_look("nas", false, look, SIDEBAR_COLS, &theme);
+    assert!(find(&said, "▸ 5").col > find(&said, "· offline").col);
+    assert_within(&said);
+    let long = header_spans_look(&"h".repeat(40), true, look, SIDEBAR_COLS, &theme);
+    assert_within(&long);
+}

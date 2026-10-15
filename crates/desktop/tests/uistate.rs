@@ -8,6 +8,7 @@ fn state(sidebar_cols: Option<usize>, panel_cols: Option<usize>) -> UiState {
     UiState {
         sidebar_cols,
         panel_cols,
+        ..UiState::default()
     }
 }
 
@@ -146,4 +147,24 @@ fn a_file_that_cannot_be_written_is_an_error_not_a_panic() {
     std::fs::write(dir.join("file"), "x").unwrap();
     let error = uistate::save(&dir.join("file").join("ui"), &state(None, Some(40)));
     assert!(error.is_err());
+}
+
+#[test]
+fn the_folded_hosts_are_one_line_of_names() {
+    let folded = UiState {
+        folded: ["nas", "pc"].map(str::to_string).into(),
+        ..state(Some(34), None)
+    };
+    assert_eq!(uistate::render(&folded), "sidebar_cols=34\nfolded=nas,pc\n");
+    assert_eq!(uistate::parse(&uistate::render(&folded)), folded);
+    assert_eq!(
+        uistate::parse("folded= nas ,,pc\n").folded,
+        ["nas", "pc"].map(str::to_string).into()
+    );
+    assert!(uistate::parse("folded=\n").folded.is_empty());
+    assert_eq!(
+        uistate::render(&UiState::default()),
+        "",
+        "none folded: no line"
+    );
 }

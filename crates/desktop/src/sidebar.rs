@@ -28,8 +28,15 @@
 //! header or a gap. With no session at all nothing is selected. A host that does not answer
 //! keeps its rows, so the cursor stays where it is.
 //!
+//! **Folded hosts.** A host's section can be folded (`toggle_fold`, `z`, a click on its
+//! header): its sessions and its `background` row stay in `rows` — what the list knows of
+//! them does not change — but are hidden (`hidden`): they take no line, the cursor never
+//! lands on one, the view and the hit test skip them. Putting the cursor on a hidden session
+//! (`select_key`: its tab came to the front, `n`, the go-to picker) unfolds its host. The
+//! rule above the sessions outside tmux folds them alone.
+//!
 //! **Lines.** A row is one line of the list, a session with a summary (`summary`) two; the
-//! view and the hit test count in lines (`view`, `row_at`). The view follows the cursor
+//! view and the hit test count in lines (`view`, `row_at`); a hidden row has none. The view follows the cursor
 //! whenever the cursor moves; the wheel (`scroll`) moves the view alone.
 //!
 //! **Pins** are tmls's: slugs in `~/.config/tmls/pins`, the one file this app writes
@@ -127,6 +134,12 @@ pub fn hover_text(info: &SessionInfo) -> Option<String> {
         true => format!("{name} waits for you: {text}"),
         false => format!("{name}: {text}"),
     })
+}
+
+/// The host a session's row is under: its machine for a session of another tmux server, the
+/// rule's `KITTY` for one outside tmux.
+fn owner(key: &SessionKey) -> &str {
+    split_host(&key.host).0
 }
 
 /// An age in a few columns: `40s`, `5m`, `3h`, `2d`.
@@ -228,6 +241,8 @@ pub struct Sidebar {
     answered: HashMap<String, Instant>,
     /// Why each host that does not answer did not, when that is known.
     offline_error: HashMap<String, Option<String>>,
+    /// The hosts whose sections are folded.
+    folded: BTreeSet<String>,
     /// The first row in view. `view` settles it for the height it is given.
     top: Cell<usize>,
     /// The view has to show the cursor: it moved after the wheel last did.
@@ -262,6 +277,7 @@ impl Sidebar {
             pin_error: None,
             answered: HashMap::new(),
             offline_error: HashMap::new(),
+            folded: BTreeSet::new(),
             top: Cell::new(0),
             follow: Cell::new(true),
         }
@@ -500,17 +516,17 @@ impl Sidebar {
         self.rows.get(row)?.key()
     }
 
-    /// Moves the cursor `delta` sessions down (up when negative), over headers and gaps,
-    /// stopping at the first and the last session.
+    /// Moves the cursor `delta` sessions down (up when negative), over headers, gaps and
+    /// folded hosts, stopping at the first and the last session shown.
     pub fn move_by(&mut self, delta: i32) {
         let Some(mut at) = self.cursor.or_else(|| self.nearest_session(0)) else {
             return;
         };
         for _ in 0..delta.unsigned_abs() {
             let next = if delta > 0 {
-                (at + 1..self.rows.len()).find(|&row| self.rows[row].key().is_some())
+                (at + 1..self.rows.len()).find(|&row| self.shown_session(row))
             } else {
-                (0..at).rev().find(|&row| self.rows[row].key().is_some())
+                (0..at).rev().find(|&row| self.shown_session(row))
             };
             match next {
                 Some(next) => at = next,
@@ -520,10 +536,104 @@ impl Sidebar {
         self.set_cursor(at);
     }
 
-    /// Puts the cursor on a session; nothing happens when it is not listed.
+    /// Puts the cursor on a session, unfolding its host; nothing happens when it is not
+    /// listed.
     pub fn select_key(&mut self, key: &SessionKey) {
         if let Some(at) = self.position(key) {
+            let host = owner(key).to_string();
+            self.folded.remove(&host);
             self.set_cursor(at);
+        }
+    }
+
+    /// The hosts whose sections are folded.
+    pub fn folded(&self) -> &BTreeSet<String> {
+        &self.folded
+    }
+
+    /// Folds these hosts' sections (a set kept from an earlier run): only those, the others
+    /// open. The cursor leaves a folded one.
+    pub fn set_folded(&mut self, hosts: BTreeSet<String>) {
+        self.folded = hosts;
+        self.leave_hidden();
+    }
+
+    /// Whether `host`'s section is folded.
+    pub fn is_folded(&self, host: &str) -> bool {
+        self.folded.contains(host)
+    }
+
+    /// Folds `host`'s section, or unfolds it. Returns whether it is folded now. The cursor
+    /// does not stay in a folded host: it goes to the nearest session shown, if any.
+    pub fn toggle_fold(&mut self, host: &str) -> bool {
+        let folded = !self.folded.remove(host);
+        if folded {
+            self.folded.insert(host.to_string());
+            self.leave_hidden();
+        }
+        self.follow.set(true);
+        folded
+    }
+
+    /// `z`: folds the section of the cursor's session. Returns the host folded.
+    pub fn fold_selected(&mut self) -> Option<String> {
+        let host = owner(self.selected()?).to_string();
+        self.toggle_fold(&host);
+        Some(host)
+    }
+
+    /// Unfolds every host. Returns whether any was folded.
+    pub fn unfold_all(&mut self) -> bool {
+        let any = !self.folded.is_empty();
+        self.folded.clear();
+        self.follow.set(true);
+        any
+    }
+
+    /// Of a folded host: its sessions, and how many of them wait. Not counted: the other
+    /// tmux servers' and, for this machine, those outside tmux (the rule above them folds
+    /// them apart).
+    pub fn fold_counts(&self, host: &str) -> (usize, usize) {
+        let Some(section) = self.section(host) else {
+            return (0, 0);
+        };
+        let sessions = self.rows[section.start + 1..section.end].iter();
+        let waiting = sessions
+            .clone()
+            .filter(|row| matches!(row, Row::Session(info) if info.status == Status::Waiting))
+            .count();
+        (sessions.len(), waiting)
+    }
+
+    /// Whether a row is hidden in a folded host: a session, or a `background` row, of a host
+    /// whose section is folded. Headers and gaps never are.
+    pub fn hidden(&self, row: usize) -> bool {
+        let host = match self.rows.get(row) {
+            Some(Row::Session(info)) => owner(&info.key),
+            Some(Row::Background { host, .. }) => host,
+            _ => return false,
+        };
+        self.folded.contains(host)
+    }
+
+    /// A session's row that is shown: where the cursor may go.
+    fn shown_session(&self, row: usize) -> bool {
+        self.rows[row].key().is_some() && !self.hidden(row)
+    }
+
+    /// Lines of the list a row takes: none when it is hidden.
+    fn row_lines(&self, row: usize) -> usize {
+        match self.hidden(row) {
+            true => 0,
+            false => self.rows[row].lines(),
+        }
+    }
+
+    /// The cursor, in a host just folded, goes to the nearest session shown.
+    fn leave_hidden(&mut self) {
+        if let Some(at) = self.cursor.filter(|at| self.hidden(*at)) {
+            self.cursor = self.nearest_session(at);
+            self.follow.set(true);
         }
     }
 
@@ -784,7 +894,8 @@ impl Sidebar {
             .rows
             .iter()
             .filter_map(Row::key)
-            .filter(|key| key.host != KITTY && !self.stale(key) && in_ring(key))
+            .filter(|key| key.host != KITTY && !self.stale(key) && !self.is_folded(owner(key)))
+            .filter(|key| in_ring(key))
             .collect();
         let at = match from.and_then(|key| ring.iter().position(|member| *member == key)) {
             Some(at) => (at as i64 + step as i64).rem_euclid(ring.len() as i64) as usize,
@@ -812,9 +923,9 @@ impl Sidebar {
         // The first row from which everything to the end fits.
         let mut fits_from = count;
         let mut lines = 0;
-        while fits_from > 0 && lines + self.rows[fits_from - 1].lines() <= height {
+        while fits_from > 0 && lines + self.row_lines(fits_from - 1) <= height {
             fits_from -= 1;
-            lines += self.rows[fits_from].lines();
+            lines += self.row_lines(fits_from);
         }
         let mut top = self.top.get().min(fits_from);
         if self.follow.get()
@@ -828,7 +939,7 @@ impl Sidebar {
                 }
             }
             let lines =
-                |from: usize| -> usize { self.rows[from..=cursor].iter().map(Row::lines).sum() };
+                |from: usize| -> usize { (from..=cursor).map(|row| self.row_lines(row)).sum() };
             while top < cursor && lines(top) > height {
                 top += 1;
             }
@@ -836,8 +947,8 @@ impl Sidebar {
         self.top.set(top);
         let mut end = top;
         let mut lines = 0;
-        while end < count && lines + self.rows[end].lines() <= height {
-            lines += self.rows[end].lines();
+        while end < count && lines + self.row_lines(end) <= height {
+            lines += self.row_lines(end);
             end += 1;
         }
         top..end
@@ -847,7 +958,7 @@ impl Sidebar {
     pub fn row_at(&self, line: usize, height: usize) -> Option<usize> {
         let mut first = 0;
         self.view(height).find(|&row| {
-            first += self.rows[row].lines();
+            first += self.row_lines(row);
             line < first
         })
     }
@@ -888,10 +999,10 @@ impl Sidebar {
         });
     }
 
-    /// The session row nearest to row `at`; the one above when two are as near.
+    /// The session row shown nearest to row `at`; the one above when two are as near.
     fn nearest_session(&self, at: usize) -> Option<usize> {
         (0..self.rows.len())
-            .filter(|&row| self.rows[row].key().is_some())
+            .filter(|&row| self.shown_session(row))
             .min_by_key(|&row| (row.abs_diff(at), row))
     }
 }

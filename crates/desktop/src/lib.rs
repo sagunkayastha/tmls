@@ -18,7 +18,7 @@
 //! - `alerts` — which sessions started to need the user: the bell, its list, notifications.
 //! - `theme` — colours and sizes, taken from tmls.
 //! - `icon`  — the window's app id and embedded icon.
-//! - `uistate` —the widths the user dragged, kept in `~/.config/tmls-rs/ui`.
+//! - `uistate` —the widths the user dragged and the folded hosts, kept in `~/.config/tmls-rs/ui`.
 //! - `draw`  — the layout of the window and everything but the terminal's cells as quads.
 //! - `app`   — the winit event loop and the wgpu surface: wiring only.
 //!

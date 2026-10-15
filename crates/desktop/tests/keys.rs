@@ -638,8 +638,10 @@ fn chords(group: &str) -> Vec<&'static str> {
 #[test]
 fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     let list = chords("List");
-    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'b', 'y', 's', 'g', '?'] {
-        let mods = if c == '?' { SHIFT } else { NONE };
+    for c in [
+        'j', 'k', 'p', 'n', 'c', 'm', 'a', 'b', 'y', 's', 'g', 'z', 'Z', '?',
+    ] {
+        let mods = if c == '?' || c == 'Z' { SHIFT } else { NONE };
         assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
         assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
     }
@@ -773,4 +775,12 @@ fn alt_shift_v_pastes_an_image_outside_forms() {
     assert_eq!(global(&repeat(&ch('v', ALT_SHIFT)), Focus::Terminal), None);
     // Ctrl+Shift+V stays the text paste: it is no binding of the window's.
     assert_eq!(global(&ch('V', CTRL_SHIFT), Focus::Terminal), None);
+}
+
+#[test]
+fn z_folds_the_cursor_host_and_shift_z_unfolds_all() {
+    assert_eq!(list_key(&ch('z', NONE)), Some(ListKey::Fold));
+    assert_eq!(list_key(&ch('Z', SHIFT)), Some(ListKey::UnfoldAll));
+    assert_eq!(list_key(&repeat(&ch('z', NONE))), None);
+    assert_eq!(list_key(&ch('z', CTRL)), None);
 }

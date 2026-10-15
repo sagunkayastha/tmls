@@ -11,7 +11,8 @@
 //!   b the other tmux servers' sessions,
 //!   y — answer the cursor's session's permission prompt (Yes / No / Cancel),
 //!   s — the message form (send now, or queue while the session is busy),
-//!   g — the go-to picker
+//!   g — the go-to picker, z folds the cursor's host (`sidebar`'s folded hosts), Z unfolds
+//!   every host
 //! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
 //!   click beside it closes it
 //! - Alt+Shift+N — the next session that waits for the user
@@ -290,6 +291,10 @@ pub enum ListKey {
     Send,
     /// The go-to picker over every listed session.
     GoTo,
+    /// Fold the cursor's host.
+    Fold,
+    /// Unfold every host.
+    UnfoldAll,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -301,6 +306,9 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
     let plain = !ev.mods.ctrl && !ev.mods.alt && !ev.mods.logo;
     if ev.key == Key::Char('?') && plain && !ev.repeat {
         return Some(ListKey::Help);
+    }
+    if ev.key == Key::Char('Z') && plain && ev.mods.shift && !ev.repeat {
+        return Some(ListKey::UnfoldAll);
     }
     if ev.mods != NONE {
         return None;
@@ -318,6 +326,7 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('y') if !ev.repeat => Some(ListKey::Approve),
         Key::Char('s') if !ev.repeat => Some(ListKey::Send),
         Key::Char('g') if !ev.repeat => Some(ListKey::GoTo),
+        Key::Char('z') if !ev.repeat => Some(ListKey::Fold),
         _ => None,
     }
 }
@@ -474,10 +483,13 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("m", "the session's menu"),
             ("a", "alerts"),
             ("b", "show / hide background tmux"),
+            ("z", "fold / unfold this host"),
+            ("Z", "unfold every host"),
             ("?", "this help"),
             ("y", "approve a permission prompt"),
             ("s", "send or queue a message"),
             ("click", "attach; on + a new session"),
+            ("click a host", "fold / unfold it"),
             ("right-click", "the session's menu"),
             ("middle-click", "pin or unpin"),
         ],

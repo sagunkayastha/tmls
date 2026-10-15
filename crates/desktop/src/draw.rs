@@ -1089,6 +1089,8 @@ pub struct HeaderLook {
     pub sign_in: bool,
     /// Seconds since a host that does not answer last did: `· offline 3m`.
     pub offline_for: Option<u64>,
+    /// Its section is folded, with this many sessions of which this many wait: `▸ 5 2?`.
+    pub folded: Option<(usize, usize)>,
 }
 
 /// `header_spans`, with the tags of `look` dimly after the name while the host answers, each
@@ -1115,11 +1117,22 @@ pub fn header_spans_look(
                 }
             }
         }
+        let end = cols.saturating_sub(1);
+        if let Some(last) = spans.last() {
+            let col = last.col + columns(&last.text) + 1;
+            spans.extend(fold_spans(look.folded, col, end, theme));
+        }
         return spans;
     }
     let end = cols.saturating_sub(1);
     let room = end.saturating_sub(1 + 2); // the name's columns in `header_spans`
     let mut col = 1 + columns(&host.to_uppercase()).min(room) + 1;
+    // The fold's count first, before the `+`.
+    let fold = fold_spans(look.folded, col, end.saturating_sub(1), theme);
+    if let Some(last) = fold.last() {
+        col = last.col + columns(&last.text) + 1;
+    }
+    spans.extend(fold);
     for (on, tag) in [(look.polled, POLL_ONLY), (look.game, GAME_MODE)] {
         if on && col + columns(tag) < end.saturating_sub(1) {
             spans.push(Span::whole(0, col, tag).colour(theme.dim_fg));
@@ -1127,6 +1140,34 @@ pub fn header_spans_look(
         }
     }
     spans
+}
+
+/// Before the count of a folded host's sessions.
+pub const FOLDED_MARK: &str = "▸";
+
+/// A folded host's `▸ N` from column `col`, dim, and `N?` after it in the colour of waiting
+/// when any of them waits; only what fits before column `end`.
+fn fold_spans(
+    folded: Option<(usize, usize)>,
+    col: usize,
+    end: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let Some((count, waiting)) = folded else {
+        return Vec::new();
+    };
+    let count = format!("{FOLDED_MARK} {count}");
+    if col + columns(&count) >= end {
+        return Vec::new();
+    }
+    let waits_col = col + columns(&count) + 1;
+    let mut out = vec![Span::whole(0, col, count).colour(theme.dim_fg)];
+    let waits = format!("{waiting}?");
+    if waiting > 0 && waits_col + columns(&waits) < end {
+        let waiting_rgb = mark_rgb(client_core::Status::Waiting);
+        out.push(Span::whole(0, waits_col, waits).colour(waiting_rgb).bold());
+    }
+    out
 }
 
 /// What the rule above the sessions outside tmux says.
@@ -1431,7 +1472,12 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
     let front = view.front();
     let selected = list.selected();
     let mut line = 0;
-    for row in &list.rows()[list.view(l.list_lines)] {
+    for at in list.view(l.list_lines) {
+        // A folded host's rows take no line.
+        if list.hidden(at) {
+            continue;
+        }
+        let row = &list.rows()[at];
         let r = l.list_lines_rect(line, row.lines());
         line += row.lines();
         match row {
@@ -1446,9 +1492,16 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                 online,
                 color,
             } => {
+                let folded = list.is_folded(host).then(|| list.fold_counts(host));
                 if host == KITTY {
                     // No machine: a rule above this machine's Claude sessions outside tmux.
-                    for span in rule_spans(OUTSIDE_LABEL, l.list_cols, theme) {
+                    let label = match folded {
+                        Some((count, _)) => {
+                            Cow::Owned(format!("{OUTSIDE_LABEL} {FOLDED_MARK} {count}"))
+                        }
+                        None => Cow::Borrowed(OUTSIDE_LABEL),
+                    };
+                    for span in rule_spans(&label, l.list_cols, theme) {
                         p.span((r.x, r.y), &span);
                     }
                     continue;
@@ -1470,6 +1523,7 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                         .iter()
                         .find(|(h, _)| h == host)
                         .map(|(_, secs)| *secs),
+                    folded,
                 };
                 for span in header_spans_look(host, *online, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);
