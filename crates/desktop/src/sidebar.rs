@@ -243,6 +243,9 @@ pub struct Sidebar {
     offline_error: HashMap<String, Option<String>>,
     /// The hosts whose sections are folded.
     folded: BTreeSet<String>,
+    /// The session the cursor was on when a fold left no session shown, until a host unfolds
+    /// (the cursor goes back to it) or the cursor is put somewhere.
+    folded_away: Option<SessionKey>,
     /// The first row in view. `view` settles it for the height it is given.
     top: Cell<usize>,
     /// The view has to show the cursor: it moved after the wheel last did.
@@ -278,6 +281,7 @@ impl Sidebar {
             answered: HashMap::new(),
             offline_error: HashMap::new(),
             folded: BTreeSet::new(),
+            folded_away: None,
             top: Cell::new(0),
             follow: Cell::new(true),
         }
@@ -570,14 +574,22 @@ impl Sidebar {
         if folded {
             self.folded.insert(host.to_string());
             self.leave_hidden();
+        } else {
+            self.come_back();
         }
         self.follow.set(true);
         folded
     }
 
-    /// `z`: folds the section of the cursor's session. Returns the host folded.
+    /// `z`: folds the section of the cursor's session, and returns its host. With no session
+    /// selected — every one is folded away — it unfolds every host instead, so that `z` twice
+    /// leaves the list as it was.
     pub fn fold_selected(&mut self) -> Option<String> {
-        let host = owner(self.selected()?).to_string();
+        let Some(key) = self.selected() else {
+            self.unfold_all();
+            return None;
+        };
+        let host = owner(key).to_string();
         self.toggle_fold(&host);
         Some(host)
     }
@@ -586,6 +598,7 @@ impl Sidebar {
     pub fn unfold_all(&mut self) -> bool {
         let any = !self.folded.is_empty();
         self.folded.clear();
+        self.come_back();
         self.follow.set(true);
         any
     }
@@ -630,11 +643,28 @@ impl Sidebar {
     }
 
     /// The cursor, in a host just folded, goes to the nearest session shown.
+    /// When none is shown the cursor's session is remembered (`come_back`).
     fn leave_hidden(&mut self) {
         if let Some(at) = self.cursor.filter(|at| self.hidden(*at)) {
             self.cursor = self.nearest_session(at);
+            if self.cursor.is_none() {
+                self.folded_away = self.rows[at].key().cloned();
+            }
             self.follow.set(true);
         }
+    }
+
+    /// After a host unfolded, with no session selected: the cursor goes back to the session a
+    /// fold took it from, if that is shown now, else to the first session shown.
+    fn come_back(&mut self) {
+        if self.cursor.is_some() {
+            return;
+        }
+        let back = self.folded_away.take();
+        let at = back.and_then(|key| self.position(&key));
+        self.cursor = at
+            .filter(|at| !self.hidden(*at))
+            .or_else(|| self.nearest_session(0));
     }
 
     /// A click on a row: a session is selected and attached; an online host's header (its
@@ -965,6 +995,7 @@ impl Sidebar {
 
     /// The user (or the tab in front) puts the cursor somewhere: that is where it stays.
     fn set_cursor(&mut self, row: usize) {
+        self.folded_away = None;
         self.cursor = Some(row);
         self.follow.set(true);
     }

@@ -464,6 +464,8 @@ if click 300 11; then
   check "screenshot 11-closed-by-click" shot 11-closed-by-click
   # The list: line 0 is the host's header, line 1 "$ODD", line 2 $ONE. Its lines are the
   # terminal's rows: 17 px each from y 23, under a band as high as the tab bar.
+  # A click on the header folds the host (its sessions take no line, ~/.config/tmls-rs/ui
+  # says so); a second click unfolds it.
   click 100 31
   sleep 0.5
   if [ "$(attached | wc -l)" -eq 1 ]; then
@@ -471,6 +473,12 @@ if click 300 11; then
   else
     fail "a click on the host's header attaches nothing" "clients: $(attached | tr '\n' '|')"
   fi
+  check "a click on the host's header folds it, and ui says so" \
+    wait_for 5 grep -qxF "folded=$(hostname)" "$HOME/.config/tmls-rs/ui"
+  check "screenshot 11-folded" shot 11-folded
+  click 100 31
+  check "a second click unfolds it" \
+    wait_for 5 bash -c '! grep -q folded= "$0"' "$HOME/.config/tmls-rs/ui"
   click 100 65
   if wait_for 8 attached_to "$ONE"; then
     pass "a click on the list's third line attaches $ONE"
@@ -541,7 +549,9 @@ if click 300 11; then
   UI="$HOME/.config/tmls-rs/ui"
   wider_than() { [ "$(pane_cols)" -gt "$1" ]; }
   ui_has() { grep -qxF -- "$1" "$UI" 2>/dev/null; }
-  check "before a drag there is no ~/.config/tmls-rs/ui" test ! -e "$UI"
+  # (The header's fold above may have written the file, without a width.)
+  check "before a drag ~/.config/tmls-rs/ui has no width" \
+    bash -c '! grep -q _cols= "$0" 2>/dev/null' "$UI"
   COLS_PANEL=$(pane_cols)
   click drag 755 400 955
   if wait_for 8 wider_than "$COLS_PANEL"; then

@@ -1220,6 +1220,14 @@ fn a_folded_host_hides_its_sessions_and_the_cursor_never_lands_there() {
     assert!(!s.toggle_fold("pc"));
     s.move_by(1);
     assert_eq!(selected(&s), at("pc", "build"));
+    // `z` with every session folded away unfolds them all: `z` twice changes nothing, the
+    // cursor included.
+    assert_eq!(s.fold_selected().as_deref(), Some("pc"));
+    assert_eq!(s.selected(), None);
+    assert_eq!(s.fold_selected(), None);
+    assert!(s.folded().is_empty());
+    assert_eq!(selected(&s), at("pc", "build"), "back where it was");
+    s.toggle_fold("nas");
     assert!(s.unfold_all());
     assert!(s.folded().is_empty());
     assert!(!s.unfold_all());

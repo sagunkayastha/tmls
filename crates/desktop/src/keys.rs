@@ -11,8 +11,8 @@
 //!   b the other tmux servers' sessions,
 //!   y — answer the cursor's session's permission prompt (Yes / No / Cancel),
 //!   s — the message form (send now, or queue while the session is busy),
-//!   g — the go-to picker, z folds the cursor's host (`sidebar`'s folded hosts), Z unfolds
-//!   every host
+//!   g — the go-to picker, z folds the cursor's host (`sidebar`'s folded hosts; with every
+//!   session folded away it unfolds them all), Z unfolds every host
 //! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); typing there
 //!   narrows its rows (`Help`); Esc clears that, then closes; `?` or a click beside it closes
 //! - Alt+Shift+N — the next session that waits for the user
