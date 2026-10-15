@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 from aiohttp import WSMsgType, web
 
 from tmls import approve, hosts, image_paste, prompts
-from tmls.web import record
+from tmls.web import record, uploads
 
 WINDOW = 16 << 20       # bytes of the record's end read for the history: records grow to 100 MB
 LINE_MAX = 32 << 20     # one line holds a whole base64 screenshot
@@ -189,11 +189,13 @@ async def press(request):
 
 async def store(host, data, name):
     """Save bytes under ~/.cache/tmls/images/ on the host (stdin of the remote command, like
-    image_paste.store) and return the absolute path there. The name is ours; only the extension
-    of the given one is kept, and only a plain one."""
-    suffix = PurePosixPath(name).suffix.lower()
-    suffix = suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix) else ""
-    filename = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}{suffix}"
+    image_paste.store) and return the absolute path there. The name is ours: a stamp and a random
+    part, then the given name made safe (uploads.safe_name), so the original name is still there
+    for Claude and for keeping it later; a plain extension is kept, in lower case."""
+    safe = uploads.safe_name(name)
+    suffix = PurePosixPath(safe).suffix
+    stem = safe[: len(safe) - len(suffix)] if suffix else safe
+    filename = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}-{stem}{suffix.lower()}"
     script = f'd="$HOME/.cache/tmls/images"; mkdir -p "$d" && cat > "$d/{filename}" && echo "$d/{filename}"'
     out = await image_paste._run(hosts.run_argv(host, script), stdin=data, timeout=60)
     lines = out.decode(errors="replace").split()

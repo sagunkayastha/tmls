@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shlex
 from unittest.mock import AsyncMock
@@ -307,12 +308,16 @@ async def test_upload_goes_to_the_hosts_cache_through_stdin(aiohttp_client, monk
     assert ok.status == 200 and await ok.json() == {"ok": True, "path": "/home/u/.cache/tmls/images/NAME"}
     argv, stdin = seen[-1]
     assert argv[:1] == ["ssh"] and argv[-2] == "box" and stdin == PNG
-    assert 'cat > "$d/' in argv[-1] and '.png"' in argv[-1] and "My Photo" not in argv[-1]
+    assert 'cat > "$d/' in argv[-1] and '-My_Photo.png"' in argv[-1] and "My Photo" not in argv[-1]
     # a plain session takes files too; the extension is kept only when it is a plain one
     for name in ("notes.tar.gz", "x.$(reboot)", "noext", "a.p;g", ".bashrc"):
         assert (await client.post("/api/chat/upload", params={"key": "box/shell", "name": name}, data=b"x")).status == 200
     scripts = [argv[-1] for argv, _ in seen[1:]]
-    assert '.gz"' in scripts[0] and all("reboot" not in s and ";g" not in s and "bashrc" not in s for s in scripts)
+    # the original name stays readable in the stored one, but only as letters, digits, `.`, `_`, `-`
+    names = [re.search(r'cat > "\$d/([^"]*)"', s).group(1) for s in scripts]
+    assert names[0].endswith("-notes.tar.gz") and names[1].endswith("-x._reboot") and names[3].endswith("-a.p_g")
+    assert names[4].endswith("-bashrc") and all(re.fullmatch(r"[\w.-]+", n) for n in names)
+    assert all("$(" not in s and ";g" not in s for s in scripts)
     calls = len(seen)
     for params, status in (({"key": "box/work"}, 400), ({"name": "a.png"}, 400), ({"key": "elsewhere/x", "name": "a.png"}, 400),
                            ({"key": "box/gone", "name": "a.png"}, 404)):
