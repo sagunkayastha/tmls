@@ -26,6 +26,9 @@ class ChatUrls(val base: String) {
     fun chat(key: String): HttpUrl = api("api/chat").addQueryParameter("key", key).build()
     fun blob(key: String, id: String): HttpUrl =
         api("api/chat/blob").addQueryParameter("key", key).addQueryParameter("id", id).build()
+    /** A picture file on the session's host, by its path there (absolute or ~/). */
+    fun file(key: String, path: String): HttpUrl =
+        api("api/chat/file").addQueryParameter("key", key).addQueryParameter("path", path).build()
     fun upload(key: String, name: String): HttpUrl =
         api("api/chat/upload").addQueryParameter("key", key).addQueryParameter("name", name).build()
     fun post(path: String): HttpUrl = api(path).build()
