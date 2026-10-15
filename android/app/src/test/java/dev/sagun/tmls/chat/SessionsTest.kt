@@ -48,4 +48,15 @@ class SessionsTest {
     @Test fun marksOfTheWebPage() {
         assertEquals(listOf("●", "?", "◆", "✕", "○", ""), listOf("running", "waiting", "done", "failed", "idle", "new").map(Sessions::glyph))
     }
+
+    @Test fun statesInAWordAndAgentsByName() {
+        assertEquals(listOf("Running", "Waiting", "Idle", "Failed", "Idle"), listOf("running", "waiting", "done", "failed", "idle").map(Sessions::state))
+        assertEquals(listOf("Claude", "Codex", "opencode", "Gemini", null, null), listOf("claude", "codex", "opencode", "gemini", "", null).map(Sessions::agentName))
+    }
+
+    @Test fun waitingSortsFirstWhateverTheAgentAndTheRestKeepTheirOrder() {
+        val rows = listOf(row("local", "a"), row("local", "b", "running").copy(agent = "codex"), row("local", "c", "waiting").copy(agent = "codex"),
+            row("local", "d", "waiting"), row("local", "e", "done"))
+        assertEquals(listOf("c", "d", "a", "b", "e"), Sessions.groups(rows, hosts).single().rows.map { it.name })
+    }
 }

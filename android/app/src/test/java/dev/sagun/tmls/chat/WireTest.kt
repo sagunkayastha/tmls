@@ -127,4 +127,11 @@ class WireTest {
         assertEquals(""""a\"b\\c\n"""", Wire.quote("a\"b\\c\n"))
         assertEquals("\"x\\u2028y\"", Wire.quote("x y"))
     }
+
+    @Test fun aRowNamesItsAgent() {
+        val rows = (Wire.event("""{"t":"rows","set":[{"key":"a/x","mark":"waiting","agent":"codex","waiting":"waiting for you"},{"key":"a/y"}],"gone":[]}""") as EventMsg.Rows).set
+        assertEquals("codex", rows[0].agent)
+        assertTrue(rows[0].waiting)
+        assertNull(rows[1].agent)
+    }
 }

@@ -15,6 +15,27 @@ object Sessions {
         else -> ""
     }
 
+    /**
+     * A row's state in a word: Waiting (needs the user), Running, Idle; Failed for a Claude whose last
+     * reply is an API error. "done" (finished since last looked at) is Idle; its dot keeps the colour.
+     */
+    fun state(mark: String): String = when (mark) {
+        "waiting" -> "Waiting"
+        "running" -> "Running"
+        "failed" -> "Failed"
+        else -> "Idle"
+    }
+
+    /** The agent CLI of a row by its name, null for none (a shell). */
+    fun agentName(agent: String?): String? = when (agent) {
+        null, "" -> null
+        "claude" -> "Claude"
+        "codex" -> "Codex"
+        "opencode" -> "opencode"
+        "copilot" -> "Copilot"
+        else -> agent.replaceFirstChar { it.uppercaseChar() }
+    }
+
     /** A rows message applied: a full one replaces everything (sessions that ended meanwhile go). */
     fun apply(rows: Map<String, Row>, msg: EventMsg.Rows): Map<String, Row> {
         val out = if (msg.full) LinkedHashMap() else LinkedHashMap(rows)

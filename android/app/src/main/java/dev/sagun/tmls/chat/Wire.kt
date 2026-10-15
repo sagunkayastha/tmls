@@ -38,6 +38,8 @@ data class Row(
     /** Percent of Claude's context in use. */
     val context: Int? = null,
     val model: String? = null,
+    /** The agent CLI in it: "claude", "codex", "opencode", another of herdr's ids; null for none (a shell). */
+    val agent: String? = null,
 ) {
     val waiting: Boolean get() = mark == "waiting"
     val working: Boolean get() = mark == "running"
@@ -152,6 +154,7 @@ object Wire {
             claude = o.bool("claude") ?: false,
             context = o.long("context")?.toInt(),
             model = o.str("model"),
+            agent = o.str("agent"),
         )
     }
 
