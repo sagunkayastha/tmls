@@ -40,6 +40,13 @@ object Tm {
         else -> Idle
     }
 
+    /** A usage window's or a context's colour: [normal] below 75 %, amber, then red from 90 %. */
+    fun fill(fill: dev.sagun.tmls.chat.Fill, normal: Color): Color = when (fill) {
+        dev.sagun.tmls.chat.Fill.NORMAL -> normal
+        dev.sagun.tmls.chat.Fill.HIGH -> Wait
+        dev.sagun.tmls.chat.Fill.FULL -> Fail
+    }
+
     /** Body text: large, with room between the lines. The platform's sans; its monospace for code. */
     val Body = TextStyle(fontSize = 17.sp, lineHeight = 26.sp, color = Text)
     val Small = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, color = Dim)

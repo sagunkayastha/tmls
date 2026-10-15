@@ -76,6 +76,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, 
         private set
     var groups by mutableStateOf<List<HostGroup>>(emptyList())
         private set
+    /** Claude's 5-hour and weekly usage, for the drawer; null when the server has none (or is older). */
+    var usage by mutableStateOf<Usage?>(null)
+        private set
     /** The first full list of sessions has arrived. */
     var listed by mutableStateOf(false)
         private set
@@ -192,6 +195,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, 
         base = url
         feedUp = false
         listed = false
+        usage = null
         bounces = 0
         webOnly = false
         needLogin = !WebkitCookieJar.hasSession(url)
@@ -272,6 +276,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, 
             }
             is EventMsg.Renamed -> if (selected == message.old) remember(message.new)
             is EventMsg.Killed -> {}  // the rows message that follows drops it
+            is EventMsg.Usage -> {
+                usage = message.usage
+                return
+            }
             EventMsg.Other -> return
         }
         groups = Sessions.groups(rows.values, hosts)

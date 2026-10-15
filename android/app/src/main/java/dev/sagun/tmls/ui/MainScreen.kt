@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LifecycleStartEffect
+import dev.sagun.tmls.chat.UsageText
 import dev.sagun.tmls.chat.ChatViewModel
 import dev.sagun.tmls.chat.Row as SessionRow
 import dev.sagun.tmls.update.Updater
@@ -176,7 +177,9 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
                     },
                     subtitle = when {
                         creating != null -> creating.label
-                        row != null -> if (row.online) row.label else "${row.label} · offline"
+                        // the host, and how full the open session's Claude context is
+                        row != null -> (if (row.online) row.label else "${row.label} · offline") +
+                            (row.context?.let { "  ·  " + UsageText.context(it) } ?: "")
                         else -> ""
                     },
                     busy = creating == null && row?.working == true,

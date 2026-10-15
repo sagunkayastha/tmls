@@ -5,7 +5,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -18,6 +21,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import android.text.format.DateFormat
+import kotlinx.coroutines.delay
+import java.time.ZoneId
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -35,6 +45,9 @@ import dev.sagun.tmls.chat.ChatViewModel
 import dev.sagun.tmls.chat.HostInfo
 import dev.sagun.tmls.chat.Row as SessionRow
 import dev.sagun.tmls.chat.Sessions
+import dev.sagun.tmls.chat.Usage
+import dev.sagun.tmls.chat.UsageText
+import dev.sagun.tmls.chat.UsageWindow
 
 /**
  * Every session of every host, by host, the ones waiting for the user first; a tap picks one.
@@ -68,6 +81,10 @@ fun SessionDrawer(vm: ChatViewModel, onPick: (SessionRow) -> Unit, onNew: (HostI
             }
         }
         HorizontalDivider(color = Tm.Line)
+        vm.usage?.let {
+            UsagePanel(it)
+            HorizontalDivider(color = Tm.Line)
+        }
         NewSession(Sessions.creatable(vm.hosts), vm.row?.host, onNew)
         Text(
             "tmls ${BuildConfig.VERSION_NAME}", style = Tm.Small.copy(color = Tm.Faint, fontSize = 12.sp),
@@ -113,7 +130,47 @@ private fun SessionLine(row: SessionRow, selected: Boolean, onClick: () -> Unit)
                 style = Tm.Small.copy(fontSize = 13.sp, lineHeight = 18.sp, color = Tm.Dim), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
-        row.context?.let { Text("$it%", style = Tm.Small.copy(fontSize = 12.sp, color = Tm.Faint), modifier = Modifier.padding(start = 8.dp)) }
+        row.context?.let {
+            Text(UsageText.context(it), style = Tm.Small.copy(fontSize = 12.sp, color = Tm.fill(UsageText.fill(it), Tm.Faint)),
+                maxLines = 1, modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+/** Claude's 5-hour and weekly usage: a row and a thin bar each, and how old the numbers are once that matters. */
+@Composable
+private fun UsagePanel(usage: Usage) {
+    val context = LocalContext.current
+    // The countdowns move while the drawer is open.
+    val now by produceState(System.currentTimeMillis() / 1000) {
+        while (true) {
+            delay(30_000)
+            value = System.currentTimeMillis() / 1000
+        }
+    }
+    val h24 = DateFormat.is24HourFormat(context)
+    Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 10.dp)) {
+        usage.fiveHour?.let { UsageLine("5-hour", it, UsageText.countdown(it.resetsAt, now)) }
+        usage.sevenDay?.let { UsageLine("Weekly", it, UsageText.resetsOn(it.resetsAt, now, ZoneId.systemDefault(), h24)) }
+        UsageText.asOf(usage.at, now)?.let {
+            Text(it, style = Tm.Small.copy(fontSize = 11.sp, lineHeight = 14.sp, color = Tm.Faint), modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun UsageLine(name: String, window: UsageWindow, resets: String) {
+    val color = Tm.fill(UsageText.fill(window.pct), Tm.Text)
+    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(name, style = Tm.Small.copy(fontSize = 13.sp, lineHeight = 18.sp), modifier = Modifier.width(62.dp))
+            Text("${window.pct}%", style = Tm.Small.copy(fontSize = 13.sp, lineHeight = 18.sp, color = color, fontWeight = FontWeight.SemiBold))
+            Text(resets, style = Tm.Small.copy(fontSize = 12.sp, lineHeight = 18.sp, color = Tm.Faint), textAlign = TextAlign.End,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        }
+        Box(Modifier.padding(top = 4.dp).fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(Tm.Line)) {
+            Box(Modifier.fillMaxWidth(window.pct / 100f).fillMaxHeight().background(Tm.fill(UsageText.fill(window.pct), Tm.Dim)))
+        }
     }
 }
 
