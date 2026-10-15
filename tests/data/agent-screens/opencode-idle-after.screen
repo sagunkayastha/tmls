@@ -1,0 +1,45 @@
+
+  ┃
+  ┃  Write a 300 word essay about mutexes. Do not use any tools.
+  ┃
+
+     + Thought: 381ms
+
+     Mutexes
+
+     A mutex, short for "mutual exclusion," is the most fundamental synchronization primitive in concurrent
+     programming. It guards a shared resource so that only one thread can access it at a time. When a thread wants to
+     enter a critical section, it locks the mutex. If the mutex is already locked, the thread blocks until the holder
+     releases it. The lock is then passed to a waiting thread, which proceeds.
+
+     The core problem mutexes solve is the race condition. Two threads reading and writing the same variable can
+     interleave their operations, producing results that neither thread intended. A mutex serializes access,
+     restoring the simple mental model of sequential execution for the protected region.
+
+     Mutexes have two states: locked and unlocked. Beyond that, implementations vary. Some are recursive, letting the
+     same thread re-lock without deadlocking. Some track ownership, refusing to let a thread unlock a mutex it never
+     locked. Others are plain and fast, trading safety for speed.
+
+     Using mutexes correctly is subtle. Deadlock arises when two threads each hold one lock and wait for the other.
+     Priority inversion occurs when a low-priority thread holds a lock a high-priority thread needs. Lock contention
+     can throttle throughput, turning parallel code into serialized code with extra overhead. Roughly, the lock
+     protects correctness but may cost performance.
+
+     Best practices keep critical sections short, acquire locks in a consistent global order, and avoid holding a
+     lock while calling code that might lock something else. Prefer higher-level abstractions—channels, immutable
+     data, atomic operations—when they fit, reserving raw mutexes for cases where sharing is unavoidable.
+
+     In short, a mutex is a small, sharp tool. Used carefully, it makes concurrency safe; used carelessly, it
+     introduces deadlocks and bottlenecks that are hard to diagnose.
+
+     ▣  Build · DeepSeek V4.1 Flash · 7.4s
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4.1 Flash DeepSeek
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /data/scratch/tmls-rs-v0/detect/play                                            17.4K (2%) · $0.00  ctrl+p commands
+
