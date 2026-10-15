@@ -302,6 +302,8 @@ fn listing_script_collects_what_tmls_collects() {
         ".claude/projects/",
         "\"isApiErrorMessage\":true",
         "echo usage",
+        "#{pane_title}",
+        "capture-pane -p",
     ] {
         assert!(LISTING_SCRIPT.contains(part), "the script lacks {part:?}");
     }
@@ -356,12 +358,15 @@ fn script_output_parses_with_a_stub_tmux() {
     let (ok, snap) = run(
         "case \"$*\" in\n\
          *list-windows*) echo 'my notes:1:1:5'; echo 'work:2:0:6';;\n\
-         *list-panes*) echo 'my notes:opencode:/dev/pts/998'; echo 'work:vim:/dev/pts/999';;\n\
+         *list-panes*) echo 'my notes:opencode:/dev/pts/998:%1'; echo 'work:vim:/dev/pts/999:%2';;\n\
+         *display-message*%1*capture-pane*%1*) echo OpenCode; echo '  △ Permission required'; echo ---;;\n\
+         *display-message*) echo \"unexpected $*\";;\n\
          esac",
     );
     assert!(ok && snap.online, "{snap:?}");
     let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.tool, s.attached, s.status)).collect();
-    assert_eq!(got, [("my notes", Tool::Opencode, 1, Status::Idle), ("work", Tool::Other, 0, Status::Idle)]);
+    // opencode's pane asks for a permission; vim's pane is not captured at all
+    assert_eq!(got, [("my notes", Tool::Opencode, 1, Status::Waiting), ("work", Tool::Other, 0, Status::Idle)]);
 
     let (ok, snap) = run("echo 'no server running on /tmp/tmux-1000/default' >&2; exit 1");
     assert!(ok, "the script itself succeeds when tmux has no server");
@@ -530,4 +535,127 @@ fn a_background_host_is_machine_hash_server() {
     for bad in ["", "a b", "x;y", "$(id)", "日本", "a/b"] {
         assert!(!valid_server_name(bad), "{bad}");
     }
+}
+
+/// A listing of sessions whose panes run agents, each pane's capture (title, then screen) taken
+/// from `tests/data/agent-screens`.
+fn with_screens(panes: &[(&str, &str, &str)], claude: &str) -> HostSnapshot {
+    let mut out = String::from("1000\n");
+    let mut sessions: Vec<&str> = panes.iter().map(|(name, _, _)| *name).collect();
+    sessions.dedup();
+    for name in &sessions {
+        out += &format!("{name}:1:0:10\n"); // printed 990 s ago: idle by its age
+    }
+    for (name, command, capture) in panes {
+        out += &format!("tool {name}:{command}\n");
+        if capture.is_empty() {
+            continue;
+        }
+        let dir = format!("{}/tests/data/agent-screens", env!("CARGO_MANIFEST_DIR"));
+        let title = std::fs::read_to_string(format!("{dir}/{capture}.title")).unwrap();
+        let screen = std::fs::read_to_string(format!("{dir}/{capture}.screen")).unwrap();
+        for line in title.lines().chain(screen.lines()) {
+            out += &format!(">{line}\n");
+        }
+    }
+    out += "---\n";
+    out += claude;
+    parse_listing("archbox", &out)
+}
+
+#[test]
+fn agent_panes_get_their_status_from_their_screen() {
+    let snap = with_screens(
+        &[
+            ("cx-idle", "codex", "codex-idle-after"),
+            ("cx-work", "codex", "codex-working"),
+            ("cx-ask", "codex", "codex-approval-blocked"),
+            ("oc-idle", "opencode", "opencode-idle"),
+            ("oc-work", "opencode", "opencode-working"),
+            ("oc-ask", "opencode", "opencode-permission-blocked"),
+            ("bare", "codex", ""), // no capture (the pane went away): its output age decides
+        ],
+        "",
+    );
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.status, s.tool)).collect();
+    assert_eq!(
+        got,
+        [
+            ("cx-idle", Status::Idle, Tool::Codex),
+            ("cx-work", Status::Running, Tool::Codex),
+            ("cx-ask", Status::Waiting, Tool::Codex),
+            ("oc-idle", Status::Idle, Tool::Opencode),
+            ("oc-work", Status::Running, Tool::Opencode),
+            ("oc-ask", Status::Waiting, Tool::Opencode),
+            ("bare", Status::Idle, Tool::Codex),
+        ]
+    );
+    assert!(snap.sessions.iter().all(|s| s.reason.is_none() && s.title.is_none()));
+}
+
+#[test]
+fn several_agent_panes_in_a_session_waiting_wins_then_working() {
+    let status = |panes: &[(&str, &str, &str)]| with_screens(panes, "").sessions[0].status;
+    let idle = ("s", "opencode", "opencode-idle");
+    let work = ("s", "codex", "codex-working");
+    let ask = ("s", "opencode", "opencode-permission-blocked");
+    assert_eq!(status(&[idle, work]), Status::Running);
+    assert_eq!(status(&[work, ask, idle]), Status::Waiting);
+    assert_eq!(status(&[idle, idle]), Status::Idle);
+    assert_eq!(with_screens(&[idle, work], "").sessions[0].tool, Tool::Codex);
+}
+
+#[test]
+fn claudes_status_file_beats_its_screen_which_is_only_a_fallback() {
+    // Its status file says idle; a working codex in the same session does not change that.
+    let file = r#"{"status":"idle","statusUpdatedAt":900000,"tmux":"s:@1.%1"}"#;
+    let snap = with_screens(&[("s", "claude", ""), ("s", "codex", "codex-working")], file);
+    assert_eq!((snap.sessions[0].status, snap.sessions[0].tool), (Status::Idle, Tool::Claude));
+    // No status file names the pane (an old Claude Code): herdr's Claude rules read its screen.
+    let mut out = String::from("1000\ns:1:0:10\ntool s:claude\n>✳ Claude Code\n");
+    for line in ["╭───", "│ Do you want to proceed?", "│ ❯ 1. Yes", "│   2. No", "╰───"] {
+        out += &format!(">{line}\n");
+    }
+    let snap = parse_listing("archbox", &(out + "---\n"));
+    assert_eq!((snap.sessions[0].status, snap.sessions[0].tool), (Status::Waiting, Tool::Claude));
+}
+
+#[test]
+fn screen_lines_are_never_windows_and_never_end_the_tmux_part() {
+    // A screen showing "---", a line that looks like a window, and one like a tool line.
+    let out = "1000\nw:1:0:990\ntool w:opencode\n>OpenCode\n>---\n>evil:1:1:999\n>tool w:claude\n\
+               >  △ Permission required\n---\n";
+    let snap = parse_listing("nas", out);
+    assert_eq!(names(&snap), ["w"]);
+    assert_eq!((snap.sessions[0].status, snap.sessions[0].tool), (Status::Waiting, Tool::Opencode));
+    // `>` lines before any tool line are not screens (a banner, a session named so)
+    let snap = parse_listing("nas", "1000\n>odd:1:0:990\n---\n");
+    assert_eq!(names(&snap), [">odd"]);
+    // `>` lines after a pane that is no agent's belong to nobody
+    let snap = parse_listing("nas", "1000\nw:1:0:10\ntool w:vim\n>  △ Permission required\n---\n");
+    assert_eq!(snap.sessions[0].status, Status::Idle);
+}
+
+#[test]
+fn other_agents_herdr_knows_get_a_letter_and_a_status() {
+    let out = "1000\ng:1:0:10\nk:1:0:10\ntool g:gemini\n>gemini\n>│ Allow execution of: 'rm'?\ntool k:kiro-cli\n---\n";
+    let snap = parse_listing("nas", out);
+    let got: Vec<_> = snap.sessions.iter().map(|s| (s.key.name.as_str(), s.status, s.tool, s.tool.letter())).collect();
+    assert_eq!(
+        got,
+        [("g", Status::Waiting, Tool::Agent("gemini"), Some('G')), ("k", Status::Idle, Tool::Agent("kiro"), Some('K'))]
+    );
+}
+
+#[test]
+fn the_scripts_agent_names_are_the_rule_files_names() {
+    let line = LISTING_SCRIPT.lines().find_map(|l| l.trim().strip_prefix("e='")).expect("the script names agents");
+    let mut in_script: Vec<&str> = line.trim_end_matches('\'').split('|').collect();
+    let mut in_files: Vec<String> = Vec::new();
+    for (id, _) in client_core::detect::RULE_FILES {
+        in_files.extend(client_core::detect::rules(id).unwrap().process_names().map(str::to_string));
+    }
+    in_script.sort_unstable();
+    in_files.sort_unstable();
+    assert_eq!(in_script, in_files);
 }

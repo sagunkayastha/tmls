@@ -1,0 +1,10 @@
+The *.toml files in this directory are herdr's agent-detection rules, copied unchanged from
+https://github.com/herdrdev/herdr (distribution/agent-detection/) at commit
+916fcf8de029c6cac965b50f3cdb9687cd7d1537 (2026-10-14).
+
+herdr is licensed under the Apache License, Version 2.0; its license text is in LICENSE beside
+this file. tmls-rs reads these files with its own port of herdr's detection engine
+(crates/client-core/src/detect.rs, engine version 3).
+
+To update: copy the files from a newer herdr commit, put its hash here and in
+detect::HERDR_COMMIT, and run the client-core tests (every file must still parse).

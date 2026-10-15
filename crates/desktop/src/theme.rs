@@ -194,6 +194,12 @@ pub fn tool_letter(tool: Tool) -> Option<(&'static str, [u8; 3])> {
         Tool::Claude => Some(("C", [0xd9, 0x77, 0x57])),
         Tool::Opencode => Some(("O", [0x61, 0xaf, 0xef])),
         Tool::Codex => Some(("X", [0x98, 0xc3, 0x79])),
+        // another agent herdr knows: the first letter of its id, grey
+        Tool::Agent(_) => {
+            const LETTERS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let i = LETTERS.find(tool.letter()?)?;
+            Some((&LETTERS[i..i + 1], [0xab, 0xb2, 0xbf]))
+        }
         Tool::Other => None,
     }
 }
