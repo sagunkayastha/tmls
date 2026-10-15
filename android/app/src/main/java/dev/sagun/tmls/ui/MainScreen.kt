@@ -105,6 +105,7 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
                 .padding(bottom = keyboard.settledDp),
         ) {
             UpdateBanner(updater)
+            if (ShareInbox.pending != null) ShareWaits("Log in to tmls first. Then pick the session for what you shared.")
             key(vm.webGen) {
                 WebScreen(
                     url,
@@ -237,8 +238,26 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
         }
     }
 
+    // Shared from another app: pick the session once the list is there.
+    val share = ShareInbox.pending
+    if (share != null && vm.listed) {
+        SharePicker(vm, share, onDone = {
+            ShareInbox.pending = null
+            scope.launch { drawer.close() }
+        })
+    }
+
     // Registered last, so asked first: an open drawer closes before anything under it hears of Back.
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+}
+
+/** A share is waiting on something the user has to do first: one plain line saying what. */
+@Composable
+internal fun ShareWaits(text: String) {
+    Text(
+        text, style = Tm.Small.copy(color = Tm.Text), textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().background(Tm.Raised).padding(horizontal = 16.dp, vertical = 10.dp),
+    )
 }
 
 /** Triple bar, the session's name over its host, a spinner while Claude works, the menu. */

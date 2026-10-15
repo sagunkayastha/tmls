@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -217,6 +218,10 @@ private fun Unreachable(urls: List<String>, onRetry: () -> Unit, onChange: () ->
     ) {
         Text("Can't reach tmls", style = MaterialTheme.typography.headlineSmall)
         Text(urls.joinToString("\n"), style = MaterialTheme.typography.bodyMedium)
+        if (ShareInbox.pending != null) {
+            Text("What you shared can't go anywhere until the tmls server answers. It waits here.",
+                style = MaterialTheme.typography.bodyMedium, color = Tm.mark("waiting"), textAlign = TextAlign.Center)
+        }
         Button(onClick = onRetry) { Text("Retry") }
         TextButton(onClick = onChange) { Text("Change server") }
     }
