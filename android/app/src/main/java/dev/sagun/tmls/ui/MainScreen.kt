@@ -64,8 +64,8 @@ private tailrec fun Context.activity(): ComponentActivity? = when (this) {
 
 /**
  * The app once a server answers at [url]: the chat of one session, every session in a drawer, and
- * the site's own page in a WebView for what the chat is not — the login, sessions without Claude,
- * "Show terminal" and the New session form.
+ * the site's own page in a WebView for what the chat is not — the login, sessions without Claude
+ * and "Show terminal". New session is a native form (NewSessionScreen).
  * [onLeave] when Back has nothing left to close, [onChangeServer] for the Setup screen,
  * [onUnreachable] when the address stopped answering (the caller asks home and away again).
  */
@@ -129,8 +129,10 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
     val softKeyboard = LocalSoftwareKeyboardController.current
     val row = vm.row
     val creating = vm.creating
-    // The terminal: for the New session form, for a session without Claude, or because it was asked for.
-    val terminal = creating != null || (row != null && (!row.claude || vm.terminal))
+    // A session just made with Claude in it, before Claude is up: "Starting Claude…", then its chat.
+    val awaitingClaude = creating == null && row != null && row.key == vm.starting && !row.claude && !vm.terminal
+    // The terminal: for a session without Claude, or because it was asked for.
+    val terminal = creating == null && !awaitingClaude && row != null && (!row.claude || vm.terminal)
 
     // Nothing to show yet (first run, or the last session is gone): the list of sessions.
     LaunchedEffect(vm.listed) {
@@ -196,6 +198,8 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
+                    creating != null -> NewSessionScreen(vm, creating)
+                    awaitingClaude -> Notice("Starting Claude…", "The chat opens once it is up.", "Show terminal") { vm.showTerminal(true) }
                     terminal -> Box(
                         Modifier.fillMaxSize()
                             // As TmlsApp did for the whole page: the bars' stable size, the page
@@ -216,12 +220,12 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
                                 onUpdateRequested = updater::checkManual,
                                 onLeave = onLeave,
                                 onCrashed = vm::webCrashed,
-                                target = if (creating != null) WebTarget.New(creating.host, creating.label) else row?.let { WebTarget.Session(it.key) },
+                                target = row?.let { WebTarget.Session(it.key) },
                                 nativeBack = true,
                                 backEnabled = !drawer.isOpen,
                                 // Back from a terminal that was asked for: the chat again. From a session that
                                 // has nothing but its terminal: out of the app, the session stays.
-                                onBack = { if (creating != null || row?.claude == true) vm.showTerminal(false) else onLeave() },
+                                onBack = { if (row?.claude == true) vm.showTerminal(false) else onLeave() },
                                 onCurrent = vm::select,
                             )
                         }

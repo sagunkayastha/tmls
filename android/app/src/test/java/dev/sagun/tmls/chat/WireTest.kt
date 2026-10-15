@@ -134,4 +134,19 @@ class WireTest {
         assertTrue(rows[0].waiting)
         assertNull(rows[1].agent)
     }
+
+    @Test fun startsFoldersAndSuggestedNames() {
+        assertEquals(
+            listOf(Start("shell", null), Start("claude", "claude"), Start("xdsp", "codex --yolo")),
+            Wire.starts("""{"presets":["xdsp"],"starts":[{"id":"shell","command":null},{"id":"claude","command":"claude"},{"id":"xdsp","command":"codex --yolo"},{"x":1}]}"""),
+        )
+        // an older server: preset names only
+        assertEquals(listOf("shell", "claude", "cdsp"), Wire.starts("""{"presets":["cdsp"]}""")?.map { it.id })
+        assertNull(Wire.starts("""{"ok":false,"error":"login"}"""))
+        assertNull(Wire.starts("<html>"))
+        assertEquals(Folders("/home/me", listOf("~/work", "/srv")), Wire.folders("""{"ok":true,"home":"/home/me","folders":["~/work","/srv"]}"""))
+        assertNull(Wire.folders("""{"ok":false,"error":"couldn't reach pc"}"""))
+        assertEquals("tmls", Wire.suggested("""{"ok":true,"name":"tmls"}"""))
+        assertEquals("""{"host":"pc","folder":"~/x","name":"x","start":"codex"}""", Wire.create("pc", "~/x", "x", "codex"))
+    }
 }

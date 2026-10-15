@@ -242,6 +242,22 @@ class ChatClient(
 
     suspend fun logout(): Reply = post("logout", "", followRedirects = false)
 
+    // ---- New session ----
+
+    /** What a new session can start; null when the server did not answer. */
+    suspend fun starts(): List<Start>? {
+        val reply = call(http, Request.Builder().url(urls.post("api/config")).get().build())
+        return Wire.starts(reply.body)  // /api/config has no "ok": its own fields say it is the answer
+    }
+
+    suspend fun folders(host: String): Reply = post("api/folders", Wire.hostBody(host))
+
+    suspend fun suggestName(host: String, folder: String): String? =
+        post("api/suggest-name", Wire.suggest(host, folder)).takeIf { it.ok }?.let { Wire.suggested(it.body) }
+
+    suspend fun create(host: String, folder: String, name: String, start: String): Reply =
+        post("api/create", Wire.create(host, folder, name, start))
+
     private suspend fun post(path: String, json: String, followRedirects: Boolean = true): Reply {
         val request = Request.Builder().url(urls.post(path)).header("Origin", urls.origin).post(json.toRequestBody(JSON)).build()
         val client = if (followRedirects) http else http.newBuilder().followRedirects(false).build()

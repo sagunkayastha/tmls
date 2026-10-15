@@ -54,6 +54,12 @@ fun denyAt(choices: List<Choice>): Int? = choices.indexOfFirst { it.label.starts
 
 data class HostInfo(val host: String, val label: String, val online: Boolean, val background: Boolean)
 
+/** A choice of what a new session starts (/api/config `starts`): its id for /api/create and the command it runs. */
+data class Start(val id: String, val command: String?)
+
+/** A host's home and the folders worth offering for a new session (/api/folders), "~/…" under home. */
+data class Folders(val home: String, val folders: List<String>)
+
 data class Blob(val id: String, val mime: String)
 
 enum class Kind { USER, ASSISTANT, TOOL, NOTE }
@@ -92,7 +98,11 @@ sealed interface ChatMsg {
 }
 
 /** The answer to a POST: {"ok":true,...} or {"ok":false,"error":...}; [login] for a 401. */
-data class Reply(val ok: Boolean, val error: String? = null, val path: String? = null, val login: Boolean = false)
+data class Reply(val ok: Boolean, val error: String? = null, val path: String? = null, val login: Boolean = false) {
+    /** The answer's text, for the routes that answer with more than ok/error (folders, a suggested name); not part of equality. */
+    var body: String = ""
+        internal set
+}
 
 /** Contract messages to data classes and back. Anything not understood is null, never an exception. */
 object Wire {
@@ -158,6 +168,32 @@ object Wire {
         )
     }
 
+    /** /api/config's start choices; an older server lists only preset names: shell and claude, then those. */
+    fun starts(text: String): List<Start>? {
+        val o = obj(text)?.takeIf { "starts" in it || "presets" in it } ?: return null
+        val starts = (o["starts"] as? JsonArray)?.mapNotNull {
+            val s = it as? JsonObject ?: return@mapNotNull null
+            Start(s.str("id") ?: return@mapNotNull null, s.str("command"))
+        }
+        return starts ?: (listOf(Start("shell", null), Start("claude", "claude")) + o.strings("presets").orEmpty().map { Start(it, null) })
+    }
+
+    fun folders(text: String): Folders? {
+        val o = obj(text)?.takeIf { it.bool("ok") == true } ?: return null
+        return Folders(o.str("home") ?: "", o.strings("folders").orEmpty())
+    }
+
+    /** /api/suggest-name's name, or null. */
+    fun suggested(text: String): String? = obj(text)?.takeIf { it.bool("ok") == true }?.str("name")
+
+    fun hostBody(host: String): String = buildJsonObject { put("host", host) }.toString()
+
+    fun suggest(host: String, folder: String): String = buildJsonObject { put("host", host); put("folder", folder) }.toString()
+
+    fun create(host: String, folder: String, name: String, start: String): String = buildJsonObject {
+        put("host", host); put("folder", folder); put("name", name); put("start", start)
+    }.toString()
+
     fun chat(text: String): ChatMsg? {
         val o = obj(text) ?: return null
         return when (o.str("t")) {
@@ -200,7 +236,7 @@ object Wire {
         if (code == 401) return Reply(ok = false, error = "login", login = true)
         val o = obj(body)
         val ok = code in 200..299 && o?.bool("ok") == true
-        return Reply(ok, if (ok) null else o?.str("error") ?: "HTTP $code", o?.str("path"))
+        return Reply(ok, if (ok) null else o?.str("error") ?: "HTTP $code", o?.str("path")).also { it.body = body }
     }
 
     /** [session]: the id from the chat's `open`; the server refuses when Claude is on another conversation now. */

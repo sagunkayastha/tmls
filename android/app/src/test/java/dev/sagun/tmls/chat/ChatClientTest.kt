@@ -232,6 +232,23 @@ class ChatClientTest {
         assertFalse(ChatClient.resetsBackoff(ChatMsg.None("host unreachable")))
     }
 
+    @Test fun newSessionAsksStartsFoldersANameAndCreates() {
+        serve(mapOf(
+            "/api/config" to listOf(MockResponse().setBody("""{"presets":[],"starts":[{"id":"shell","command":null},{"id":"codex","command":"codex"}]}""")),
+            "/api/folders" to listOf(MockResponse().setBody("""{"ok":true,"home":"/home/me","folders":["~/work"]}""")),
+            "/api/suggest-name" to listOf(MockResponse().setBody("""{"ok":true,"name":"repo"}""")),
+            "/api/create" to listOf(MockResponse().setResponseCode(409).setBody("""{"ok":false,"error":"a session named repo already exists"}""")),
+        ))
+        val client = client()
+        assertEquals(listOf(Start("shell", null), Start("codex", "codex")), onMain { client.starts() })
+        assertEquals(Folders("/home/me", listOf("~/work")), Wire.folders(onMain { client.folders("pc") }.body))
+        assertEquals("repo", onMain { client.suggestName("pc", "~/work") })
+        assertEquals(Reply(false, "a session named repo already exists"), onMain { client.create("pc", "~/work", "repo", "codex") })
+        assertEquals(listOf("GET", "POST", "POST", "POST"), requests.map { it.method })
+        assertEquals("""{"host":"pc"}""", requests[1].body.readUtf8())
+        assertEquals("""{"host":"pc","folder":"~/work","name":"repo","start":"codex"}""", requests[3].body.readUtf8())
+    }
+
     @Test fun sendKeyAndApprovePostJsonWithTheOrigin() {
         serve(mapOf(
             "/api/chat/send" to listOf(MockResponse().setBody("""{"ok":true}""")),

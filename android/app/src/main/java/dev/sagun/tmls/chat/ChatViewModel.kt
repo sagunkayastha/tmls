@@ -20,6 +20,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -114,9 +115,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     /** The terminal instead of the chat, by the user's choice ("Show terminal"). */
     var terminal by mutableStateOf(false)
         private set
-    /** The host a new session is being made on (the web page's form, in the terminal view). */
+    /** The host a new session is being made on (the New session form shows while set). */
     var creating by mutableStateOf<HostInfo?>(null)
         private set
+    /** What a new session can start, from the server; empty until it answers. */
+    var starts by mutableStateOf<List<Start>>(emptyList())
+        private set
+    /** Each host's home and known folders, once asked. */
+    var folders by mutableStateOf<Map<String, Folders>>(emptyMap())
+        private set
+    /** The form was sent and its session has not shown up in the list yet. */
+    var createBusy by mutableStateOf(false)
+        private set
+    var createError by mutableStateOf<String?>(null)
+    /** A just-made session that opens as a chat once Claude is up in it ("Starting Claude…" until then). */
+    var starting by mutableStateOf<String?>(null)
+        private set
+    /** A just-made session to open as soon as its row arrives. */
+    private var opening: String? = null
     /** A fresh terminal page for the same address ("Reload", or its renderer died). */
     var webGen by mutableIntStateOf(0)
         private set
@@ -226,6 +242,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
             EventMsg.Other -> return
         }
         groups = Sessions.groups(rows.values, hosts)
+        starting?.let { if (rows[it]?.claude == true) starting = null }
+        openIfListed()
         syncChat()
     }
 
@@ -283,6 +301,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     fun select(key: String) {
         creating = null
         terminal = false
+        if (key != starting) starting = null
         if (key == selected) return
         draft = drafts.swap(selected, draft, key)
         remember(key)
@@ -302,8 +321,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
         terminal = on
     }
 
+    /** The New session form, on [host]; it can switch hosts with this too. */
     fun create(host: HostInfo) {
         creating = host
+        createError = null
+        val c = client ?: return
+        viewModelScope.launch {
+            // asked each time the form opens (presets and recent folders change); the last answer shows meanwhile
+            c.starts()?.let { starts = it }
+            Wire.folders(c.folders(host.host).body)?.let { folders = folders + (host.host to it) }
+        }
+    }
+
+    fun cancelCreate() {
+        if (createBusy) return
+        creating = null
+        createError = null
+    }
+
+    /** The host's git repo name for [folder] (as the web page's form), or null. */
+    suspend fun suggestName(host: String, folder: String): String? = client?.suggestName(host, folder)
+
+    /** Make the session; it opens once the list has it, as a chat when Claude starts in it. */
+    fun submitCreate(host: HostInfo, folder: String, name: String, start: Start) {
+        val c = client ?: return
+        if (createBusy) return
+        NewSession.nameError(name)?.let {
+            createError = it
+            return
+        }
+        createBusy = true
+        createError = null
+        val key = "${host.host}/${name.trim()}"
+        viewModelScope.launch {
+            val reply = c.create(host.host, folder.trim().ifEmpty { "~" }, name.trim(), start.id)
+            if (!reply.ok) {
+                createBusy = false
+                if (!reply.login) createError = reply.error ?: "not created"
+                return@launch
+            }
+            if (NewSession.startsClaude(start)) starting = key
+            opening = key
+            openIfListed()
+            delay(OPEN_WAIT_MS)
+            if (opening == key) {
+                opening = null
+                createBusy = false
+                createError = "Made, but it has not shown up in the list yet. Look in Sessions."
+            }
+        }
+        viewModelScope.launch {
+            delay(CLAUDE_WAIT_MS)
+            if (starting == key) starting = null  // no Claude came up: its terminal shows
+        }
+    }
+
+    private fun openIfListed() {
+        val key = opening ?: return
+        if (key !in rows) return
+        opening = null
+        createBusy = false
+        select(key)
     }
 
     /** The terminal page's renderer died: a new page. */
@@ -461,5 +539,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink {
     companion object {
         private const val CURRENT = "current"
         private const val MAX_BOUNCES = 2
+        /** How long a made session may take to show up in the list (it polls every 2 s). */
+        private const val OPEN_WAIT_MS = 15_000L
+        /** How long "Starting Claude…" waits before the terminal shows instead. */
+        private const val CLAUDE_WAIT_MS = 30_000L
     }
 }
