@@ -105,7 +105,7 @@ fun NewSessionScreen(vm: ChatViewModel, host: HostInfo, modifier: Modifier = Mod
         )
         NewSession.choices(known).filter { it != folder.trim() }.take(MAX_FOLDERS).forEach { f ->
             Text(
-                f, style = Tm.Mono.copy(color = Tm.Dim, fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                if (f == "~") "~  (home)" else f, style = Tm.Mono.copy(color = Tm.Dim, fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { folder = f }.padding(vertical = 7.dp, horizontal = 4.dp),
             )
         }
@@ -155,7 +155,7 @@ fun NewSessionScreen(vm: ChatViewModel, host: HostInfo, modifier: Modifier = Mod
     }
 }
 
-private const val MAX_FOLDERS = 10
+private const val MAX_FOLDERS = 6
 
 @Composable
 private fun Heading(text: String) {

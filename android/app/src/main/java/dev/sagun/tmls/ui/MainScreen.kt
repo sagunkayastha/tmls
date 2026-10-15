@@ -130,7 +130,8 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
     val row = vm.row
     val creating = vm.creating
     // A session just made with Claude in it, before Claude is up: "Starting Claude…", then its chat.
-    val awaitingClaude = creating == null && row != null && row.key == vm.starting && !row.claude && !vm.terminal
+    // One that waits already (Claude's trust dialog, read off its screen) shows its terminal to answer in.
+    val awaitingClaude = creating == null && row != null && row.key == vm.starting && !row.claude && !row.waiting && !vm.terminal
     // The terminal: for a session without Claude, or because it was asked for.
     val terminal = creating == null && !awaitingClaude && row != null && (!row.claude || vm.terminal)
 
