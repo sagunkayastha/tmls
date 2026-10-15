@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import dev.sagun.tmls.chat.Align
 import dev.sagun.tmls.chat.Block
+import dev.sagun.tmls.chat.ImagePaths
 import dev.sagun.tmls.chat.Markdown
 import dev.sagun.tmls.chat.Rich
 import dev.sagun.tmls.chat.Style
@@ -53,6 +54,8 @@ class MarkdownActions(
     val copy: (String) -> Unit,
     /** A code box, full screen: its label and its text. */
     val showCode: (String, String) -> Unit,
+    /** Thumbnails of the picture files these paths name (on the session's host), under the text naming them. */
+    val pictures: @Composable (List<String>) -> Unit = {},
 )
 
 /** A reply: its blocks down the page, on the background, with no box around them. */
@@ -63,12 +66,43 @@ fun MarkdownView(blocks: List<Block>, actions: MarkdownActions, modifier: Modifi
     }
 }
 
+/** The picture paths a block names, its nested blocks too; code is code, not a picture. */
+private fun paths(block: Block): List<String> = when (block) {
+    is Block.Para -> ImagePaths.find(block.text.text)
+    is Block.Head -> ImagePaths.find(block.text.text)
+    is Block.Items -> block.items.flatten().flatMap(::paths)
+    is Block.Quote -> block.blocks.flatMap(::paths)
+    is Block.Table -> (block.head + block.rows.flatten()).flatMap { ImagePaths.find(it.text) }
+    is Block.CodeBox, Block.Rule -> emptyList()
+}.distinct()
+
 private val HEADINGS = listOf(24.sp to 32.sp, 21.sp to 29.sp, 19.sp to 27.sp)
 
+/**
+ * One block. [pictures]: draw thumbnails for the picture paths it names. A paragraph has its own
+ * under it; a list (or table) naming several has one grid under the whole of it instead, so a
+ * list of paths becomes a tidy grid rather than a column of single pictures.
+ */
 @Composable
-private fun BlockView(block: Block, actions: MarkdownActions) {
+private fun BlockView(block: Block, actions: MarkdownActions, pictures: Boolean = true) {
+    val named = remember(block) { if (block is Block.Items || block is Block.Table) paths(block) else emptyList() }
+    val grid = pictures && (named.size > 1 || block is Block.Table && named.isNotEmpty())
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        BlockBody(block, actions, pictures && !grid)
+        if (grid) actions.pictures(named)
+    }
+}
+
+@Composable
+private fun BlockBody(block: Block, actions: MarkdownActions, pictures: Boolean) {
     when (block) {
-        is Block.Para -> RichText(block.text, Tm.Body, actions)
+        is Block.Para -> {
+            RichText(block.text, Tm.Body, actions)
+            if (pictures) {
+                val named = remember(block) { ImagePaths.find(block.text.text) }
+                if (named.isNotEmpty()) actions.pictures(named)
+            }
+        }
         is Block.Head -> {
             val (size, line) = HEADINGS.getOrElse(block.level - 1) { 17.sp to 26.sp }
             RichText(
@@ -86,7 +120,7 @@ private fun BlockView(block: Block, actions: MarkdownActions) {
                         modifier = Modifier.widthIn(min = 26.dp).padding(end = 6.dp),
                     )
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item.forEach { BlockView(it, actions) }
+                        item.forEach { BlockView(it, actions, pictures) }
                     }
                 }
             }
@@ -94,7 +128,7 @@ private fun BlockView(block: Block, actions: MarkdownActions) {
         is Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(Tm.Line, RoundedCornerShape(2.dp)))
             Column(Modifier.padding(start = 14.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                block.blocks.forEach { BlockView(it, actions) }
+                block.blocks.forEach { BlockView(it, actions, pictures) }
             }
         }
         is Block.Table -> TableView(block, actions)

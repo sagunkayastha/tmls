@@ -18,12 +18,14 @@ import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /** Where the chat of the selected session stands. */
 sealed interface ChatPhase {
@@ -169,6 +171,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, 
 
     /** Where a picture of the session's chat is fetched from. */
     fun blobUrl(key: String, id: String): String? = client?.urls?.blob(key, id)?.toString()
+
+    fun fileUrl(key: String, path: String): String? = client?.urls?.file(key, path)?.toString()
+
+    /** A picture's bytes and Content-Type, fetched again with the same login (Share and Save). */
+    suspend fun pictureBytes(url: String): Pair<ByteArray, String?> = withContext(Dispatchers.IO) {
+        http.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException(if (response.code == 404) "not there any more" else "HTTP ${response.code}")
+            val body = response.body ?: throw IOException("empty answer")
+            body.bytes() to response.header("Content-Type")
+        }
+    }
 
     // ---- the server address, foreground and background ----
 

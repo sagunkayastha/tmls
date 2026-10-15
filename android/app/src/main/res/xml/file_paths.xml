@@ -2,4 +2,6 @@
 <!-- Photos taken for a page's camera input: handed to the camera app, then to the page. -->
 <paths>
     <cache-path name="camera" path="camera/" />
+    <!-- A picture of the chat handed to another app from the full-screen viewer (Share). -->
+    <cache-path name="shared" path="shared/" />
 </paths>

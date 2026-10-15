@@ -104,4 +104,16 @@ object Glyphs {
     val KeepOn = solid("keep-on") {
         moveTo(7f, 4f); lineTo(17f, 4f); lineTo(17f, 20f); lineTo(12f, 16f); lineTo(7f, 20f); close()
     }
+    /** A box with an arrow out of it: hand to another app. */
+    val Share = stroke("share") {
+        moveTo(12f, 3.5f); lineTo(12f, 14.5f)
+        moveTo(8f, 7.5f); lineTo(12f, 3.5f); lineTo(16f, 7.5f)
+        moveTo(8.5f, 10.5f); lineTo(6f, 10.5f); lineTo(6f, 20f); lineTo(18f, 20f); lineTo(18f, 10.5f); lineTo(15.5f, 10.5f)
+    }
+    /** An arrow down onto a line: into the phone's Pictures. */
+    val Save = stroke("save") {
+        moveTo(12f, 4f); lineTo(12f, 15f)
+        moveTo(7.5f, 10.5f); lineTo(12f, 15f); lineTo(16.5f, 10.5f)
+        moveTo(5f, 19.5f); lineTo(19f, 19.5f)
+    }
 }

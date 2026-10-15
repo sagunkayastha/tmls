@@ -11,7 +11,6 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -47,7 +46,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,7 +57,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -75,21 +72,19 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import coil.size.Size
 import dev.sagun.tmls.chat.Blob
 import dev.sagun.tmls.chat.ChatItem
 import dev.sagun.tmls.chat.ChatPhase
 import dev.sagun.tmls.chat.ChatRow
 import dev.sagun.tmls.chat.ChatRows
 import dev.sagun.tmls.chat.ChatViewModel
+import dev.sagun.tmls.chat.ImagePaths
+import dev.sagun.tmls.chat.SentText
 import dev.sagun.tmls.chat.Uploads
 import dev.sagun.tmls.chat.Row as SessionRow
 import java.time.ZoneId
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-/** A picture to show full screen: where it comes from and the name it is cached under. */
-private data class Picture(val url: String, val cacheKey: String)
 
 /** What a row of the chat can ask of the screen around it. */
 private class RowActions(
@@ -108,11 +103,15 @@ fun ChatScreen(vm: ChatViewModel, row: SessionRow, onShowTerminal: () -> Unit, m
     val context = LocalContext.current
     var picture by remember { mutableStateOf<Picture?>(null) }
     var code by remember { mutableStateOf<Pair<String, String>?>(null) }
-    val markdown = remember(context) {
+    val markdown = remember(context, row.key) {
         MarkdownActions(
             openLink = { url -> openLink(context, url) },
             copy = { text -> copy(context, text) },
             showCode = { label, text -> code = label to text },
+            pictures = { paths ->
+                val pictures = remember(paths, vm.base) { pathPictures(vm, row.key, paths) }
+                PictureGroup(vm, pictures, user = false, onOpen = { picture = it }, modifier = Modifier.padding(top = 2.dp))
+            },
         )
     }
 
@@ -262,26 +261,41 @@ private fun ChatList(vm: ChatViewModel, sessionKey: String, rows: List<ChatRow>,
     }
 }
 
-/** What the user typed: a dark bubble on the right. A long press copies it. */
+/**
+ * What the user typed: its pictures above, on the right, then a dark bubble with the text (the
+ * "[Image #N]" stand-ins and the pictures' paths taken out). A long press on the bubble copies
+ * the message as sent. Files that are not pictures keep their Keep chip in the bubble.
+ */
 @Composable
 private fun UserBubble(vm: ChatViewModel, sessionKey: String, item: ChatItem, actions: RowActions) {
-    Box(Modifier.fillMaxWidth().padding(start = 44.dp), contentAlignment = Alignment.CenterEnd) {
-        Surface(
-            color = Tm.Sunken, shape = RoundedCornerShape(22.dp),
-            modifier = Modifier.pointerInput(item.text) { detectTapGestures(onLongPress = { actions.markdown.copy(item.text) }) },
-        ) {
-            Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
-                Pictures(vm, sessionKey, item.images, actions)
-                if (item.text.isNotBlank()) Text(item.text, style = Tm.Body)
-                // Keep: a photo sent is in Claude's record itself, a file by its upload path.
-                item.images.forEachIndexed { i, blob ->
-                    val name = Uploads.photoName(item.ts, if (item.images.size > 1) i + 1 else null)
-                    KeepChip(if (item.images.size > 1) "Keep photo ${i + 1}" else "Keep photo", vm.keptSent[Uploads.blobKey(blob.id)]) {
-                        vm.keepSent(Uploads.blobKey(blob.id), blob = blob.id, name = name)
-                    }
+    // Only the pictures the app attached (uploads, kept files): a path the user typed stays text.
+    val paths = remember(item.text) { ImagePaths.attached(item.text) }
+    val text = remember(item.text, paths) { SentText.clean(item.text, paths) }
+    val files = remember(item.text) { Uploads.inText(item.text).filter { !ImagePaths.isImageName(it) } }
+    val pictures = remember(sessionKey, item.id, item.images, paths, vm.base) {
+        // A photo sent is in Claude's record itself (kept by its blob); a file by its path on the host.
+        item.images.mapIndexedNotNull { i, blob ->
+            vm.blobUrl(sessionKey, blob.id)?.let {
+                val name = Uploads.photoName(item.ts, if (item.images.size > 1) i + 1 else null)
+                Picture(it, "$sessionKey/${blob.id}", name, keepKey = Uploads.blobKey(blob.id), keepBlob = blob.id, keepName = name)
+            }
+        } + pathPictures(vm, sessionKey, paths)
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(start = 44.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        PictureGroup(vm, pictures, user = true, onOpen = actions.showPicture)
+        if (text.isNotBlank() || files.isNotEmpty()) {
+            Surface(
+                color = Tm.Sunken, shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.pointerInput(item.text) { detectTapGestures(onLongPress = { actions.markdown.copy(item.text) }) },
+            ) {
+                Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                    if (text.isNotBlank()) Text(text, style = Tm.Body)
+                    files.forEach { KeepChip("Keep ${Uploads.displayName(it)}", vm.keptSent[it]) { vm.keepSent(it) } }
                 }
-                val uploads = remember(item.text) { Uploads.inText(item.text) }
-                uploads.forEach { KeepChip("Keep ${Uploads.displayName(it)}", vm.keptSent[it]) { vm.keepSent(it) } }
             }
         }
     }
@@ -358,10 +372,10 @@ private fun Folded(text: String, label: String, color: Color, actions: RowAction
 }
 
 /** The size to draw a [w] x [h] px picture at, in dp: natural, within [maxWidth] and [MAX_PICTURE_HEIGHT], not under [MIN_PICTURE_SIDE] on its short side. */
-internal fun pictureSize(w: Float, h: Float, density: Float, maxWidth: Float): Pair<Float, Float> {
+internal fun pictureSize(w: Float, h: Float, density: Float, maxWidth: Float, maxHeight: Float = MAX_PICTURE_HEIGHT): Pair<Float, Float> {
     val wDp = w / density
     val hDp = h / density
-    val scale = minOf(maxOf(1f, MIN_PICTURE_SIDE / minOf(wDp, hDp)), maxWidth / wDp, MAX_PICTURE_HEIGHT / hDp)
+    val scale = minOf(maxOf(1f, MIN_PICTURE_SIDE / minOf(wDp, hDp)), maxWidth / wDp, maxHeight / hDp)
     return wDp * scale to hDp * scale
 }
 
@@ -374,7 +388,7 @@ private fun Pictures(vm: ChatViewModel, sessionKey: String, blobs: List<Blob>, a
     val density = LocalDensity.current.density
     blobs.forEach { blob ->
         val picture = remember(sessionKey, blob.id, vm.base) {
-            vm.blobUrl(sessionKey, blob.id)?.let { Picture(it, "$sessionKey/${blob.id}") }
+            vm.blobUrl(sessionKey, blob.id)?.let { Picture(it, "$sessionKey/${blob.id}", "picture-${blob.id}") }
         } ?: return@forEach
         val request = remember(picture) {
             ImageRequest.Builder(context).data(picture.url).memoryCacheKey(picture.cacheKey).diskCacheKey(picture.cacheKey).build()
@@ -407,60 +421,6 @@ private fun TimeDivider(label: String) {
         HorizontalDivider(Modifier.weight(1f), color = Tm.Line)
         Text(label, style = Tm.Small.copy(color = Tm.Faint), modifier = Modifier.padding(horizontal = 14.dp))
         HorizontalDivider(Modifier.weight(1f), color = Tm.Line)
-    }
-}
-
-/** A picture over the whole screen: pinch to zoom, drag to move, double tap to zoom in and back. */
-@Composable
-private fun PictureViewer(vm: ChatViewModel, picture: Picture, onClose: () -> Unit) {
-    val context = LocalContext.current
-    // Its own cache entry at full size: the one in the chat was decoded small.
-    val request = remember(picture) {
-        ImageRequest.Builder(context).data(picture.url).size(Size.ORIGINAL)
-            .memoryCacheKey(picture.cacheKey + "/full").diskCacheKey(picture.cacheKey).build()
-    }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        var scale by remember { mutableFloatStateOf(1f) }
-        var offset by remember { mutableStateOf(Offset.Zero) }
-        Box(
-            Modifier.fillMaxSize().background(Color.Black)
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(1f, 6f)
-                        // Never further than the picture's own edge.
-                        val reachX = size.width * (scale - 1f) / 2f
-                        val reachY = size.height * (scale - 1f) / 2f
-                        val moved = offset + pan
-                        offset = Offset(moved.x.coerceIn(-reachX, reachX), moved.y.coerceIn(-reachY, reachY))
-                    }
-                }
-                .pointerInput(Unit) {
-                    detectTapGestures(onDoubleTap = {
-                        if (scale > 1f) {
-                            scale = 1f
-                            offset = Offset.Zero
-                        } else {
-                            scale = 2.5f
-                        }
-                    })
-                },
-        ) {
-            AsyncImage(
-                model = request,
-                imageLoader = vm.images,
-                contentDescription = "Picture",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize().graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
-                },
-            )
-            IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(8.dp)) {
-                Icon(Glyphs.Close, "Close", tint = Color.White)
-            }
-        }
     }
 }
 
