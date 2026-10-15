@@ -79,12 +79,20 @@ data class ChatItem(
     val error: Boolean = false,
 )
 
+/** One of Claude's usage windows: percent used, when it resets (null: already past), when the server's copy was written (epoch s). */
+data class UsageWindow(val pct: Int, val resetsAt: Long?, val at: Long)
+
+/** Claude's account-wide usage (/api/events `usage`); either window may be missing. [at]: the older of the two. */
+data class Usage(val fiveHour: UsageWindow?, val sevenDay: UsageWindow?, val at: Long)
+
 /** What /api/events sends. */
 sealed interface EventMsg {
     data class Hosts(val hosts: List<HostInfo>) : EventMsg
     data class Rows(val full: Boolean, val set: List<Row>, val gone: List<String>) : EventMsg
     data class Renamed(val old: String, val new: String) : EventMsg
     data class Killed(val key: String) : EventMsg
+    /** Claude's 5-hour and weekly usage; null when no host has it. */
+    data class Usage(val usage: dev.sagun.tmls.chat.Usage?) : EventMsg
     /** version, alerts and whatever comes later: the feed is alive, nothing to do. */
     data object Other : EventMsg
 }
@@ -132,9 +140,23 @@ object Wire {
             )
             "renamed" -> EventMsg.Renamed(o.str("old") ?: return null, o.str("new") ?: return null)
             "killed" -> EventMsg.Killed(o.str("key") ?: return null)
+            "usage" -> EventMsg.Usage(usage(o["usage"] as? JsonObject))
             null -> null
             else -> EventMsg.Other
         }
+    }
+
+    private fun usage(o: JsonObject?): Usage? {
+        if (o == null) return null
+        val at = o.long("at") ?: return null
+        fun window(name: String): UsageWindow? {
+            val w = o[name] as? JsonObject ?: return null
+            val pct = (w["pct"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toDoubleOrNull() ?: return null
+            return UsageWindow(pct.toInt().coerceIn(0, 100), w.long("resets_at"), w.long("at") ?: at)
+        }
+        val five = window("five_hour")
+        val week = window("seven_day")
+        return if (five == null && week == null) null else Usage(five, week, at)
     }
 
     private fun host(o: JsonObject): HostInfo? {
