@@ -197,3 +197,37 @@ async def test_form_shows_errors_and_stays_open(monkeypatch):
         await pilot.click("#cancel")
         await pilot.pause(0.2)
     assert app.result is None
+
+
+def test_starts_are_shell_claude_agents_then_presets():
+    presets = {"xdsp": ("codex", "--yolo"), "opencode": ("opencode", "--auto")}
+    assert create.starts(presets) == [("shell", None), ("claude", "claude"), ("codex", "codex"),
+                                      ("xdsp", "codex --yolo"), ("opencode", "opencode --auto")]
+    assert create.resolve_start("codex", {}) == ("codex",)
+    assert create.resolve_start("opencode", presets) == ("opencode", "--auto")  # the preset wins
+    assert create.resolve_start("claude", presets) == "claude" and create.resolve_start("rm", presets) is None
+
+
+def test_known_folders_newest_claude_projects_first_then_panes_under_home_as_tilde():
+    out = ("/home/me\n/home/me\n/home/me/work\n/srv/data\n/home/me/work\n---\n"
+           '"project":"/home/me/old"\n"project":"/home/me/work"\n"project":"/tmp/x y"\n'
+           '"project":"/home/me"\n"project":"broken\n')
+    home, folders = create.parse_folders(out)
+    assert home == "/home/me"
+    assert folders == ["/tmp/x y", "~/work", "~/old", "/srv/data"]
+    assert create.parse_folders("/root\n") == ("/root", [])
+    many = "/h\n---\n" + "".join(f'"project":"/p/{i}"\n' for i in range(40))
+    assert len(create.parse_folders(many)[1]) == create.MAX_FOLDERS
+
+
+async def test_known_folders_of_this_machine(tmp_path, monkeypatch):
+    # the script really runs: HOME's Claude history and a stub tmux with one pane
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "history.jsonl").write_text(
+        json.dumps({"display": "hi", "project": str(tmp_path / "proj")}) + "\n")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "tmux").write_text("#!/bin/sh\necho /elsewhere\n")
+    (tmp_path / "bin" / "tmux").chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    assert await create.folders("local") == (str(tmp_path), ["~/proj", "/elsewhere"])

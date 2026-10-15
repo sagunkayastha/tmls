@@ -8,6 +8,14 @@ from pathlib import Path
 from tmls import hosts
 
 PRESETS = Path.home() / ".config" / "tmls" / "agent-presets.json"
+# Agents a new session can start besides a shell and Claude, without a preset (a preset of the
+# same name wins).
+AGENTS = {"codex": ("codex",), "opencode": ("opencode",)}
+# A host's known folders, for the phone's New session: its home, every pane's folder, then the
+# projects of Claude's newest prompts (history.jsonl, newest last; only its tail is read).
+FOLDERS = ('echo "$HOME"; tmux list-panes -a -F \'#{pane_current_path}\' 2>/dev/null; echo ---; '
+           'tail -n 2000 "$HOME"/.claude/history.jsonl 2>/dev/null | grep -o \'"project": *"[^"]*"\'; true')
+MAX_FOLDERS = 15
 
 
 def load_presets():
@@ -20,6 +28,59 @@ def load_presets():
     return {name: tuple(argv) for name, argv in data.items()
             if isinstance(name, str) and name and isinstance(argv, list) and argv
             and all(isinstance(arg, str) and arg for arg in argv)}
+
+
+def starts(presets):
+    """What a new session can start, in the form's order: [(id, command shown or None)]."""
+    out = [("shell", None), ("claude", "claude")]
+    out += [(name, " ".join(argv)) for name, argv in AGENTS.items() if name not in presets]
+    return out + [(name, " ".join(argv)) for name, argv in presets.items()]
+
+
+def resolve_start(start, presets):
+    """create()'s start for a form's choice: "shell", "claude" or an argv; None when unknown."""
+    if start in ("shell", "claude"):
+        return start
+    return presets.get(start) or AGENTS.get(start)
+
+
+def parse_folders(out):
+    """(home, folders) from FOLDERS's output: Claude's newest projects first, then the panes'
+    folders, each once, home itself left out, under home written with ~; at most MAX_FOLDERS."""
+    head, _, history = out.partition("\n---\n")
+    lines = head.splitlines()
+    home = lines[0].strip() if lines else ""
+    projects = []
+    for line in reversed(history.splitlines()):
+        try:
+            projects.append(json.loads("{" + line.strip() + "}")["project"])
+        except (ValueError, KeyError, TypeError):
+            continue
+    seen, folders = set(), []
+    for path in [*projects, *(line.strip() for line in lines[1:])]:
+        if not isinstance(path, str) or not path.startswith("/") or path.rstrip("/") == home.rstrip("/"):
+            continue
+        if home and path.startswith(home.rstrip("/") + "/"):
+            path = "~/" + path[len(home.rstrip("/")) + 1:]
+        if path not in seen:
+            seen.add(path)
+            folders.append(path)
+    return home, folders[:MAX_FOLDERS]
+
+
+async def folders(host):
+    """(home, known folders) of host, or None when it can't be reached."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *hosts.run_argv(host, FOLDERS), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None
+    except OSError:
+        return None
+    return parse_folders(out.decode(errors="replace")) if proc.returncode == 0 else None
 
 
 def default_name(folder):

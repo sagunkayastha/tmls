@@ -185,11 +185,9 @@ async def create_session(request):
             raise ValueError
     except (ValueError, KeyError, TypeError):
         return web.json_response({"ok": False, "error": "invalid request"}, status=400)
-    presets = create.load_presets()
-    if start not in ("shell", "claude"):
-        if start not in presets:
-            return web.json_response({"ok": False, "error": "unknown start option"}, status=400)
-        start = presets[start]
+    start = create.resolve_start(start, create.load_presets())
+    if start is None:
+        return web.json_response({"ok": False, "error": "unknown start option"}, status=400)
     error = create.check_name(name.strip())
     if error:
         return web.json_response({"ok": False, "error": error}, status=400)
@@ -271,12 +269,31 @@ async def suggest_name(request):
     return web.json_response({"ok": True, "name": await create.suggest_name(host, folder.strip() or "~")})
 
 
+async def known_folders(request):
+    """The phone's New session: the host's home and folders worth offering (create.folders)."""
+    try:
+        data = await request.json()
+        host = data["host"]
+        if not isinstance(host, str) or host not in (*request.app["hosts"], hosts.LOCAL):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        return web.json_response({"ok": False, "error": "invalid request"}, status=400)
+    found = await create.folders(host)
+    if found is None:
+        return web.json_response({"ok": False, "error": f"couldn't reach {hosts.label(host)}"}, status=502)
+    home, folders = found
+    return web.json_response({"ok": True, "home": home, "folders": folders})
+
+
 async def config(request):
     """Sketchpad's addresses (~/.config/tmls/sketchpad, one per line: home first, then away);
     the page uses the one whose scheme matches its own, so https never frames http.
-    Presets are the New session form's named agent commands. app: an Android app is published."""
+    Presets are the New session form's named agent commands; starts is every choice /api/create
+    takes, with the command it runs (the phone's form). app: an Android app is published."""
+    presets = create.load_presets()
     return web.json_response({"sketchpad": request.app.get("sketchpad", []),
-                              "presets": list(create.load_presets()),
+                              "presets": list(presets),
+                              "starts": [{"id": i, "command": c} for i, c in create.starts(presets)],
                               "app": (request.app["apk_dir"] / "tmls.apk").is_file()})
 
 
@@ -335,6 +352,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/api/approve", approve_prompt)
     app.router.add_post("/api/create", create_session)
     app.router.add_post("/api/suggest-name", suggest_name)
+    app.router.add_post("/api/folders", known_folders)
     app.router.add_post("/api/rename", rename_session)
     app.router.add_post("/api/kill", kill_session)
     term.setup(app)

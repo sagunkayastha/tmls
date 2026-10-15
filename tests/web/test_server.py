@@ -111,6 +111,29 @@ async def test_create_starts_a_shell_or_a_preset_on_a_configured_host(aiohttp_cl
     await client.post("/api/create", json={**body, "start": "Opus plan"})
     assert made == [("box", "work", "~/x", "shell"), ("box", "work", "~/x", ("claude", "--model", "opus"))]
     assert (await (await client.get("/api/config")).json())["presets"] == ["Opus plan"]
+    await client.post("/api/create", json={**body, "start": "codex"})
+    assert made[-1] == ("box", "work", "~/x", ("codex",))
+    starts = (await (await client.get("/api/config")).json())["starts"]
+    assert starts == [{"id": "shell", "command": None}, {"id": "claude", "command": "claude"},
+                      {"id": "codex", "command": "codex"}, {"id": "opencode", "command": "opencode"},
+                      {"id": "Opus plan", "command": "claude --model opus"}]
+
+
+async def test_folders_of_a_configured_host(aiohttp_client, tmp_path, monkeypatch):
+    client, _ = await create_client(aiohttp_client, tmp_path, monkeypatch)
+    asked = []
+
+    async def fake_folders(host):
+        asked.append(host)
+        return None if host == "local" else ("/home/me", ["~/work"])
+    monkeypatch.setattr(server.create, "folders", fake_folders)
+    response = await client.post("/api/folders", json={"host": "box"})
+    assert response.status == 200 and await response.json() == {"ok": True, "home": "/home/me", "folders": ["~/work"]}
+    assert (await client.post("/api/folders", json={"host": "-oProxyCommand=x"})).status == 400
+    assert (await client.post("/api/folders", json={})).status == 400
+    down = await client.post("/api/folders", json={"host": "local"})
+    assert down.status == 502 and (await down.json())["ok"] is False
+    assert asked == ["box", "local"]
 
 
 async def test_create_refuses_bad_input_before_running_anything(aiohttp_client, tmp_path, monkeypatch):
