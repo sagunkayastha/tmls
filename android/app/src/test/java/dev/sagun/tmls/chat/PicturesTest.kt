@@ -39,6 +39,8 @@ class PicturesTest {
     @Test fun sentTextLosesImageTokensAndPicturePaths() {
         assertEquals("what is this?", SentText.clean("[Image #1] what is this?", emptyList()))
         assertEquals("", SentText.clean("[Image #1][Image #2]", emptyList()))
+        assertEquals("Here are my plots\n\nand the kept one",
+            SentText.clean("<pasted_content id=\"51f6\">\nHere are my plots\n\nand the kept one\n</pasted_content id=\"51f6\">", emptyList()))
         val path = "/home/u/.cache/tmls/images/20261015-021500-0a1b2c3d-RAM.jpg"
         assertEquals("look at please", SentText.clean("look at $path please", listOf(path)))
         assertEquals("two:\n\nok", SentText.clean("two:\n$path\n\n\n\nok", listOf(path)))

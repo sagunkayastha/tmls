@@ -27,10 +27,12 @@ object ImagePaths {
 object SentText {
     // Claude Code's stand-in for a picture pasted into its prompt.
     private val TOKEN = Regex("""\[Image #\d+]""")
+    // Claude Code's wrapper around a pasted multi-line message: <pasted_content id="51f6"> ... </pasted_content id="51f6">.
+    private val PASTED = Regex("""</?pasted_content(\s+id="[^"]*")?\s*>""")
 
-    /** [text] without the "[Image #N]" tokens and without the picture [paths], tidied up. */
+    /** [text] without the "[Image #N]" tokens, the pasted-message wrapper and without the picture [paths], tidied up. */
     fun clean(text: String, paths: List<String>): String {
-        var out = TOKEN.replace(text, "")
+        var out = PASTED.replace(TOKEN.replace(text, ""), "")
         for (path in paths.sortedByDescending { it.length }) out = out.replace(path, "")
         return out.lines().joinToString("\n") { it.replace(Regex("""[ \t]{2,}"""), " ").trimEnd() }
             .replace(Regex("""\n{3,}"""), "\n\n").trim()
