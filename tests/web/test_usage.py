@@ -38,7 +38,7 @@ def test_nothing_else_of_the_file_leaks_into_the_wire():
     for secret in ("secret", "/home/me", "cost", "claude-opus", "extra", "session"):
         assert secret not in sent
     assert set(json.loads(sent)) == {"five_hour", "seven_day", "at"}
-    assert set(json.loads(sent)["five_hour"]) == {"pct", "resets_at"}
+    assert set(json.loads(sent)["five_hour"]) == {"pct", "resets_at", "at"}
 
 
 def test_a_missing_file_is_nothing():
@@ -73,6 +73,15 @@ def test_the_newest_file_wins_whatever_the_hosts_clocks_say():
     pc = usage.parse(output(stdin(five=5), host_now=NOW, mtime=NOW - 300), now=NOW)
     picked = usage.pick([pc, None, box], now=NOW)
     assert picked["five_hour"]["pct"] == 20 and picked["at"] == NOW - 10
+
+
+def test_a_window_the_newest_file_lacks_comes_from_the_next_newest():
+    newest = json.dumps({"rate_limits": {"seven_day": {"used_percentage": 50, "resets_at": NOW + 99}}})
+    box = usage.parse(output(newest, mtime=NOW - 5), now=NOW)
+    pc = usage.parse(output(stdin(five=7, week=49), mtime=NOW - 600), now=NOW)
+    picked = usage.pick([pc, box], now=NOW)
+    assert picked == {"five_hour": {"pct": 7, "resets_at": NOW + 3600, "at": NOW - 600},
+                      "seven_day": {"pct": 50, "resets_at": NOW + 99, "at": NOW - 5}, "at": NOW - 600}
 
 
 def test_a_file_from_the_future_counts_as_just_written():

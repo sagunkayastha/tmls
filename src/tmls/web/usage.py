@@ -2,14 +2,15 @@
 
 Claude Code hands its status line `rate_limits` on stdin, and the user's status line tool
 (claude-statusbar) keeps the last stdin in ~/.cache/claude-statusbar/last_stdin.json. The quota is
-the account's, so any host's copy will do: the newest one (by file age on its own clock) wins.
+the account's, so any host's copy will do: per window, the newest copy that has it (by file age
+on its host's own clock) wins.
 That file also holds paths and session details; only the two windows' percent and reset time
 ever leave this module.
 
 Wire (on /api/events, once on connect and again when it changes):
-  {"t":"usage","usage":{"five_hour":W,"seven_day":W,"at":<epoch s the file was written>}}
-  W = {"pct":<int 0..100>,"resets_at":<epoch s, or null once past>} or null; "usage" is null
-  when no host has the file.
+  {"t":"usage","usage":{"five_hour":W,"seven_day":W,"at":<epoch s, the older W's "at">}}
+  W = {"pct":<int 0..100>,"resets_at":<epoch s, or null once past>,"at":<epoch s its file was
+  written>} or null; "usage" is null when no host has the file.
 """
 import asyncio
 import json
@@ -62,14 +63,18 @@ def parse(out, now=None):
 
 
 def pick(found, now=None):
-    """The wire's `usage` from each host's parse() (None where nothing came): the newest, with `at`
-    = when its file was written, on this machine's clock. None when no host had one."""
+    """The wire's `usage` from each host's parse() (None where nothing came). Each window from the
+    newest file that has it (Claude Code leaves one out now and then), with its own `at` = when that
+    file was written, on this machine's clock; the top `at` is the older of the two. None when no
+    host had either."""
     now = time.time() if now is None else now
-    found = [f for f in found if f]
-    if not found:
-        return None
-    age, windows = min(found, key=lambda f: f[0])
-    return {**windows, "at": int(now - age)}
+    found = sorted((f for f in found if f), key=lambda f: f[0])
+    out = {}
+    for key in WINDOWS:
+        age, w = next(((age, ws[key]) for age, ws in found if ws[key]), (None, None))
+        out[key] = None if w is None else {**w, "at": int(now - age)}
+    ats = [w["at"] for w in out.values() if w]
+    return {**out, "at": min(ats)} if ats else None
 
 
 async def _read(host):
