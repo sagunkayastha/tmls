@@ -95,7 +95,9 @@ async def test_config_lists_sketchpad_urls(aiohttp_client, tmp_path, monkeypatch
     client = await aiohttp_client(app)
     await client.post("/login", data={"username": "me", "password": "pw"})
     assert await (await client.get("/api/config")).json() == {"sketchpad": ["http://lan:8790", "https://sketchpad.example"],
-                                                                 "presets": [], "app": False}
+                                                                 "presets": [], "app": False,
+                                                                 "starts": [{"id": i, "command": c}
+                                                                            for i, c in server.create.starts({})]}
 
 
 async def test_page_is_never_cached(aiohttp_client, tmp_path):
