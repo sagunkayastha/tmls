@@ -7,11 +7,20 @@
 //! newest reply is an API error) and `usage …` (model and token counts of its newest real reply).
 //! When tmux cannot list, the window lines are replaced by one `tmux-error MESSAGE` line.
 //!
+//! A pane whose command is `node` is named by the first agent its processes run (`ps -t`), as
+//! codex, gemini and qwen start from npm. A pane that runs an agent CLI herdr has rules for
+//! (`crate::detect`) has its title and its visible screen after its `tool` line, each line behind
+//! a `>`: the first is the title, the rest the screen. The screen says what the agent is doing.
+//! A Claude pane has them only when no status file names it: Claude's own status is exact, the
+//! screen is only a fallback.
+//!
 //! A Claude session whose status file names no tmux pane runs outside tmux (in a terminal
 //! window of its own). The snapshot has those too, after the tmux sessions, under the host
 //! name [`KITTY`] as in tmls (`local.py`): they have a status but nothing to attach to.
 
 use serde_json::Value;
+
+use crate::detect::AgentState;
 
 /// The `host` of a Claude session that runs outside tmux (tmls `hosts.KITTY`). Such a session
 /// is in the snapshot of the machine it runs on; its [`SessionInfo::pid`] is Claude's process.
@@ -50,12 +59,14 @@ impl Status {
     }
 }
 
-/// The agent CLI a session runs; `Other` is a plain shell or anything else.
+/// The agent CLI a session runs; `Other` is a plain shell or anything else. `Agent` is one of
+/// the other agents herdr has rules for, by its id (`gemini`, `kiro`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Claude,
     Opencode,
     Codex,
+    Agent(&'static str),
     Other,
 }
 
@@ -66,27 +77,41 @@ impl Tool {
             Tool::Claude => Some('C'),
             Tool::Opencode => Some('O'),
             Tool::Codex => Some('X'),
+            Tool::Agent(id) => id.chars().next().map(|c| c.to_ascii_uppercase()),
             Tool::Other => None,
         }
     }
 
-    /// From a pane's foreground command.
+    /// From a pane's foreground command: a name or alias in herdr's rule files.
     fn of_command(command: &str) -> Option<Tool> {
-        match command {
-            "claude" => Some(Tool::Claude),
-            "codex" => Some(Tool::Codex),
-            "opencode" => Some(Tool::Opencode),
-            _ => None,
+        Some(match crate::detect::agent_of_command(command)? {
+            "claude" => Tool::Claude,
+            "codex" => Tool::Codex,
+            "opencode" => Tool::Opencode,
+            id => Tool::Agent(id),
+        })
+    }
+
+    /// Its id in herdr's rule files; `None` for `Other`.
+    pub fn agent_id(self) -> Option<&'static str> {
+        match self {
+            Tool::Claude => Some("claude"),
+            Tool::Codex => Some("codex"),
+            Tool::Opencode => Some("opencode"),
+            Tool::Agent(id) => Some(id),
+            Tool::Other => None,
         }
     }
 
-    /// Which tool names a session with several: lower wins (tmls: claude, codex, opencode).
+    /// Which tool names a session with several: lower wins (tmls: claude, codex, opencode; then
+    /// the first other agent).
     fn precedence(self) -> u8 {
         match self {
             Tool::Claude => 0,
             Tool::Codex => 1,
             Tool::Opencode => 2,
-            Tool::Other => 3,
+            Tool::Agent(_) => 3,
+            Tool::Other => 4,
         }
     }
 }
@@ -149,10 +174,19 @@ pub const LISTING_SCRIPT: &str = r##"{
 date +%s
 if w=$(tmux -u list-windows -a -F '#{session_name}:#{session_windows}:#{session_attached}:#{window_activity}' 2>&1); then
   printf '%s\n' "$w"
-  tmux -u list-panes -a -F '#{session_name}:#{pane_current_command}:#{pane_tty}' | while IFS= read -r l; do
-    t=${l##*:}; r=${l%:*}; c=${r##*:}
-    [ "$c" = node ] && ps -o args= -t "$t" 2>/dev/null | grep -q codex && c=codex
+  e='amp|amp-local|agy|antigravity|antigravity-cli|claude|claude-code|cline|codex|cursor|cursor-agent|devin|devin-cli|droid|gemini|copilot|github-copilot|ghcs|grok|grok-build|hermes|hermes-agent|kilo|kilo-code|kimi|kimi-code|kiro|kiro-cli|letta|letta-code|maki|muse|muse-code|muse-cli|opencode|open-code|pi|qodercli|qoderclicn|qoder|qodercn|qwen|qwen-code'
+  tmux -u list-panes -a -F '#{session_name}:#{pane_current_command}:#{pane_tty}:#{pane_id}' | while IFS= read -r l; do
+    p=${l##*:}; l=${l%:*}; t=${l##*:}; r=${l%:*}; c=${r##*:}
+    if [ "$c" = node ]; then
+      m=$(ps -o args= -t "$t" 2>/dev/null | grep -o -E '(^|[/ ])('"$e"')( |$)' | head -n 1); m=${m%" "}; m=${m##*[/ ]}
+      [ -n "$m" ] && c=$m
+    fi
     echo "tool ${r%:*}:$c"
+    case "|$e|" in *"|$c|"*)
+      case $c in claude*) [ -n "${s+x}" ] || s=$(cat "$HOME"/.claude/sessions/*.json 2>/dev/null)
+        case $s in *".$p\""*) continue;; esac;; esac
+      tmux -u display-message -p -t "$p" '#{pane_title}' \; capture-pane -p -t "$p" 2>/dev/null | sed 's/^/>/';;
+    esac
   done
   echo ---
   for f in "$HOME"/.claude/sessions/*.json; do
@@ -396,6 +430,41 @@ fn window_line(line: &str) -> Option<Window<'_>> {
     Some(Window { name, attached, activity })
 }
 
+/// An agent pane's `>` lines: its title, then its screen.
+struct Screen<'a> {
+    session: &'a str,
+    tool: Tool,
+    lines: Vec<&'a str>,
+    /// Its `>` lines come next; the first other line closes it.
+    open: bool,
+}
+
+/// What the agent panes of `session` show, by herdr's rules: waiting on you if one is blocked,
+/// else running if one works, else idle. `None` when none of its panes has a screen that says
+/// (no capture, or a transcript viewer that shows no live state): its output age decides then.
+fn on_screen(screens: &[Screen], session: &str) -> Option<Status> {
+    let rank = |status: Status| match status {
+        Status::Waiting => 2,
+        Status::Running => 1,
+        _ => 0,
+    };
+    let mut best: Option<Status> = None;
+    for screen in screens.iter().filter(|s| s.session == session) {
+        let (Some(id), Some((title, lines))) = (screen.tool.agent_id(), screen.lines.split_first()) else { continue };
+        let Some(found) = crate::detect::detect(id, lines, title) else { continue };
+        let status = match found.state {
+            AgentState::Blocked => Status::Waiting,
+            AgentState::Working => Status::Running,
+            AgentState::Idle => Status::Idle,
+            AgentState::Unknown => continue,
+        };
+        if best.is_none_or(|b| rank(status) > rank(b)) {
+            best = Some(status);
+        }
+    }
+    best
+}
+
 fn offline(host: &str, error: &str) -> HostSnapshot {
     HostSnapshot { host: host.to_string(), online: false, error: Some(error.to_string()), sessions: Vec::new() }
 }
@@ -417,8 +486,19 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
 
     let mut windows: Vec<Window> = Vec::new(); // one per session, in the order tmux lists them
     let mut tools: Vec<(&str, Tool)> = Vec::new();
+    let mut screens: Vec<Screen> = Vec::new(); // one per agent pane, in the order tmux lists them
+    let mut panes = false; // a `tool` line came: no more window lines, and `>` lines are a pane's
     let mut tmux_error = None;
     for line in &lines[start + 1..] {
+        if let (true, Some(text)) = (panes, line.strip_prefix('>')) {
+            if let Some(screen) = screens.last_mut().filter(|s| s.open) {
+                screen.lines.push(text);
+            }
+            continue;
+        }
+        if let Some(screen) = screens.last_mut() {
+            screen.open = false;
+        }
         if let Some(window) = window_line(line) {
             match windows.iter_mut().find(|w| w.name == window.name) {
                 Some(known) => known.activity = known.activity.max(window.activity), // newest window output wins
@@ -426,12 +506,14 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
             }
         } else if let Some((name, command)) = line.strip_prefix("tool ").and_then(|rest| rest.rsplit_once(':')) {
             // not a window line; a session can't be named "tool x:y" and still parse as one above
+            panes = true;
             if let Some(tool) = Tool::of_command(command) {
                 match tools.iter_mut().find(|(known, _)| *known == name) {
                     Some((_, known)) if tool.precedence() < known.precedence() => *known = tool,
                     Some(_) => {}
                     None => tools.push((name, tool)),
                 }
+                screens.push(Screen { session: name, tool, lines: Vec::new(), open: true });
             }
         } else if let Some(message) = line.strip_prefix("tmux-error ") {
             tmux_error.get_or_insert(message);
@@ -485,8 +567,11 @@ pub fn parse_listing(host: &str, output: &str) -> HostSnapshot {
                 Some(c) if c.running() => Status::Running,
                 Some(c) if c.failed => Status::Error,
                 Some(_) => Status::Idle, // its status line redraws every minute: output isn't work
-                None if age < QUIET_S => Status::Running,
-                None => Status::Idle,
+                None => match on_screen(&screens, w.name) {
+                    Some(status) => status,
+                    None if age < QUIET_S => Status::Running,
+                    None => Status::Idle,
+                },
             };
             let tool = match claude {
                 Some(_) => Tool::Claude, // its session file says so, whatever the pane's command is called

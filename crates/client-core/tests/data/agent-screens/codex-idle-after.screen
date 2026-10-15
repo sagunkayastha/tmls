@@ -1,0 +1,45 @@
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file with instructions for Codex
+  /status - show current session configuration
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+
+
+› Write a 300 word essay on mutexes. Do not run any commands or edit any files.
+
+
+• A mutex, short for mutual exclusion, is a synchronization tool that protects shared data when multiple threads run at
+  the same time. Without one, two threads might update a bank balance simultaneously, each reading the old value and
+  overwriting the other's work. Such errors are called race conditions because the result depends on unpredictable
+  timing.
+
+  A thread locks a mutex before entering a critical section, the small part of a program that accesses shared state.
+  While it holds the lock, other threads seeking the same mutex must wait. After completing its work, the thread unlocks
+  the mutex, allowing another thread to proceed. This simple rule makes a sequence of operations behave as one protected
+  unit.
+
+  Mutexes are useful, but careful design matters. If a thread forgets to unlock, others may wait forever. If two threads
+  acquire several mutexes in different orders, each can hold one while waiting for the other, creating deadlock. Even
+  correct locking can hurt performance when threads spend too much time waiting instead of working. Programmers
+  therefore keep critical sections brief, use a consistent lock order, and release locks reliably, often through
+  language features that handle cleanup automatically.
+
+  Choosing what to protect is equally important. A mutex should guard a clear invariant: a condition that must remain
+  true whenever no thread is changing the data. For example, a queue's item count should match the number of items it
+  contains. Protecting both values with the same mutex keeps that relationship intact.
+
+  Mutexes do not solve every concurrency problem. Some tasks benefit from message passing, immutable data, or atomic
+  operations. Still, mutexes remain a foundation because they express a straightforward promise: only one thread may
+  change protected state at a time. Used thoughtfully, they turn fragile timing dependent behavior into predictable,
+  maintainable code, making shared memory safer for everyone.
+
+  Worked for 17s • 6:38 PM
+
+
+› Ask Codex to do anything
+
+  GPT-6-Sol medium · /data/scratch/tmls-rs-v0/detect/play · Write mutex essay · weekly 100% left
+  ← for agents · ? for shortcuts
