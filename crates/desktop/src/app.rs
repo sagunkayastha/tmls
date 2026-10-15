@@ -205,7 +205,7 @@ enum Modal {
     Form(Form),
     Alerts(AlertsPanel),
     /// The keys and mouse actions (`keys::HELP`).
-    Help(forms::Panel),
+    Help(keys::Help),
     /// The go-to picker over every listed session.
     GoTo(GoTo),
 }
@@ -1395,7 +1395,7 @@ impl Running {
             Modal::Menu(menu) => (menu.panel(), *at),
             Modal::Form(form) => (form.panel(), *at),
             Modal::Alerts(alerts) => (alerts.panel(), *at),
-            Modal::Help(panel) => (panel.clone(), *at),
+            Modal::Help(help) => (help.panel(), *at),
             Modal::GoTo(goto) => (goto.panel(), *at),
         });
         let status_of = |key: &SessionKey| {
@@ -1598,13 +1598,8 @@ impl Running {
 
     /// A key for the open form or menu.
     fn form_key(&mut self, ev: &s2_core::KeyEvent) {
-        if let Some((Modal::Help(_), _)) = &self.modal {
-            let closes = matches!(
-                ev.key,
-                s2_core::Key::Named(s2_core::Named::Escape) | s2_core::Key::Char('?')
-            );
-            // Not on a repeat: holding `?` down must not close what it just opened.
-            if ev.pressed && !ev.repeat && closes {
+        if let Some((Modal::Help(help), _)) = &mut self.modal {
+            if help.key(ev) {
                 self.close_modal();
             }
             self.invalidate();
@@ -1634,7 +1629,7 @@ impl Running {
 
     /// `?` in the list or the `?` button: the keys and mouse actions over the window.
     fn open_help(&mut self) {
-        self.open_modal(Modal::Help(keys::help_panel()), None);
+        self.open_modal(Modal::Help(keys::Help::new()), None);
     }
 
     /// `g` in the list or Alt+Shift+G: the go-to picker over every session the list has.
@@ -2501,7 +2496,8 @@ impl Running {
                 };
                 self.alerts_result(result);
             }
-            Modal::Help(panel) => {
+            Modal::Help(help) => {
+                let panel = help.panel();
                 let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
                 let (cx, cy) = self.layout.panel_cell(rect, x, y);
                 if !panel.contains(cx, cy) {

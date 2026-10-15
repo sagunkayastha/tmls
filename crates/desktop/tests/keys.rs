@@ -4,9 +4,9 @@ use client_core::SessionKey;
 use client_core::tmux::{NewSession, Start};
 use desktop::forms::Request;
 use desktop::keys::{
-    Focus, Global, HELP, ListKey, PanelKey, RepeatGate, Route, focus_after_close,
-    focus_after_panel, global, help_panel, help_text, keys_at, leaves_panel, list_keeps_keys,
-    list_key, panel_key, route,
+    Focus, Global, HELP, Help, ListKey, PanelKey, RepeatGate, Route, focus_after_close,
+    focus_after_panel, global, help_panel, help_rows, help_text, keys_at, leaves_panel,
+    list_keeps_keys, list_key, panel_key, route,
 };
 use desktop::tabs::TabState;
 use s2_core::{Key, KeyEvent, Mods, Named};
@@ -783,4 +783,77 @@ fn z_folds_the_cursor_host_and_shift_z_unfolds_all() {
     assert_eq!(list_key(&ch('Z', SHIFT)), Some(ListKey::UnfoldAll));
     assert_eq!(list_key(&repeat(&ch('z', NONE))), None);
     assert_eq!(list_key(&ch('z', CTRL)), None);
+}
+
+fn typed_in(help: &mut Help, text: &str) {
+    for c in text.chars() {
+        assert!(!help.key(&ch(c, NONE)), "{c} closes nothing");
+    }
+}
+
+#[test]
+fn the_help_rows_narrow_to_a_key_or_a_description() {
+    let all = help_rows("");
+    assert_eq!(all.len(), HELP.len());
+    let fold = help_rows("FOLD");
+    let groups: Vec<&str> = fold.iter().map(|(_, group, _)| *group).collect();
+    assert_eq!(groups, ["List"], "case aside; groups without a match hide");
+    let chords: Vec<&str> = fold[0].2.iter().map(|(chord, _)| *chord).collect();
+    assert_eq!(chords, ["z", "Z", "click a host"]);
+    let by_key = help_rows("ctrl+q");
+    assert_eq!(by_key.len(), 1);
+    assert_eq!(by_key[0].2, [("Ctrl+Q", "quit; the sessions keep running")]);
+    assert!(help_rows("no such thing").is_empty());
+    // Each group keeps its place in HELP, which says which column it is drawn in.
+    let enter = help_rows("enter");
+    assert!(
+        enter
+            .iter()
+            .all(|(index, group, _)| HELP[*index].0 == *group)
+    );
+}
+
+#[test]
+fn typing_in_the_help_searches_and_esc_clears_before_it_closes() {
+    let mut help = Help::new();
+    typed_in(&mut help, "/fold");
+    assert_eq!(help.query(), "fold", "the leading / only starts the search");
+    let panel = help.panel();
+    let texts: Vec<&str> = panel.cells.iter().map(|cell| cell.text.as_str()).collect();
+    assert!(texts.contains(&"fold / unfold this host"));
+    assert!(
+        !texts.contains(&"Everywhere"),
+        "a group with no match hides"
+    );
+    assert!(!texts.contains(&"quit; the sessions keep running"));
+    assert_eq!(panel.lines, help_panel().lines, "the panel keeps its size");
+    assert!(
+        panel.cells[0].text.contains("fold"),
+        "the title shows the search"
+    );
+
+    typed_in(&mut help, "?");
+    assert_eq!(
+        help.query(),
+        "fold?",
+        "? is searched for once something is typed"
+    );
+    assert!(!help.key(&named(Named::Backspace, NONE)));
+    assert_eq!(help.query(), "fold");
+    assert!(!help.key(&named(Named::Escape, NONE)), "Esc clears first");
+    assert_eq!(help.query(), "");
+    assert!(help.key(&named(Named::Escape, NONE)), "then closes");
+
+    let mut help = Help::new();
+    assert!(
+        !help.key(&repeat(&ch('?', SHIFT))),
+        "a held ? does not close"
+    );
+    assert!(help.key(&ch('?', SHIFT)));
+    let mut help = Help::new();
+    assert!(!help.key(&ch('q', CTRL)));
+    assert_eq!(help.query(), "", "a chord types nothing");
+    typed_in(&mut help, "zzzz");
+    let texts: Vec<String> = help.panel().cells.iter().map(|c| c.text.clone()).collect();
+    assert!(texts.contains(&"no key matches".to_string()));
 }

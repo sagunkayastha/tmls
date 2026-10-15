@@ -13,8 +13,8 @@
 //!   s — the message form (send now, or queue while the session is busy),
 //!   g — the go-to picker, z folds the cursor's host (`sidebar`'s folded hosts), Z unfolds
 //!   every host
-//! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
-//!   click beside it closes it
+//! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); typing there
+//!   narrows its rows (`Help`); Esc clears that, then closes; `?` or a click beside it closes
 //! - Alt+Shift+N — the next session that waits for the user
 //! - Alt+Shift+G, and g in the list — the go-to picker over every session (`goto`)
 //! - Alt+Shift+A — the message form for the front tab's Claude session
@@ -550,38 +550,123 @@ pub fn help_text() -> String {
     out
 }
 
-/// `HELP` as a panel: a title line, then the groups in two columns.
-pub fn help_panel() -> crate::forms::Panel {
-    use crate::forms::{Look, Panel};
-    let column = HELP_CHORD_COLS + HELP_WHAT_COLS;
-    let cols = 2 + column + 2 + column + 2;
-    let mut p = Panel::new(cols);
-    p.put(
-        0,
-        2,
-        cols - 4,
-        "Keys and mouse · Esc or ? closes",
-        Look::Title,
-    );
-    let mut bottom = 0;
-    for (index, groups) in [&HELP[..HELP_LEFT_GROUPS], &HELP[HELP_LEFT_GROUPS..]]
-        .into_iter()
+/// A row of `HELP`: a chord and what it does.
+pub type HelpRow = (&'static str, &'static str);
+
+/// The rows of `HELP` whose chord or description has `query` in it, case aside, in their
+/// groups; a group with no such row is left out. Every row when `query` is empty. Each group
+/// comes with its place in `HELP`.
+pub fn help_rows(query: &str) -> Vec<(usize, &'static str, Vec<HelpRow>)> {
+    let query = query.to_lowercase();
+    let has = |text: &str| text.to_lowercase().contains(&query);
+    HELP.iter()
         .enumerate()
-    {
-        let x = 2 + index * (column + 2);
-        let mut line = 2;
-        for (group, rows) in groups {
-            p.put(line, x, column, group, Look::Label);
-            line += 1;
-            for (chord, what) in *rows {
-                p.put(line, x, HELP_CHORD_COLS - 1, chord, Look::Text);
-                p.put(line, x + HELP_CHORD_COLS, HELP_WHAT_COLS, what, Look::Dim);
+        .filter_map(|(index, (group, rows))| {
+            let rows: Vec<_> = rows
+                .iter()
+                .filter(|(chord, what)| has(chord) || has(what))
+                .copied()
+                .collect();
+            (!rows.is_empty()).then_some((index, *group, rows))
+        })
+        .collect()
+}
+
+/// The open help panel (`?`): what is typed there narrows its rows (`help_rows`).
+///
+/// Typing searches; a `/` first is only the way in and is not searched for. Backspace takes
+/// the last character back. Esc clears what was typed, and closes once nothing is; `?`
+/// closes when nothing is typed (and is searched for otherwise). The panel keeps its size
+/// while it narrows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Help {
+    query: String,
+}
+
+impl Help {
+    pub fn new() -> Help {
+        Help::default()
+    }
+
+    /// What is searched for.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// A key while the help is open. Returns whether it closes it.
+    pub fn key(&mut self, ev: &KeyEvent) -> bool {
+        if !ev.pressed {
+            return false;
+        }
+        let m = ev.mods;
+        match ev.key {
+            Key::Named(Named::Escape) if ev.repeat => false,
+            Key::Named(Named::Escape) if self.query.is_empty() => true,
+            Key::Named(Named::Escape) => {
+                self.query.clear();
+                false
+            }
+            Key::Named(Named::Backspace) => {
+                self.query.pop();
+                false
+            }
+            // Not on a repeat: holding `?` down must not close what it just opened.
+            Key::Char('?') if self.query.is_empty() => !ev.repeat,
+            Key::Char('/') if self.query.is_empty() => false,
+            Key::Char(c) if !m.ctrl && !m.alt && !m.logo => {
+                let typed = ev.text.clone().unwrap_or_else(|| c.to_string());
+                self.query.extend(typed.chars().filter(|c| !c.is_control()));
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// `HELP` as a panel: a title line, then the groups in two columns, only the rows that
+    /// match what is typed.
+    pub fn panel(&self) -> crate::forms::Panel {
+        use crate::forms::{Look, Panel};
+        let column = HELP_CHORD_COLS + HELP_WHAT_COLS;
+        let cols = 2 + column + 2 + column + 2;
+        let mut p = Panel::new(cols);
+        let title = match self.query.is_empty() {
+            true => "Keys and mouse · type to search · Esc or ? closes".to_string(),
+            false => format!("Keys and mouse · search: {}▏ · Esc clears", self.query),
+        };
+        p.put(0, 2, cols - 4, &title, Look::Title);
+        let found = help_rows(&self.query);
+        if found.is_empty() {
+            p.put(2, 2, column, "no key matches", Look::Dim);
+        }
+        let mut bottom = 3;
+        for left in [true, false] {
+            let x = if left { 2 } else { 2 + column + 2 };
+            let mut line = 2;
+            let groups = found
+                .iter()
+                .filter(|(index, _, _)| (*index < HELP_LEFT_GROUPS) == left);
+            for (_, group, rows) in groups {
+                p.put(line, x, column, group, Look::Label);
+                line += 1;
+                for (chord, what) in rows {
+                    p.put(line, x, HELP_CHORD_COLS - 1, chord, Look::Text);
+                    p.put(line, x + HELP_CHORD_COLS, HELP_WHAT_COLS, what, Look::Dim);
+                    line += 1;
+                }
                 line += 1;
             }
-            line += 1;
+            bottom = bottom.max(line);
         }
-        bottom = bottom.max(line);
+        // As tall as with every row: the panel does not move while the search narrows it.
+        p.lines = match self.query.is_empty() {
+            true => bottom,
+            false => Help::new().panel().lines,
+        };
+        p
     }
-    p.lines = bottom;
-    p
+}
+
+/// `HELP` as a panel, nothing searched for: a title line, then the groups in two columns.
+pub fn help_panel() -> crate::forms::Panel {
+    Help::new().panel()
 }
