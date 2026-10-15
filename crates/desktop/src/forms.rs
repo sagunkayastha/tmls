@@ -349,7 +349,7 @@ impl Panel {
     }
 
     /// Adds a text field `cols` columns wide.
-    fn field(
+    pub(crate) fn field(
         &mut self,
         line: usize,
         col: usize,
@@ -439,7 +439,7 @@ fn set_text(field: &mut TextField, text: &str) {
 }
 
 /// A key in a text field. Returns whether the field took it.
-fn edit(field: &mut TextField, ev: &KeyEvent) -> bool {
+pub(crate) fn edit(field: &mut TextField, ev: &KeyEvent) -> bool {
     let mods = ev.mods;
     if mods.alt || mods.logo {
         return false;

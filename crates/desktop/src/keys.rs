@@ -10,10 +10,12 @@
 //!   cursor's session menu (rename, kill, open in a terminal, copy), a the alerts,
 //!   b the other tmux servers' sessions,
 //!   y — answer the cursor's session's permission prompt (Yes / No / Cancel),
-//!   s — the message form (send now, or queue while the session is busy)
+//!   s — the message form (send now, or queue while the session is busy),
+//!   g — the go-to picker
 //! - `?` in the list or the `?` button — the keys and mouse actions (`HELP`); Esc, `?` or a
 //!   click beside it closes it
 //! - Alt+Shift+N — the next session that waits for the user
+//! - Alt+Shift+G, and g in the list — the go-to picker over every session (`goto`)
 //! - Alt+Shift+A — the message form for the front tab's Claude session
 //! - Alt+Shift+V — the clipboard's image becomes a file on the front tab's host, and its path
 //!   is pasted into the session (Ctrl+Shift+V pastes text)
@@ -74,6 +76,8 @@ pub enum Global {
     /// the panel if it is open.
     ToggleFiles,
     NextWaiting,
+    /// The go-to picker over every listed session.
+    GoTo,
     /// The message form for the front tab's Claude session.
     Ask,
     /// The clipboard's image to the front tab's host, its path pasted into the session.
@@ -157,6 +161,7 @@ fn binding(ev: &KeyEvent, focus: Focus) -> Option<Global> {
             Key::Named(Named::Left) => Some(Global::PrevTab),
             Key::Named(Named::Up) => Some(Global::FocusSidebar),
             Key::Char(c) if c.eq_ignore_ascii_case(&'n') => Some(Global::NextWaiting),
+            Key::Char(c) if c.eq_ignore_ascii_case(&'g') => Some(Global::GoTo),
             Key::Char(c) if c.eq_ignore_ascii_case(&'w') => Some(Global::CloseTab),
             Key::Char(c) if c.eq_ignore_ascii_case(&'x') => Some(Global::ClosePanel),
             Key::Char(c) if c.eq_ignore_ascii_case(&'f') => Some(Global::ToggleFiles),
@@ -283,6 +288,8 @@ pub enum ListKey {
     Approve,
     /// Send or queue a message to the cursor's Claude session.
     Send,
+    /// The go-to picker over every listed session.
+    GoTo,
 }
 
 /// What a key routed to the list (`Route::Sidebar`) does there; `None` for every other key.
@@ -310,6 +317,7 @@ pub fn list_key(ev: &KeyEvent) -> Option<ListKey> {
         Key::Char('b') if !ev.repeat => Some(ListKey::Background),
         Key::Char('y') if !ev.repeat => Some(ListKey::Approve),
         Key::Char('s') if !ev.repeat => Some(ListKey::Send),
+        Key::Char('g') if !ev.repeat => Some(ListKey::GoTo),
         _ => None,
     }
 }
@@ -445,6 +453,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Alt+→ / ←", "the same"),
             ("Alt+Shift+↑", "the keys to the session list"),
             ("Alt+Shift+N", "next that waits, else unread"),
+            ("Alt+Shift+G", "go to a session (search)"),
             ("Alt+Shift+A", "send a message to this tab"),
             ("Alt+Shift+V", "paste the clipboard's image"),
             ("Alt+Shift+W", "close the tab (session lives)"),
@@ -460,6 +469,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Esc", "keys back to the terminal"),
             ("p", "pin or unpin (★)"),
             ("n", "next that waits, else unread"),
+            ("g", "go to a session (search)"),
             ("c", "new session on this host"),
             ("m", "the session's menu"),
             ("a", "alerts"),
@@ -503,6 +513,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("n", "No, in an approval"),
             ("Ctrl+Shift+V", "paste into the field"),
             ("Space", "a switch in the alerts"),
+            ("Tab  Ctrl+B/W/I/D", "go-to: status filter"),
         ],
     ),
 ];

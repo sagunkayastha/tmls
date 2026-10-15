@@ -638,14 +638,14 @@ fn chords(group: &str) -> Vec<&'static str> {
 #[test]
 fn the_help_names_every_key_of_the_list_and_every_alt_shift_letter() {
     let list = chords("List");
-    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'b', 'y', 's', '?'] {
+    for c in ['j', 'k', 'p', 'n', 'c', 'm', 'a', 'b', 'y', 's', 'g', '?'] {
         let mods = if c == '?' { SHIFT } else { NONE };
         assert!(list_key(&ch(c, mods)).is_some(), "{c} is a key of the list");
         assert!(list.contains(&c.to_string().as_str()), "{c} is in the help");
     }
     let everywhere: Vec<&str> = HELP[0].1.iter().map(|(chord, _)| *chord).collect();
     assert_eq!(HELP[0].0, "Everywhere");
-    for c in ['n', 'w', 'x', 'f', 'a', 'v'] {
+    for c in ['n', 'w', 'x', 'f', 'a', 'v', 'g'] {
         assert!(
             global(&ch(c, ALT_SHIFT), Focus::Terminal).is_some(),
             "Alt+Shift+{c} is bound"

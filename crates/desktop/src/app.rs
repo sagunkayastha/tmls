@@ -103,6 +103,7 @@ use crate::alerts::{self, Alerts, AlertsPanel, PanelResult, Settings, Watching};
 use crate::clip;
 use crate::draw::{self, Button, Chrome, ENDED_NOTICE, Hit, Layout, TabView, View};
 use crate::forms::{self, Form, FormResult, MenuItem, MenuResult, Request, RowMenu};
+use crate::goto::{self, GoTo, PickResult};
 use crate::keys::{self, Focus, Global, ListKey, PanelKey, RepeatGate, Route};
 use crate::kitty;
 use crate::links::{self, FileLink};
@@ -205,6 +206,8 @@ enum Modal {
     Alerts(AlertsPanel),
     /// The keys and mouse actions (`keys::HELP`).
     Help(forms::Panel),
+    /// The go-to picker over every listed session.
+    GoTo(GoTo),
 }
 
 /// Runs the app until the window is closed or the user quits. `config_dir` is `~/.config/tmls`.
@@ -1364,6 +1367,7 @@ impl Running {
             Modal::Form(form) => (form.panel(), *at),
             Modal::Alerts(alerts) => (alerts.panel(), *at),
             Modal::Help(panel) => (panel.clone(), *at),
+            Modal::GoTo(goto) => (goto.panel(), *at),
         });
         let status_of = |key: &SessionKey| {
             let status = self.sidebar.status(key)?;
@@ -1579,6 +1583,10 @@ impl Running {
                 let result = alerts.key(ev);
                 self.alerts_result(result);
             }
+            Some((Modal::GoTo(goto), _)) => {
+                let result = goto.key(ev);
+                self.goto_result(result);
+            }
             Some((Modal::Help(_), _)) | None => {}
         }
         self.invalidate();
@@ -1587,6 +1595,33 @@ impl Running {
     /// `?` in the list or the `?` button: the keys and mouse actions over the window.
     fn open_help(&mut self) {
         self.open_modal(Modal::Help(keys::help_panel()), None);
+    }
+
+    /// `g` in the list or Alt+Shift+G: the go-to picker over every session the list has.
+    fn open_goto(&mut self) {
+        let entries = self
+            .sidebar
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                sidebar::Row::Session(info) => Some(goto::Entry::of(info, false)),
+                _ => None,
+            })
+            .collect();
+        self.open_modal(Modal::GoTo(GoTo::new(entries)), None);
+    }
+
+    fn goto_result(&mut self, result: PickResult) {
+        match result {
+            PickResult::Pending => {}
+            PickResult::Closed => self.close_modal(),
+            PickResult::Open(key) => {
+                self.close_modal();
+                self.sidebar.select_key(&key);
+                self.act(sidebar::Action::Attach(key));
+            }
+        }
+        self.invalidate();
     }
 
     /// Opens the list of alerts; they count as read from now on.
@@ -2373,6 +2408,9 @@ impl Running {
                 form.paste(text);
                 pasted = true;
             }
+            if let Some((Modal::GoTo(goto), _)) = &mut self.modal {
+                goto.paste(text);
+            }
         });
         if pasted {
             self.lookup_name();
@@ -2424,6 +2462,17 @@ impl Running {
                     self.close_modal();
                 }
             }
+            Modal::GoTo(goto) => {
+                let panel = goto.panel();
+                let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+                let (cx, cy) = self.layout.panel_cell(rect, x, y);
+                let result = match button {
+                    MouseButton::Left => goto.click(cx, cy),
+                    _ if panel.contains(cx, cy) => PickResult::Pending,
+                    _ => PickResult::Closed,
+                };
+                self.goto_result(result);
+            }
         }
         self.invalidate();
     }
@@ -2448,6 +2497,7 @@ impl Running {
             Global::ClosePanel => self.close_side(),
             Global::ToggleFiles => self.toggle_files(),
             Global::NextWaiting => self.next_waiting(),
+            Global::GoTo => self.open_goto(),
             Global::Ask => {
                 if let Some(index) = self.tabs.active() {
                     let key = self.tabs.key(index).clone();
@@ -2519,6 +2569,7 @@ impl Running {
             ListKey::Alerts => self.open_alerts(),
             ListKey::Background => self.sidebar.toggle_background(),
             ListKey::Help => self.open_help(),
+            ListKey::GoTo => self.open_goto(),
             ListKey::Menu => {
                 // A session outside tmux has no menu: nothing in it applies. Nor has one of
                 // another tmux server (R4), and the status line says so.
@@ -3090,6 +3141,14 @@ impl Running {
             let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
             let (x, y) = self.layout.panel_cell(rect, self.pointer.0, self.pointer.1);
             if alerts.hover(x, y) {
+                self.invalidate();
+            }
+        }
+        if let Some((Modal::GoTo(goto), at)) = &mut self.modal {
+            let panel = goto.panel();
+            let rect = self.layout.panel_rect(panel.cols, panel.lines, *at);
+            let (x, y) = self.layout.panel_cell(rect, self.pointer.0, self.pointer.1);
+            if goto.hover(x, y) {
                 self.invalidate();
             }
         }

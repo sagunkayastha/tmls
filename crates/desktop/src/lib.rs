@@ -6,6 +6,7 @@
 //! - `keys`  — the window's own key bindings and which keys go to the terminal, the list, a form.
 //! - `clip`  — copy and paste: arboard, the wl-clipboard fallback, what the status line says.
 //! - `forms` — the new-session form, rename, the kill confirm and a session's menu.
+//! - `goto`  — the go-to picker: every session of every host, narrowed by what is typed.
 //! - `mouse` — the mouse over the terminal: to the program in the tab, or a selection of our own.
 //! - `links` — the URL or the file path under a cell, and opening one.
 //! - `launch` — leaving the shell at once: `tmls-rs` starts itself again, detached.
@@ -31,6 +32,7 @@ pub mod clip;
 pub mod dnd;
 pub mod draw;
 pub mod forms;
+pub mod goto;
 pub mod icon;
 pub mod keys;
 pub mod kitty;
