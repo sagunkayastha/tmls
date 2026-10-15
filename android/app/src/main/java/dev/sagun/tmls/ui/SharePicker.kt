@@ -119,7 +119,7 @@ fun SharePicker(vm: ChatViewModel, share: Share, onDone: () -> Unit) {
                             Box(Modifier.size(10.dp).clip(CircleShape).background(if (on) Tm.Accent else Tm.Line))
                             Column(Modifier.weight(1f)) {
                                 Text(row.name, style = Tm.Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(listOf(row.label, if (row.waiting) "waiting on you" else if (row.working) "working" else "").filter { it.isNotEmpty() }
+                                Text(listOf(row.label, Sessions.state(row.mark)).filter { it.isNotEmpty() }
                                     .joinToString(" · "), style = Tm.Small, maxLines = 1)
                             }
                             Text(Sessions.glyph(row.mark), color = Tm.mark(row.mark))
