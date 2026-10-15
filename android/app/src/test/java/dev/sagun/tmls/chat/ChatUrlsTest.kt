@@ -72,5 +72,10 @@ class ChatUrlsTest {
         drafts.insert("b", "/x/p.png")  // an upload that finished after the user left "b"
         drafts.insert("b", "/x/q.png")
         assertEquals("/x/p.png /x/q.png more", drafts.swap(null, TextFieldValue(""), "b").text)
+        // a file kept on the way out after the user left "b": its draft names the kept copy
+        drafts.swap("b", TextFieldValue("see /c/x.png now"), "a")
+        drafts.replace("b", "/c/x.png", "/d/x.png")
+        drafts.replace("missing", "/c/x.png", "/d/x.png")
+        assertEquals("see /d/x.png now", drafts.swap("a", TextFieldValue(""), "b").text)
     }
 }

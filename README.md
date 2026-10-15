@@ -213,6 +213,14 @@ or goes from a session to the list, and the terminal draws with WebGL.
 - **Update:** each new `make.sh` publishes a higher version. The app checks on start and every 6
   hours, and **Check for updates** at the end of the session list (beside the version) checks now; a banner offers it, the download is checked against
   `latest.json`'s SHA-256, and Android asks you to confirm.
+- **Files sent from the app** land in `~/.cache/tmls/images/` on the session's host, named
+  `STAMP-RANDOM-<original name>`. Mark one **Keep** (before sending, or on a message already sent)
+  and it is copied to `~/Documents/tmls/YYYY-MM/<original name>` on that host (`-1`, `-2`… rather
+  than overwrite); Claude is given that path. Unkept uploads can be cleaned up: start tmls-web with
+  `--prune-uploads` (off by default) and every 6 hours it deletes regular files directly inside
+  `~/.cache/tmls/images/` older than `--upload-days` (default 14) on each configured host. It never
+  follows a symlink (and does nothing at all if that folder or `~/.cache`/`~/.cache/tmls` is one),
+  never goes into subfolders, and never touches `~/Documents/tmls`.
 
 ## Sketchpad button
 

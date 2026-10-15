@@ -248,6 +248,13 @@ object Wire {
 
     fun seen(key: String): String = buildJsonObject { put("key", key) }.toString()
 
+    /** /api/chat/keep's body: an upload [path] to store for good, under [name] (else its own). */
+    fun keep(key: String, path: String, name: String? = null): String =
+        buildJsonObject { put("key", key); put("path", path); if (name != null) put("name", name) }.toString()
+
+    fun keepPicture(key: String, blob: String, name: String? = null): String =
+        buildJsonObject { put("key", key); put("blob", blob); if (name != null) put("name", name) }.toString()
+
     /** /api/approve's body: the prompt as the row showed it, so the server refuses if it changed. */
     fun approve(row: Row, yes: Boolean, choice: Int? = null): String = buildJsonObject {
         put("host", row.host)

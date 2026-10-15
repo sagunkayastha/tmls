@@ -87,4 +87,21 @@ object Glyphs {
         moveTo(7f, 3.5f); lineTo(14f, 3.5f); lineTo(18f, 7.5f); lineTo(18f, 20.5f); lineTo(7f, 20.5f); close()
         moveTo(14f, 3.5f); lineTo(14f, 7.5f); lineTo(18f, 7.5f)
     }
+    val Mic = stroke("mic") {
+        moveTo(9f, 6.5f)
+        arcToRelative(3f, 3f, 0f, false, true, 6f, 0f)
+        lineTo(15f, 11.5f)
+        arcToRelative(3f, 3f, 0f, false, true, -6f, 0f)
+        close()
+        moveTo(5.5f, 11f)
+        arcToRelative(6.5f, 6.5f, 0f, false, false, 13f, 0f)
+        moveTo(12f, 17.5f); lineTo(12f, 20.5f)
+    }
+    /** A bookmark: kept for good. */
+    val Keep = stroke("keep") {
+        moveTo(7f, 4f); lineTo(17f, 4f); lineTo(17f, 20f); lineTo(12f, 16f); lineTo(7f, 20f); close()
+    }
+    val KeepOn = solid("keep-on") {
+        moveTo(7f, 4f); lineTo(17f, 4f); lineTo(17f, 20f); lineTo(12f, 16f); lineTo(7f, 20f); close()
+    }
 }

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 
 from tmls import approve, create, hosts, tmux_ops
-from tmls.web import auth, chat, events, term
+from tmls.web import auth, chat, events, term, uploads
 
 STATIC = Path(__file__).parent / "static"
 PUBLIC = ("/healthz", "/login")
@@ -357,6 +357,7 @@ def make_app(auth_file, hosts_list):
     app.router.add_post("/api/kill", kill_session)
     term.setup(app)
     chat.setup(app)
+    uploads.setup(app)
     app.router.add_get("/api/config", config)
     app.router.add_get("/app/latest.json", app_manifest)
     app.router.add_get("/app/tmls.apk", app_apk)
@@ -374,6 +375,16 @@ def _network(value):
         raise argparse.ArgumentTypeError(f"{value!r} is not an address or network")
 
 
+def _days(value):
+    try:
+        days = int(value)
+    except ValueError:
+        days = 0
+    if not 1 <= days <= uploads.MAX_DAYS:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number of days from 1 to {uploads.MAX_DAYS}")
+    return days
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(prog="tmls-web")
     parser.add_argument("--bind", action="append", required=True, help="address to listen on (repeatable)")
@@ -382,6 +393,11 @@ def parse_args(argv=None):
                         help="a reverse proxy (or its network) whose X-Forwarded-For names the client (repeatable)")
     parser.add_argument("--apk-dir", type=Path, default=APK_DIR, metavar="DIR",
                         help="where android/make.sh publishes tmls.apk and latest.json for the app's updater")
+    parser.add_argument("--prune-uploads", action="store_true",
+                        help="delete files the app uploaded (~/.cache/tmls/images/ on each host) once they are "
+                             "older than --upload-days; kept files (~/Documents/tmls/) are never touched. Off by default")
+    parser.add_argument("--upload-days", type=_days, default=uploads.DEFAULT_DAYS, metavar="DAYS",
+                        help=f"age in days after which --prune-uploads deletes an upload (default {uploads.DEFAULT_DAYS})")
     return parser.parse_args(argv)
 
 
@@ -390,4 +406,5 @@ def main(argv=None):
     app = make_app(auth.AUTH_FILE, hosts.hosts(hosts.read_config()))
     app["trusted_proxies"], app["apk_dir"] = set(args.trust_proxy), args.apk_dir
     app["sketchpad"] = hosts.read_config(hosts.SKETCHPAD)
+    app["prune_days"] = args.upload_days if args.prune_uploads else None
     web.run_app(app, host=args.bind, port=args.port)

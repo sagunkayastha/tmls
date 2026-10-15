@@ -1,6 +1,20 @@
 package dev.sagun.tmls.ui
 
+import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.pm.PackageManager
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.alpha
+import androidx.core.content.ContextCompat
+import dev.sagun.tmls.chat.Attached
+import dev.sagun.tmls.chat.Attachments
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -90,11 +105,26 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
         vm.attach(uris.take(MAX_PICKED).mapIndexed { i, uri -> Picked(uri, "file-$now-${i + 1}") })
     }
 
+    // The microphone: asked the first time voice input is used, after saying what it is for.
+    var explainMic by remember { mutableStateOf(false) }
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) vm.startVoice()
+        else vm.error = "tmls may not use the microphone, so voice input is off. Allow it in Android's settings: Apps > tmls > Permissions."
+    }
+    fun onMic() {
+        when {
+            vm.listening -> vm.stopVoice()
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> vm.startVoice()
+            else -> explainMic = true
+        }
+    }
+
     Column(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         vm.error?.let { ErrorLine(it) { vm.error = null } }
+        vm.notice?.let { NoticeLine(it) { vm.notice = null } }
         vm.upload?.let { UploadLine(it) }
         val prompt = row.prompt?.takeIf { row.key !in vm.answered }
         prompt?.let { PromptCard(it, row.choices, vm.answering, vm::answer) }
@@ -103,9 +133,15 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
         }
         Surface(color = Tm.Raised, shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Tm.Line)) {
             Column(Modifier.padding(8.dp)) {
+                val files = Attachments.shown(vm.attached[row.key], vm.draft.text)
+                if (files.isNotEmpty()) AttachedFiles(files, enabled = !vm.sending, onToggle = vm::toggleKeep)
                 BasicTextField(
                     value = vm.draft,
-                    onValueChange = { vm.draft = it },
+                    onValueChange = {
+                        // typing while listening: the words heard so far stay, the rest is the user's
+                        if (vm.listening && it.text != vm.draft.text) vm.stopVoice(cancel = true)
+                        vm.draft = it
+                    },
                     textStyle = Tm.Body,
                     cursorBrush = SolidColor(Tm.Accent),
                     maxLines = 7,
@@ -113,7 +149,14 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     decorationBox = { field ->
                         Box {
-                            if (vm.draft.text.isEmpty()) Text(if (row.asking) "Answer the prompt above first" else "Message", style = Tm.Body.copy(color = Tm.Faint))
+                            if (vm.draft.text.isEmpty()) Text(
+                                when {
+                                    vm.listening -> "Listening…"
+                                    row.asking -> "Answer the prompt above first"
+                                    else -> "Message"
+                                },
+                                style = Tm.Body.copy(color = Tm.Faint),
+                            )
                             field()
                         }
                     },
@@ -133,6 +176,7 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                         }
                     }
                     Spacer(Modifier.weight(1f))
+                    MicButton(vm.listening, onClick = ::onMic)
                     val ready = vm.draft.text.isNotBlank() && !vm.sending && !row.asking
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).background(if (ready || vm.sending) Tm.Accent else Tm.Accent.copy(alpha = 0.35f))
@@ -145,6 +189,29 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                 }
             }
         }
+    }
+
+    if (explainMic) {
+        AlertDialog(
+            onDismissRequest = { explainMic = false },
+            containerColor = Tm.Raised,
+            title = { Text("Voice input", style = Tm.Body.copy(fontSize = 19.sp)) },
+            text = {
+                Text(
+                    "tmls turns what you say into text in the message box, using Android's speech recognition " +
+                        "(on the phone when it can). It listens only while the mic button is on, and nothing is " +
+                        "sent until you press send. Android will now ask to allow the microphone.",
+                    style = Tm.Small.copy(color = Tm.Text, fontSize = 15.sp, lineHeight = 22.sp),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    explainMic = false
+                    askMic.launch(Manifest.permission.RECORD_AUDIO)
+                }) { Text("Continue", color = Tm.Accent) }
+            },
+            dismissButton = { TextButton(onClick = { explainMic = false }) { Text("Not now", color = Tm.Dim) } },
+        )
     }
 
     if (sheet) {
@@ -178,6 +245,62 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** The mic: tap to talk, tap again to stop. Lit and pulsing while it listens. */
+@Composable
+private fun MicButton(listening: Boolean, onClick: () -> Unit) {
+    val pulse = if (listening) {
+        val t = rememberInfiniteTransition(label = "mic")
+        t.animateFloat(0.55f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "mic-alpha").value
+    } else 1f
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).background(if (listening) Tm.Fail.copy(alpha = 0.25f) else Tm.Bg)
+            .clickable(role = Role.Button, onClickLabel = if (listening) "Stop voice input" else "Voice input", onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Glyphs.Mic, if (listening) "Stop voice input" else "Voice input", Modifier.size(22.dp).alpha(pulse),
+            tint = if (listening) Tm.Fail else Tm.Text)
+    }
+}
+
+/** The files the message names, each with Keep: stored for good on the host before it is sent. */
+@Composable
+private fun AttachedFiles(files: List<Attached>, enabled: Boolean, onToggle: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 4.dp, end = 4.dp, top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        files.forEach { file ->
+            val on = file.keep || file.kept
+            Row(
+                Modifier.clip(RoundedCornerShape(16.dp)).background(Tm.Bg)
+                    .clickable(enabled = enabled && !file.kept, role = Role.Switch,
+                        onClickLabel = if (on) "Don't keep ${file.name}" else "Keep ${file.name} in Documents") { onToggle(file.path) }
+                    .padding(start = 10.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(Glyphs.File, null, Modifier.size(16.dp), tint = Tm.Dim)
+                Text(file.name, style = Tm.Small.copy(color = Tm.Text), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 150.dp))
+                Icon(if (on) Glyphs.KeepOn else Glyphs.Keep, null, Modifier.size(16.dp), tint = if (on) Tm.Accent else Tm.Faint)
+                Text(if (file.kept) "Kept" else "Keep", style = Tm.Small.copy(color = if (on) Tm.Accent else Tm.Dim))
+            }
+        }
+    }
+}
+
+/** A neutral line (where something was kept), until tapped away. */
+@Composable
+private fun NoticeLine(text: String, onDismiss: () -> Unit) {
+    Surface(color = Tm.Raised, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, Tm.Line)) {
+        Row(Modifier.fillMaxWidth().clickable(onClickLabel = "Dismiss", onClick = onDismiss).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(text, style = Tm.Small.copy(color = Tm.Text), maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Icon(Glyphs.Close, null, Modifier.padding(start = 10.dp).size(16.dp), tint = Tm.Dim)
         }
     }
 }
