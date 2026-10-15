@@ -368,6 +368,96 @@ fn link_in_frame_reads_paths_and_prefers_the_cells_own_hyperlink() {
     );
 }
 
+/// A frame of `rows`, each padded with spaces to the longest.
+fn frame_rows(rows: &[&str]) -> Frame {
+    let cols = rows
+        .iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0);
+    let cells: Vec<Cell> = rows
+        .iter()
+        .flat_map(|row| {
+            let pad = cols - row.chars().count();
+            row.chars().chain(std::iter::repeat_n(' ', pad))
+        })
+        .map(|c| Cell {
+            text: c.to_string(),
+            ..Cell::default()
+        })
+        .collect();
+    Frame {
+        cols: cols as u16,
+        rows: rows.len() as u16,
+        dirty_rows: vec![true; rows.len()],
+        cells,
+        cursor: None,
+        seq: 1,
+        t_output_ns: 0,
+        keys: Vec::new(),
+    }
+}
+
+#[test]
+fn a_path_cut_at_the_edge_goes_on_on_the_next_row() {
+    // As Claude Code prints a long path in a list: cut at the last column, the rest on the
+    // next row under the list's indent.
+    let frame = frame_rows(&[
+        "  - /data/scratch/frames/124644074_20261012T",
+        "    144307603-222.png: Oct 12, #222",
+    ]);
+    let whole = file(
+        "/data/scratch/frames/124644074_20261012T144307603-222.png",
+        None,
+    );
+    // Clicked on the first part, or on the rest.
+    assert_eq!(links::link_in_frame(&frame, (10, 0)), whole);
+    assert_eq!(links::link_in_frame(&frame, (43, 0)), whole);
+    assert_eq!(links::link_in_frame(&frame, (6, 1)), whole);
+    // The indent and the words after it are no link.
+    assert_eq!(links::link_in_frame(&frame, (1, 1)), None);
+    assert_eq!(links::link_in_frame(&frame, (30, 1)), None);
+    // A terminal's own wrap: no indent.
+    let plain = frame_rows(&["see /data/x/very-long-na", "me.png now"]);
+    assert_eq!(
+        links::link_in_frame(&plain, (6, 0)),
+        file("/data/x/very-long-name.png", None)
+    );
+    assert_eq!(
+        links::link_in_frame(&plain, (2, 1)),
+        file("/data/x/very-long-name.png", None)
+    );
+    // A URL cut at the edge too.
+    let url = frame_rows(&["go https://example.com/a/", "b/c now"]);
+    assert_eq!(
+        links::in_frame(&url, (5, 0)).as_deref(),
+        Some("https://example.com/a/b/c")
+    );
+}
+
+#[test]
+fn a_row_that_ends_before_the_edge_is_not_joined() {
+    // A row with room left, or ending in a space, ends its link.
+    let frame = frame_rows(&["see /data/a.png      ", "    b/c.txt is next"]);
+    assert_eq!(
+        links::link_in_frame(&frame, (6, 0)),
+        file("/data/a.png", None)
+    );
+    assert_eq!(links::link_in_frame(&frame, (5, 1)), file("b/c.txt", None));
+    let spaced = frame_rows(&["see /data/a.png ", "b.txt"]);
+    assert_eq!(
+        links::link_in_frame(&spaced, (6, 0)),
+        file("/data/a.png", None)
+    );
+    // The side of a box at the edge is no link going on.
+    let boxed = frame_rows(&["│ /data/a.png │", "│ b.txt       │"]);
+    assert_eq!(
+        links::link_in_frame(&boxed, (4, 0)),
+        file("/data/a.png", None)
+    );
+    assert_eq!(links::link_in_frame(&boxed, (3, 1)), file("b.txt", None));
+}
+
 #[test]
 fn open_path_runs_xdg_open_with_an_absolute_path_as_one_argument() {
     let mut ran: Vec<(String, Vec<String>)> = Vec::new();

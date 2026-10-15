@@ -4,8 +4,11 @@
 //! or one of `< > " ' \``, without the punctuation a sentence puts after it (a closing bracket
 //! stays when the URL has its opening one). The text is taken as it is on screen: `localhost`
 //! stays `localhost`, also in a session on another host. A cell that carries a hyperlink of its
-//! own (OSC 8) gives that one. Only one row is looked at, so a link that wraps is cut at the
-//! edge (tmls joins the next row).
+//! own (OSC 8) gives that one. A link cut at the right edge goes on on the next row
+//! (`joined_rows`): a row that ends in a link's character at its last column is joined to the
+//! next one that starts with one after its indent. tmls joins only the next row and only
+//! without an indent; Claude Code cuts a long path itself and puts the rest under its list's
+//! indent, so the indent is skipped here, and a click on the rest finds the whole link too.
 //!
 //! **File paths** (`link_at`), in tmls's order — the first kind that covers the cell wins, and
 //! a URL always does:
@@ -350,19 +353,83 @@ fn row_of(frame: &Frame, (col, row): (u16, u16)) -> Option<(String, Option<Strin
     Some((text, own))
 }
 
+/// The most rows joined to the clicked one on either side: a link longer than that is cut.
+const JOIN_ROWS: u16 = 4;
+
+/// Whether `c` can be part of a link (a URL or a path): what ends one is white space, one of
+/// the characters a URL stops at, or a box's line (`│` at the edge of a box that a program
+/// draws is no link going on).
+fn in_link(c: char) -> bool {
+    !c.is_whitespace() && !"<>\"'`".contains(c) && !('\u{2500}'..='\u{257f}').contains(&c)
+}
+
+/// Whether row `upper` goes on on row `lower`: it ends in a link's character at its last
+/// column, and `lower` starts with one after its indent.
+fn goes_on(upper: &str, lower: &str) -> bool {
+    upper.chars().last().is_some_and(in_link)
+        && lower.trim_start().chars().next().is_some_and(in_link)
+}
+
+/// The text of row `row` of `frame` with the rows it goes on to and comes from
+/// (`goes_on`, at most `JOIN_ROWS` each way), each row after the first without its indent,
+/// and the clicked column `col` in that text. `None` for a click on such an indent: it is no
+/// part of the link.
+fn joined_rows(frame: &Frame, (col, row): (u16, u16)) -> Option<(String, usize)> {
+    let text = |row: u16| row_of(frame, (0, row)).map(|(text, _)| text);
+    let clicked = text(row)?;
+    let (mut first, mut last) = (row, row);
+    let mut upper = clicked.clone();
+    while first > 0 && row - first < JOIN_ROWS {
+        let above = text(first - 1)?;
+        if !goes_on(&above, &upper) {
+            break;
+        }
+        first -= 1;
+        upper = above;
+    }
+    let mut lower = clicked;
+    while last + 1 < frame.rows && last - row < JOIN_ROWS {
+        let below = text(last + 1)?;
+        if !goes_on(&lower, &below) {
+            break;
+        }
+        last += 1;
+        lower = below;
+    }
+    let (mut joined, mut at) = (String::new(), None);
+    for each in first..=last {
+        let whole = text(each)?;
+        let indent = match each == first {
+            true => 0,
+            false => whole.chars().take_while(|c| c.is_whitespace()).count(),
+        };
+        if each == row {
+            let col = (col as usize).checked_sub(indent)?;
+            at = Some(joined.chars().count() + col);
+        }
+        joined.extend(whole.chars().skip(indent));
+    }
+    Some((joined, at?))
+}
+
 /// The URL under the cell (`col`, `row`) of `frame`: the cell's own hyperlink, else the URL in
-/// the row's text.
+/// the row's text, joined to the rows it goes on on (`joined_rows`).
 pub fn in_frame(frame: &Frame, at_cell: (u16, u16)) -> Option<String> {
-    let (text, own) = row_of(frame, at_cell)?;
-    own.or_else(|| at(&text, at_cell.0 as usize))
+    let (_, own) = row_of(frame, at_cell)?;
+    own.or_else(|| {
+        let (text, col) = joined_rows(frame, at_cell)?;
+        at(&text, col)
+    })
 }
 
 /// The link under the cell (`col`, `row`) of `frame`: the cell's own hyperlink, else the URL or
-/// the file path in the row's text.
+/// the file path in the row's text, joined to the rows it goes on on (`joined_rows`).
 pub fn link_in_frame(frame: &Frame, at_cell: (u16, u16)) -> Option<Link> {
-    let (text, own) = row_of(frame, at_cell)?;
-    own.map(Link::Url)
-        .or_else(|| link_at(&text, at_cell.0 as usize))
+    let (_, own) = row_of(frame, at_cell)?;
+    own.map(Link::Url).or_else(|| {
+        let (text, col) = joined_rows(frame, at_cell)?;
+        link_at(&text, col)
+    })
 }
 
 /// The program and the single argument that opens `target`: `xdg-open` on Unix, `explorer.exe`
