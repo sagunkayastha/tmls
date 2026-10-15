@@ -4,7 +4,7 @@ import asyncio
 from aiohttp import web
 
 from tmls import approve, hosts, prompts
-from tmls.web import events
+from tmls.web import events, usage
 
 
 def sess(name, **kw):
@@ -221,7 +221,8 @@ async def test_an_agent_panes_screen_from_the_listing_is_its_line_without_anothe
     real_run = prompts._run
 
     async def counting(argv, stdin=None):
-        calls.append(argv)
+        if usage.MARK not in argv[-1]:  # the minutely usage look is not a capture
+            calls.append(argv)
         return await real_run(argv, stdin)
     monkeypatch.setattr(prompts, "_run", counting)
     ws = await client.ws_connect("/api/events")

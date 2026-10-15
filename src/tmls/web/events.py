@@ -5,7 +5,7 @@ import shlex
 from aiohttp import WSMsgType, web
 
 from tmls import approve, hosts, prompts
-from tmls.web import rows
+from tmls.web import rows, usage
 
 # Parallel ssh commands per host. With ControlMaster they are channels on one connection, and
 # sshd's MaxSessions (10 by default) refuses the rest with "administratively prohibited".
@@ -100,6 +100,16 @@ async def poll(app):
         await asyncio.sleep(app.get("poll_interval", 2))
 
 
+async def poll_usage(app):
+    while True:
+        try:
+            if await usage.poll_once(app):
+                await broadcast(app, usage.wire(app))
+        except Exception as error:
+            print(f"tmls-web usage: {error!r}")
+        await asyncio.sleep(app.get("usage_interval", usage.EVERY))
+
+
 async def handle_events(request):
     app = request.app
     ws = web.WebSocketResponse(heartbeat=30)
@@ -110,6 +120,7 @@ async def handle_events(request):
         await ws.send_json({"t": "hosts", "hosts": app["host_list"]})
         await ws.send_json({"t": "rows", "full": True, "set": snapshot, "gone": []})
         await ws.send_json({"t": "version", "v": app.get("version")})
+        await ws.send_json(usage.wire(app))
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break
@@ -136,10 +147,12 @@ async def handle_seen(request):
 
 async def _start(app):
     app["poller"] = asyncio.create_task(poll(app))
+    app["usage_poller"] = asyncio.create_task(poll_usage(app))
 
 
 async def _stop(app):
     app["poller"].cancel()
+    app["usage_poller"].cancel()
     for ws in list(app["sockets"]):
         await ws.close()
 
@@ -149,6 +162,7 @@ def setup(app):
     app["host_list"], app["background"], app["polls"] = [], [], 0
     # key -> hosts.Session of the Claude in it (chat.py follows its record); set once listed
     app["claudes"], app["polled"] = {}, asyncio.Event()
+    app["usage"] = {}  # Claude's 5-hour and weekly usage (usage.py), empty until a host has it
     app.router.add_get("/api/events", handle_events)
     app.router.add_post("/api/seen", handle_seen)
     app.on_startup.append(_start)
