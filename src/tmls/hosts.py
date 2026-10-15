@@ -6,7 +6,10 @@ import shlex
 import shutil
 import socket
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
+
+from tmls import detect
 
 LOCAL = "local"
 KITTY = "kitty"  # this machine's Claude sessions outside tmux (see local.py)
@@ -46,6 +49,38 @@ CLAUDE = ('echo ---; for f in "$HOME"/.claude/sessions/*.json; do p=${f##*/}; '
           'echo usage $(printf "%s\\n" "$a" | grep -v \'[^\\\\]"isApiErrorMessage":true\' | tail -n 1 '
           '| grep -o \'"model":"[^"]*"\\|"[a-z_]*input_tokens":[0-9]*\' | head -n 4); done; done; true')
 
+# Agent panes, for the web's rows (list_argv(screens=True)): after a PANES line, one
+# `tool SESSION:AGENT` line per pane that runs an agent CLI herdr has rules for (tmls/detect.py),
+# then, behind a ">" each, its title and its visible screen. A `node` pane is named by the first
+# agent its processes run (`ps -t`: codex, gemini and qwen start from npm). A Claude pane has no
+# screen when a status file names it: Claude's own status is exact, the screen only a fallback.
+# Ported from tmls-rs (client-core listing.rs). One capture per agent pane, inside the listing.
+PANES = "==panes=="
+PANES_SCRIPT = (
+    "echo " + PANES + "; e='{names}'; "
+    "tmux -u list-panes -a -F '#{{session_name}}:#{{pane_current_command}}:#{{pane_tty}}:#{{pane_id}}' 2>/dev/null "
+    "| while IFS= read -r l; do p=${{l##*:}}; l=${{l%:*}}; t=${{l##*:}}; r=${{l%:*}}; c=${{r##*:}}; "
+    "if [ \"$c\" = node ]; then m=$(ps -o args= -t \"$t\" 2>/dev/null </dev/null "
+    "| grep -o -E '(^|[/ ])('\"$e\"')( |$)' | head -n 1); m=${{m%\" \"}}; m=${{m##*[/ ]}}; "
+    "[ -n \"$m\" ] && c=$m; fi; "
+    "case \"|$e|\" in *\"|$c|\"*) ;; *) continue;; esac; "
+    "echo \"tool ${{r%:*}}:$c\"; "
+    "case $c in claude*) [ -n \"${{_tmls_s+x}}\" ] || _tmls_s=$(cat \"$HOME\"/.claude/sessions/*.json 2>/dev/null); "
+    "case $_tmls_s in *\".$p\\\"\"*) continue;; esac;; esac; "
+    "tmux -u display-message -p -t \"$p\" '#{{pane_title}}' \\; capture-pane -p -t \"$p\" 2>/dev/null </dev/null "
+    "| sed 's/^/>/'; done")
+
+
+@cache
+def panes_script():
+    return PANES_SCRIPT.format(names="|".join(detect.all_process_names()))
+
+
+# Which agent names a session with several: Claude, Codex, opencode, then the first other one.
+PRECEDENCE = ("claude", "codex", "opencode")
+# herdr's states as session states; "unknown" says nothing (the output age decides then)
+AGENT_STATES = {detect.BLOCKED: "waiting", detect.WORKING: "running", detect.IDLE: "idle"}
+
 
 @dataclass
 class Session:
@@ -66,6 +101,9 @@ class Session:
     pane: str | None = None     # Claude's own tmux pane ("%7"); after a split it needn't be the active one
     session_id: str | None = None  # Claude's conversation: its record is projects/*/<session_id>.jsonl
     viewers: list = field(default_factory=list)  # [(viewer, "WxH")] per attached tmux client
+    agent: str | None = None        # the agent CLI in it: "claude", "codex", "opencode", another herdr id
+    agent_state: str | None = None  # what its screen says: "waiting", "running", "idle"; None = it doesn't
+    screen: list | None = None      # an agent pane's visible lines, when the listing captured one
 
 
 def parse(host, out):
@@ -79,6 +117,10 @@ def parse(host, out):
     if start is None:
         raise ValueError("no clock line in the listing")
     now, lines = lines[start], lines[start + 1:]
+    panes = []
+    if PANES in lines:
+        cut = lines.index(PANES)
+        lines, panes = lines[:cut], lines[cut + 1:]
     sessions = {}
     clients = [line.split(" ", 3)[1:] for line in lines if line.startswith("client ") and line.count(" ") >= 3]
     for line in lines:
@@ -113,6 +155,7 @@ def parse(host, out):
         except ValueError:
             skipping = True
             continue
+    _agents(sessions, panes)
     for c in files:
         s = sessions.get((c.get("tmux") or "").split(":")[0])
         if s is None:
@@ -126,7 +169,40 @@ def parse(host, out):
             s.session_id = c.get("sessionId") if isinstance(c.get("sessionId"), str) else None
             m = re.search(r"%\d+$", c.get("tmux") or "")
             s.pane = m.group(0) if m else None
+    for s in sessions.values():
+        if s.claude:  # Claude's status file is exact: the screen doesn't overrule it
+            s.agent, s.agent_state = "claude", None
     return list(sessions.values())
+
+
+def _agents(sessions, lines):
+    """Agent, state and screen of each session from the PANES part of a listing: waiting on you if
+    one of its agent panes is blocked, else running if one works, else idle."""
+    panes = []  # [session name, agent id, [title, *screen lines]]
+    for line in lines:
+        if line.startswith("tool ") and ":" in line:
+            name, _, command = line[5:].rpartition(":")
+            panes.append([name, detect.agent_of_command(command), []])
+        elif line.startswith(">") and panes:
+            panes[-1][2].append(line[1:])
+    order = lambda a: PRECEDENCE.index(a) if a in PRECEDENCE else len(PRECEDENCE)
+    rank = {"waiting": 2, "running": 1, "idle": 0}
+    for name, agent, captured in panes:
+        s = sessions.get(name)
+        if s is None or agent is None:
+            continue
+        if s.agent is None or order(agent) < order(s.agent):
+            s.agent = agent
+        if not captured:
+            continue
+        if s.screen is None:
+            s.screen = captured[1:]
+        found = detect.detect(agent, captured[1:], captured[0])
+        state = AGENT_STATES.get(found.state) if found else None
+        if state and (s.agent_state is None or rank[state] > rank[s.agent_state]):
+            s.agent_state = state
+            if state == "waiting":
+                s.screen, s.waiting = captured[1:], "waiting for you"
 
 
 def usage(line):
@@ -180,11 +256,13 @@ def run_argv(host, script):
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machine, script]
 
 
-def list_argv(host):
+def list_argv(host, screens=False):
     # -u: under a C locale tmux prints "café" as "caf_", which then matches nothing.
     # Claude's session files name panes on the default server only, so a background server skips them.
+    # screens: also each agent pane's screen (PANES), for its state; the web's rows want it.
     claude = "echo ---" if is_background(host) else CLAUDE
-    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLIENTS}; {claude}; }}"
+    panes = f"{panes_script()}; " if screens else ""
+    script = f"date +%s; tmux -u list-windows -a -F {shlex.quote(FORMAT)} && {{ {CLIENTS}; {panes}{claude}; }}"
     return run_argv(host, script)
 
 
@@ -216,6 +294,10 @@ def status(s, seen, started):
         if s.failed:
             return "failed"
         finished = s.claude_since
+    elif s.agent_state:  # another agent CLI, by its screen (detect.py)
+        if s.agent_state != "idle":
+            return s.agent_state
+        finished = s.activity
     else:
         if s.now - s.activity < QUIET:
             return "running"
@@ -270,11 +352,11 @@ def label(host):
     return local_name() if host == LOCAL else host
 
 
-async def list_host(host):
+async def list_host(host, screens=False):
     """Returns (online, sessions). A reachable host with no tmux server is online with no sessions."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            *list_argv(host), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            *list_argv(host, screens), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         out, err = await asyncio.wait_for(proc.communicate(), timeout=8)
     except (OSError, asyncio.TimeoutError):
         return False, []

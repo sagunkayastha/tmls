@@ -94,3 +94,13 @@ def test_rows_say_whether_a_claude_runs_and_how_full_it_is():
     assert out == {"a": (True, 25, "claude-opus-5-5"),
                    "b": (True, None, None),      # no reply yet: nothing to measure
                    "c": (False, None, None)}     # plain tmux
+
+
+def test_rows_name_the_agent_and_its_screen_state_marks_the_row():
+    found = [("box", True, [sess("c", claude="idle"),
+                            sess("x", agent="codex", agent_state="waiting", waiting="waiting for you"),
+                            sess("o", agent="opencode", agent_state="running"), sess("p")])]
+    out = {r["name"]: (r["agent"], r["mark"], r["waiting"], r["claude"]) for r in rows.build(rows.State(), found, {})}
+    assert out["x"] == ("codex", "waiting", "waiting for you", False)  # no shown: the app offers the terminal
+    assert out["o"] == ("opencode", "running", None, False)
+    assert out["p"][0] is None

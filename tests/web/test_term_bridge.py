@@ -29,7 +29,7 @@ async def client(aiohttp_client, monkeypatch, tmp_path):
     (tmp_path / "auth.json").write_text(json.dumps({"username": "me", "salt": salt,
                                                     "hash": hashed, "secret": "s" * 64}))
 
-    async def offline(_host):
+    async def offline(_host, screens=False):
         return False, []
 
     monkeypatch.setattr(hosts, "list_host", offline)

@@ -16,7 +16,7 @@ async def no_background(host):
 
 
 async def make(aiohttp_client, monkeypatch, listing):
-    async def list_host(host):
+    async def list_host(host, screens=False):
         result = listing["box"]
         if isinstance(result, Exception):
             raise result
@@ -103,7 +103,7 @@ async def test_seen_clears_done(aiohttp_client, monkeypatch):
 
 
 async def test_unchanged_tick_sends_nothing(monkeypatch):
-    async def list_host(host):
+    async def list_host(host, screens=False):
         return True, [sess("a"), sess("b")]
 
     async def run(argv, stdin=None):
@@ -154,7 +154,7 @@ async def test_seen_rejects_a_body_that_is_not_an_object(aiohttp_client, monkeyp
 async def test_ssh_commands_per_host_are_capped(monkeypatch, tmp_path):
     """sshd's MaxSessions (10) caps the channels on one ControlMaster connection, so a host's
     captures must not all run at once."""
-    async def list_host(host):
+    async def list_host(host, screens=False):
         return True, [hosts.Session(host, f"s{i}", 1, False, i, 1000) for i in range(20)]
     running = {"now": 0, "most": 0}
 
@@ -174,7 +174,7 @@ async def test_ssh_commands_per_host_are_capped(monkeypatch, tmp_path):
 
 async def test_background_servers_are_listed_flagged_only_with_sessions(monkeypatch):
     # other tmux servers on a host ("box#web") join the poll; one with no sessions (a stale socket) is left out
-    async def list_host(host):
+    async def list_host(host, screens=False):
         return {"box": (True, [sess("a")]), "box#web": (True, [hosts.Session("box#web", "pm", 1, False, 0, 100)]),
                 "box#old": (True, [])}[host]
 
@@ -212,3 +212,20 @@ async def test_each_page_gets_the_version_to_reload_on_a_redeploy(aiohttp_client
     ws = await client.ws_connect("/api/events")
     assert (await next_kind(ws, "version"))["v"] == "v1"
     await ws.close()
+
+
+async def test_an_agent_panes_screen_from_the_listing_is_its_line_without_another_capture(aiohttp_client, monkeypatch):
+    calls = []
+    client = await make(aiohttp_client, monkeypatch, {"box": (True, [sess("x", agent="codex", agent_state="idle",
+                                                                          screen=["", "› Ask codex", ""])])})
+    real_run = prompts._run
+
+    async def counting(argv, stdin=None):
+        calls.append(argv)
+        return await real_run(argv, stdin)
+    monkeypatch.setattr(prompts, "_run", counting)
+    ws = await client.ws_connect("/api/events")
+    first = await next_kind(ws, "rows")
+    assert first["set"][0]["line"] == "› Ask codex" and first["set"][0]["agent"] == "codex"
+    await asyncio.sleep(0.2)
+    assert calls == []

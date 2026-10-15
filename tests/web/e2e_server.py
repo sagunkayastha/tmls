@@ -25,7 +25,7 @@ salt = "00" * 16
 created = []
 
 
-async def list_host(host):
+async def list_host(host, screens=False):
     if host == "spare":  # online, no tmux sessions yet
         return True, []
     return True, [hosts.Session("box", "alpha", 1, False, 0, 1000),

@@ -26,7 +26,7 @@ async def _screen(host, name):
 
 async def _list(host):
     try:
-        return await hosts.list_host(host)
+        return await hosts.list_host(host, screens=True)  # agent panes' screens: their state
     except Exception:  # one bad host must not stop the loop
         return False, []
 
@@ -57,7 +57,9 @@ async def poll_once(app):
         for s in sessions:
             app["now"][host] = s.now
             k = rows.key(host, s.name)
-            if not s.claude and lines.get(k, (None,))[0] != s.activity:  # plain tmux: only on new output
+            if s.screen is not None:  # an agent pane the listing captured already
+                lines[k] = (s.activity, "\n".join(s.screen))
+            elif not s.claude and lines.get(k, (None,))[0] != s.activity:  # plain tmux: only on new output
                 screens[k] = (s.activity, _capped(app, host, _screen(host, s.name)))
             if s.claude == "waiting":
                 prompts_up[k] = _capped(app, host, approve.current(host, s.name, pane=s.pane))

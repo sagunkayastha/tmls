@@ -295,3 +295,83 @@ def test_attach_tags_the_viewer():
         "env", "TMLS_VIEWER=laptop", "tmux", "-u", "attach", "-t", "=work"]
     assert hosts.attach_argv("nas", "work", "web") == [
         "ssh", "-t", "nas", "env TMLS_VIEWER=web tmux -u attach -t =work"]
+
+
+# ---- agent panes (PANES): which agent CLI runs in a session and what its screen says ----
+
+AGENT_SCREENS = __import__("pathlib").Path(__file__).parent / "data" / "agent-screens"
+
+
+def panes_part(*panes):
+    """A PANES part of a listing: (session, command, capture name or None) per pane."""
+    out = [hosts.PANES]
+    for session, command, name in panes:
+        out.append(f"tool {session}:{command}")
+        if name:
+            title = (AGENT_SCREENS / f"{name}.title").read_text().rstrip("\n")
+            screen = (AGENT_SCREENS / f"{name}.screen").read_text()
+            out += [">" + title, *(">" + line for line in screen.split("\n")[:-1])]
+    return "\n".join(out) + "\n"
+
+
+def test_parse_agent_panes_name_the_agent_and_read_its_state():
+    out = ("1000\nx:1:0:990\nop:1:0:990\nsh:1:0:10\ncc:1:0:990\nboth:2:0:990\n"
+           + panes_part(("x", "codex", "codex-approval-blocked"), ("op", "opencode", "opencode-working"),
+                        ("cc", "claude", None),
+                        ("both", "opencode", "opencode-idle"), ("both", "codex", "codex-working"))
+           + '---\n{"status":"busy","statusUpdatedAt":900000,"tmux":"cc:@1.%1"}\n')
+    got = {s.name: (s.agent, s.agent_state, s.waiting) for s in hosts.parse("nas", out)}
+    assert got == {"x": ("codex", "waiting", "waiting for you"),
+                   "op": ("opencode", "running", None),
+                   "sh": (None, None, None),
+                   "cc": ("claude", None, None),           # Claude's status file says it, not the screen
+                   "both": ("codex", "running", None)}     # codex names it; working beats idle
+    x = next(s for s in hosts.parse("nas", out) if s.name == "x")
+    assert x.screen and "Action Required" not in x.screen[0]  # the screen, not the title line
+
+
+def test_screen_lines_are_never_taken_for_windows_or_the_clock():
+    out = "1000\nx:1:0:990\n" + hosts.PANES + "\ntool x:codex\n>title\n>evil:1:0:5\n>12345\n---\n"
+    assert [s.name for s in hosts.parse("nas", out)] == ["x"]
+    assert hosts.parse("nas", out)[0].now == 1000
+
+
+def test_a_listing_without_panes_is_read_as_before():
+    s, = hosts.parse("nas", "1000\nx:1:0:990\n---\n")
+    assert (s.agent, s.agent_state, s.screen) == (None, None, None)
+
+
+def test_status_of_another_agent_comes_from_its_screen():
+    def A(state, activity=95):
+        return hosts.Session("nas", "x", 1, False, activity, 100, agent="codex", agent_state=state)
+    assert hosts.status(A("waiting"), seen=99, started=0) == "waiting"
+    assert hosts.status(A("running", activity=10), seen=0, started=0) == "running"  # quiet but working
+    assert hosts.status(A("idle"), seen=0, started=0) == "done"     # a spinner redraw is not work
+    assert hosts.status(A("idle"), seen=99, started=0) == "idle"
+
+
+def test_only_the_webs_listing_captures_agent_panes():
+    assert hosts.PANES not in hosts.list_argv("nas")[-1]
+    script = hosts.list_argv("nas", screens=True)[-1]
+    assert hosts.PANES in script and "capture-pane -p" in script and "|opencode|" in script
+    subprocess.run(["sh", "-n", "-c", script], check=True)
+
+
+def test_panes_script_on_a_stub_tmux(tmp_path):
+    # tmux lists a codex pane, a node pane running codex (found by ps), a Claude pane with a status
+    # file (no capture) and a shell; captures print a title and a screen line
+    (tmp_path / "tmux").write_text(
+        "#!/bin/sh\ncase \"$*\" in\n"
+        "*list-panes*) printf 'a:codex:/dev/pts/1:%%1\\nb:node:/dev/pts/2:%%2\\nc:claude:/dev/pts/3:%%3\\n"
+        "d:bash:/dev/pts/4:%%4\\n';;\n"
+        "*display-message*) echo \"title of $5\"; echo 'screen line';;\nesac\n")
+    (tmp_path / "ps").write_text("#!/bin/sh\necho '/usr/bin/node /home/me/.npm/bin/codex --yolo'\n")
+    home = tmp_path / "home"
+    (home / ".claude" / "sessions").mkdir(parents=True)
+    (home / ".claude" / "sessions" / "1.json").write_text('{"tmux":"c:@1.%3"}')
+    for f in ("tmux", "ps"):
+        (tmp_path / f).chmod(0o755)
+    out = subprocess.run(["sh", "-c", hosts.panes_script()], capture_output=True, text=True,
+                         env={"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(home)}).stdout
+    assert out.splitlines() == [hosts.PANES, "tool a:codex", ">title of %1", ">screen line",
+                                "tool b:codex", ">title of %2", ">screen line", "tool c:claude"]

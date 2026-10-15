@@ -40,7 +40,7 @@ def record_file(home, session_id=SID):
 async def make(aiohttp_client, monkeypatch, tmp_path, listing, login=True):
     """The real app with a faked host "box": its listing is `listing["box"]`, and its record is
     followed on this machine under a HOME of its own (the real script, no ssh)."""
-    async def list_host(host):
+    async def list_host(host, screens=False):
         return listing["box"]
 
     async def no_background(host):
