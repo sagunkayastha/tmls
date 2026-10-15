@@ -24,6 +24,8 @@ class Voice(private val context: Context, private val sink: Sink) {
     private var recognizer: SpeechRecognizer? = null
     private var onDevice = false
     private var heard = false
+    /** Stop was asked: no falling back to another recognizer now. */
+    private var stopping = false
 
     val listening: Boolean get() = recognizer != null
 
@@ -37,6 +39,7 @@ class Voice(private val context: Context, private val sink: Sink) {
     fun start(): Boolean {
         cancel()
         heard = false
+        stopping = false
         return when {
             onDeviceAvailable() -> begin(true)
             SpeechRecognizer.isRecognitionAvailable(context) -> begin(false)
@@ -73,6 +76,7 @@ class Voice(private val context: Context, private val sink: Sink) {
 
     /** Stop listening and keep what was heard (the last words still arrive, final). */
     fun stop() {
+        stopping = true
         try {
             recognizer?.stopListening()
         } catch (e: RuntimeException) {
@@ -123,7 +127,7 @@ class Voice(private val context: Context, private val sink: Sink) {
             release()
             // The on-device model is missing for this language, or its service failed before a word:
             // the default recognizer instead, without bothering the user.
-            if (onDevice && !heard && error in FALLBACK_ERRORS && begin(false)) return
+            if (onDevice && !heard && !stopping && error in FALLBACK_ERRORS && begin(false)) return
             sink.onVoiceEnd(Voice.message(error))
         }
 
