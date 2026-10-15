@@ -2,8 +2,12 @@
 //!
 //! One section per host, in the configuration's order (this machine first): a `Host` header,
 //! then the host's sessions — the pinned ones first, the rest as the listing has them — and a
-//! `Gap` between sections. A host has its header from the start; one that is offline keeps it
-//! and loses its sessions.
+//! `Gap` between sections. A host has its header from the start.
+//!
+//! **A host that stops answering** keeps its rows as its last good listing had them: they are
+//! *stale* (`stale`), drawn dimmed, and the app attaches to none of them and acts on none
+//! (`offline_note` says why, with the age of the rows and the last error). Its header says
+//! `offline`. The next listing that is an answer replaces them as any listing does.
 //!
 //! **Claude outside tmux.** This machine's Claude sessions that run in no tmux pane (the
 //! listing has them under the host `KITTY`) get a section of their own right under this
@@ -22,9 +26,7 @@
 //! offline) the cursor stays on its session. When that session itself is gone, the cursor goes
 //! to the row that took its place on the same host, else to the nearest session; never to a
 //! header or a gap. With no session at all nothing is selected. A host that does not answer
-//! loses its rows, but its sessions are likely still there: when the cursor was on one of
-//! them it is remembered and goes back to it when that session is listed again — unless the
-//! user moved the cursor in the meantime, or the host came back without the session.
+//! keeps its rows, so the cursor stays where it is.
 //!
 //! **Lines.** A row is one line of the list, a session with a summary (`summary`) two; the
 //! view and the hit test count in lines (`view`, `row_at`). The view follows the cursor
@@ -38,6 +40,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use client_core::config::tmls_slug;
 use client_core::listing::split_host;
@@ -126,6 +129,16 @@ pub fn hover_text(info: &SessionInfo) -> Option<String> {
     })
 }
 
+/// An age in a few columns: `40s`, `5m`, `3h`, `2d`.
+pub fn age_text(age: Duration) -> String {
+    match age.as_secs() {
+        secs @ 0..60 => format!("{secs}s"),
+        secs @ 60..3600 => format!("{}m", secs / 60),
+        secs @ 3600..86_400 => format!("{}h", secs / 3600),
+        secs => format!("{}d", secs / 86_400),
+    }
+}
+
 /// Why nothing but attaching is done to a session of another tmux server (R4), for the status
 /// line; `None` for every other session.
 pub fn attach_only(key: &SessionKey) -> Option<String> {
@@ -211,9 +224,10 @@ pub struct Sidebar {
     cursor: Option<usize>,
     /// Why the last `toggle_pin` changed nothing, until `take_pin_error` is asked.
     pin_error: Option<anyhow::Error>,
-    /// The session the cursor was on when its host stopped answering, until the host is back
-    /// or the user moves the cursor.
-    wanted: Option<SessionKey>,
+    /// When each host last answered with a listing.
+    answered: HashMap<String, Instant>,
+    /// Why each host that does not answer did not, when that is known.
+    offline_error: HashMap<String, Option<String>>,
     /// The first row in view. `view` settles it for the height it is given.
     top: Cell<usize>,
     /// The view has to show the cursor: it moved after the wheel last did.
@@ -246,7 +260,8 @@ impl Sidebar {
             background_open: false,
             cursor: None,
             pin_error: None,
-            wanted: None,
+            answered: HashMap::new(),
+            offline_error: HashMap::new(),
             top: Cell::new(0),
             follow: Cell::new(true),
         }
@@ -266,8 +281,9 @@ impl Sidebar {
         let local = snap.host == self.local_name && self.section(&snap.host).is_some();
         let online = snap.online;
         self.apply_section(snap);
-        if local {
-            self.apply_outside(if online { outside } else { Vec::new() });
+        // This machine not answering keeps its sessions outside tmux as they were, stale too.
+        if local && online {
+            self.apply_outside(outside);
         }
     }
 
@@ -320,15 +336,18 @@ impl Sidebar {
         let Some(section) = self.section(&snap.host) else {
             return;
         };
-        let before = self.cursor.map(|at| (at, self.rows[at].key().cloned()));
         if let Row::Host { online, .. } = &mut self.rows[section.start] {
             *online = snap.online;
         }
-        let sessions = if snap.online {
-            snap.sessions
-        } else {
-            Vec::new()
-        };
+        if !snap.online {
+            // The rows stay as the last answer had them; so does the cursor.
+            self.offline_error.insert(snap.host, snap.error);
+            return;
+        }
+        self.offline_error.remove(&snap.host);
+        self.answered.insert(snap.host.clone(), Instant::now());
+        let before = self.cursor.map(|at| (at, self.rows[at].key().cloned()));
+        let sessions = snap.sessions;
         self.listed.retain(|key, _| key.host != snap.host);
         for (place, info) in sessions.iter().enumerate() {
             let pinned = self.pins.contains(&tmls_slug(&info.key, &self.local_name));
@@ -340,28 +359,9 @@ impl Sidebar {
             .splice(first..section.end, sessions.into_iter().map(Row::Session));
         self.sort(first..first + count);
 
-        // The host is back: the cursor returns to the session it was on, or that one is gone.
-        let back = match &self.wanted {
-            Some(wanted) if wanted.host == snap.host && snap.online => {
-                let at = self.position(wanted);
-                self.wanted = None;
-                at
-            }
-            _ => None,
-        };
-        let kept = back.or_else(|| {
-            before
-                .as_ref()
-                .and_then(|(_, key)| self.position(key.as_ref()?))
-        });
-        if !snap.online
-            && self.wanted.is_none()
-            && kept.is_none()
-            && let Some((at, Some(key))) = &before
-            && section.contains(at)
-        {
-            self.wanted = Some(key.clone());
-        }
+        let kept = before
+            .as_ref()
+            .and_then(|(_, key)| self.position(key.as_ref()?));
         self.cursor = kept.or_else(|| match before {
             // Its session went with this listing: the row that took its place, else the last
             // of the host.
@@ -371,7 +371,7 @@ impl Sidebar {
             Some((at, _)) => self.nearest_session(at),
             None => self.nearest_session(0),
         });
-        if kept.is_none() || back.is_some() {
+        if kept.is_none() {
             self.follow.set(true);
         }
     }
@@ -447,6 +447,48 @@ impl Sidebar {
             Row::Session(info) if info.key == *key => info.pid,
             _ => None,
         })
+    }
+
+    /// The machine whose listing has the session: this machine for one outside tmux, the
+    /// machine of another tmux server.
+    fn machine<'a>(&'a self, key: &'a SessionKey) -> &'a str {
+        match key.host == KITTY {
+            true => &self.local_name,
+            false => split_host(&key.host).0,
+        }
+    }
+
+    /// Whether `host`'s last listing was an answer (until the first one: yes).
+    pub fn host_online(&self, host: &str) -> bool {
+        !self.offline_error.contains_key(host)
+    }
+
+    /// The session's row is what its host listed before it stopped answering.
+    pub fn stale(&self, key: &SessionKey) -> bool {
+        !self.host_online(self.machine(key))
+    }
+
+    /// How long ago `host` last answered, while it does not; `None` while it answers or when
+    /// it never did.
+    pub fn offline_for(&self, host: &str, now: Instant) -> Option<Duration> {
+        if self.host_online(host) {
+            return None;
+        }
+        Some(now.saturating_duration_since(*self.answered.get(host)?))
+    }
+
+    /// What the status line says of a host that does not answer: since when its rows are, and
+    /// the last error. `None` while it answers.
+    pub fn offline_note(&self, host: &str, now: Instant) -> Option<String> {
+        let error = self.offline_error.get(host)?;
+        let mut note = format!("{host} does not answer");
+        if let Some(age) = self.offline_for(host, now) {
+            note.push_str(&format!(" (its sessions as listed {} ago)", age_text(age)));
+        }
+        if let Some(error) = error.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            note.push_str(&format!(": {error}"));
+        }
+        Some(note)
     }
 
     pub fn is_pinned(&self, key: &SessionKey) -> bool {
@@ -678,7 +720,7 @@ impl Sidebar {
 
     /// The next session that needs the user after `after` in the list, wrapping round: one
     /// that waits (?), and only when no other does, one that finished unwatched (◆). `after`
-    /// itself is never the answer.
+    /// itself is never the answer, nor is a stale row.
     pub fn next_waiting(&self, after: Option<&SessionKey>) -> Option<SessionKey> {
         let count = self.rows.len();
         let from = after
@@ -690,7 +732,9 @@ impl Sidebar {
                     Row::Session(info) => Some(info),
                     _ => None,
                 })
-                .find(|info| info.status == status && Some(&info.key) != after)
+                .find(|info| {
+                    info.status == status && Some(&info.key) != after && !self.stale(&info.key)
+                })
                 .map(|info| info.key.clone())
         };
         next(Status::Waiting).or_else(|| next(Status::Unseen))
@@ -713,7 +757,7 @@ impl Sidebar {
                 Row::Session(info) => Some(&info.key),
                 _ => None,
             })
-            .find(|key| Some(*key) != after && key.host != KITTY && unread(key))
+            .find(|key| Some(*key) != after && key.host != KITTY && !self.stale(key) && unread(key))
             .cloned()
     }
 
@@ -740,7 +784,7 @@ impl Sidebar {
             .rows
             .iter()
             .filter_map(Row::key)
-            .filter(|key| key.host != KITTY && in_ring(key))
+            .filter(|key| key.host != KITTY && !self.stale(key) && in_ring(key))
             .collect();
         let at = match from.and_then(|key| ring.iter().position(|member| *member == key)) {
             Some(at) => (at as i64 + step as i64).rem_euclid(ring.len() as i64) as usize,
@@ -810,7 +854,6 @@ impl Sidebar {
 
     /// The user (or the tab in front) puts the cursor somewhere: that is where it stays.
     fn set_cursor(&mut self, row: usize) {
-        self.wanted = None;
         self.cursor = Some(row);
         self.follow.set(true);
     }

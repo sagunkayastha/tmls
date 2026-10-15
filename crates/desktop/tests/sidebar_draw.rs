@@ -1018,3 +1018,42 @@ fn the_background_row_says_how_many_and_whether_it_is_open() {
     );
     assert_within(&closed);
 }
+
+#[test]
+fn an_offline_header_says_how_old_its_rows_are_and_stale_rows_are_dim() {
+    let theme = Theme::default();
+    let look = HeaderLook {
+        offline_for: Some(180),
+        ..HeaderLook::default()
+    };
+    let said = header_spans_look("nas", false, look, SIDEBAR_COLS, &theme);
+    let badge = find(&said, "· offline 3m");
+    assert_eq!((badge.col, badge.colour), (5, theme.dim_fg));
+    assert_within(&said);
+    // Too long a name: the age is left out rather than cut.
+    let long = header_spans_look(&"h".repeat(40), false, look, SIDEBAR_COLS, &theme);
+    assert_within(&long);
+    // The sign-in still wins.
+    let sign = HeaderLook {
+        sign_in: true,
+        ..look
+    };
+    let said = header_spans_look("nas", false, sign, SIDEBAR_COLS, &theme);
+    assert!(said.iter().any(|span| span.text == SIGN_IN));
+
+    let info = SessionInfo {
+        reason: Some("permission prompt".to_string()),
+        ..session("nas", "work", Status::Waiting)
+    };
+    let look = RowLook {
+        pinned: true,
+        stale: true,
+        ..RowLook::default()
+    };
+    let spans = session_spans(&info, look, SIDEBAR_COLS, &theme);
+    assert!(spans.len() > 2);
+    assert!(
+        spans.iter().all(|span| span.colour == theme.dim_fg),
+        "{spans:?}"
+    );
+}

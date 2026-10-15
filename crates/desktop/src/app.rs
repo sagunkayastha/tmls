@@ -1203,6 +1203,9 @@ impl Running {
         if let Some(only) = sidebar::attach_only(&key) {
             return self.say(Err(only));
         }
+        if self.refuse_stale(&key) {
+            return;
+        }
         let Some(info) = self.sidebar.info(&key) else {
             return self.say(Err(format!("{} is not listed any more", key.name)));
         };
@@ -1439,6 +1442,17 @@ impl Running {
                 false => Vec::new(),
             },
             sign_in: self.sign_in.iter().cloned().collect(),
+            offline_for: {
+                let now = Instant::now();
+                self.cfg
+                    .hosts
+                    .iter()
+                    .filter_map(|host| {
+                        let age = self.sidebar.offline_for(host, now)?;
+                        Some((host.clone(), age.as_secs()))
+                    })
+                    .collect()
+            },
             queued: self
                 .queue
                 .keys()
@@ -1604,7 +1618,9 @@ impl Running {
             .rows()
             .iter()
             .filter_map(|row| match row {
-                sidebar::Row::Session(info) => Some(goto::Entry::of(info, false)),
+                sidebar::Row::Session(info) => {
+                    Some(goto::Entry::of(info, self.sidebar.stale(&info.key)))
+                }
                 _ => None,
             })
             .collect();
@@ -1738,6 +1754,9 @@ impl Running {
     fn approve(&mut self, key: &SessionKey) {
         if let Some(only) = sidebar::attach_only(key) {
             return self.say(Err(only));
+        }
+        if self.refuse_stale(key) {
+            return;
         }
         let listed = self
             .sidebar
@@ -2574,7 +2593,9 @@ impl Running {
                 // A session outside tmux has no menu: nothing in it applies. Nor has one of
                 // another tmux server (R4), and the status line says so.
                 let selected = self.sidebar.selected().filter(|key| key.host != KITTY);
-                if let Some(key) = selected.cloned() {
+                if let Some(key) = selected.cloned()
+                    && !self.refuse_stale(&key)
+                {
                     match sidebar::attach_only(&key) {
                         Some(only) => self.say(Err(only)),
                         None => {
@@ -2604,6 +2625,9 @@ impl Running {
             sidebar::Action::Attach(key) => self.open(&key),
             sidebar::Action::NewSessionOn(host) => self.new_session_form(&host),
             sidebar::Action::Menu(key) => {
+                if self.refuse_stale(&key) {
+                    return;
+                }
                 let (x, y) = self.pointer;
                 let at = (x.max(0.0) as u32, y.max(0.0) as u32);
                 let menu = self.row_menu(key);
@@ -2632,6 +2656,20 @@ impl Running {
             let host = host.clone();
             self.sign_in_to(&host);
             self.invalidate();
+            return;
+        }
+        // A click on the header of a host that does not answer says why.
+        if button == MouseButton::Left
+            && let sidebar::Row::Host {
+                host,
+                online: false,
+                ..
+            } = &self.sidebar.rows()[row]
+        {
+            let note = self.sidebar.offline_note(host, Instant::now());
+            if let Some(note) = note {
+                self.say(Err(note));
+            }
             return;
         }
         let header = matches!(self.sidebar.rows()[row], sidebar::Row::Host { .. });
@@ -2681,7 +2719,11 @@ impl Running {
             // As in tmls: a terminal window of its own on the session, beside the app. A
             // session outside tmux has nothing to attach: its kitty window comes to the front.
             (Button::Open, Some(key)) if key.host == KITTY => self.open(&key),
-            (Button::Open, Some(key)) => self.open_in_terminal(&key),
+            (Button::Open, Some(key)) => {
+                if !self.refuse_stale(&key) {
+                    self.open_in_terminal(&key);
+                }
+            }
             (Button::Copy, Some(key)) => self.copy_attach(&key),
             (Button::New, selected) => {
                 // From a session outside tmux: on this machine. From one of another tmux
@@ -2774,8 +2816,12 @@ impl Running {
         });
     }
 
-    /// Opens the session's tab (or brings it to the front) and gives it the keys.
+    /// Opens the session's tab (or brings it to the front) and gives it the keys. A stale row
+    /// (its host does not answer) is not attached; a tab it already has comes to the front.
     fn open(&mut self, key: &SessionKey) {
+        if self.tabs.index_of(key).is_none() && self.refuse_stale(key) {
+            return;
+        }
         if key.host == KITTY {
             return self.focus_outside(key);
         }
@@ -2785,6 +2831,23 @@ impl Running {
         if opened {
             self.tab_changed();
         }
+    }
+
+    /// Whether the session's row is stale (its host does not answer): then nothing is done to
+    /// it, and the status line says why, with the host's last error.
+    fn refuse_stale(&mut self, key: &SessionKey) -> bool {
+        if !self.sidebar.stale(key) {
+            return false;
+        }
+        let host = match key.host == KITTY {
+            true => self.cfg.local_name.as_str(),
+            false => split_host(&key.host).0,
+        };
+        let note = self.sidebar.offline_note(host, Instant::now());
+        self.say(Err(
+            note.unwrap_or_else(|| format!("{host} does not answer"))
+        ));
+        true
     }
 
     /// Pins or unpins the selected session; a `pins` file that cannot be written shows in the

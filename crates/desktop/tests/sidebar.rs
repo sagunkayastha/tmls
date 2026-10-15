@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use client_core::config::tmls_slug;
 use client_core::{
@@ -10,7 +11,9 @@ use client_core::{
     default_color,
 };
 use desktop::queue::Queue;
-use desktop::sidebar::{Action, Row, Sidebar, attach_only, hover_text, renamed_outside, summary};
+use desktop::sidebar::{
+    Action, Row, Sidebar, age_text, attach_only, hover_text, renamed_outside, summary,
+};
 
 const LOCAL: &str = "laptop";
 
@@ -167,92 +170,67 @@ fn hosts_in_config_order_local_first() {
 }
 
 #[test]
-fn offline_host_keeps_its_header_and_drops_sessions() {
+fn offline_host_keeps_its_rows_stale_until_it_answers_again() {
     let mut s = sidebar(&[LOCAL, "nas"]);
     s.apply(idle(LOCAL, &["work"]));
     s.apply(idle("nas", &["media", "backup"]));
     s.select_key(&key("nas", "backup"));
+    assert!(!s.stale(&key("nas", "backup")));
+    assert_eq!(s.offline_note("nas", Instant::now()), None);
     s.apply(offline("nas"));
-    assert_eq!(shape(&s), ["[laptop]", "work", "-", "[nas offline]"]);
-    assert_eq!(selected(&s), at(LOCAL, "work"), "the nearest session left");
+    assert_eq!(
+        shape(&s),
+        ["[laptop]", "work", "-", "[nas offline]", "media", "backup"],
+        "the last good listing's rows stay"
+    );
+    assert!(s.stale(&key("nas", "backup")));
+    assert!(!s.stale(&key(LOCAL, "work")));
+    assert!(!s.host_online("nas"));
+    assert_eq!(selected(&s), at("nas", "backup"), "the cursor stays");
     assert_eq!(s.click(3), None, "no new session on a host that is offline");
+    let later = Instant::now() + Duration::from_secs(150);
+    assert_eq!(
+        s.offline_note("nas", later).as_deref(),
+        Some("nas does not answer (its sessions as listed 2m ago): timed out")
+    );
+    assert!(s.offline_for("nas", later).unwrap() >= Duration::from_secs(150));
+    assert_eq!(s.offline_for(LOCAL, later), None);
+
+    // Stale rows are no place to go to.
+    assert_eq!(s.next_waiting(None), None);
+    assert_eq!(
+        s.list_step(Some(&key(LOCAL, "work")), 1),
+        Some(key(LOCAL, "work"))
+    );
+
+    // The next answer replaces them as any listing does.
     s.apply(idle("nas", &["media"]));
     assert_eq!(shape(&s), ["[laptop]", "work", "-", "[nas]", "media"]);
+    assert!(!s.stale(&key("nas", "media")));
     assert_eq!(s.click(3), Some(Action::NewSessionOn("nas".to_string())));
     assert_eq!(
         selected(&s),
-        at(LOCAL, "work"),
-        "the host is back without the session: the cursor stays where it went"
+        at("nas", "media"),
+        "back without the session: the row that took its place"
     );
 
-    // Offline for one poll, then back with the same sessions: the cursor returns to the
-    // session the user had selected, whatever arrived in between.
+    // A host that never answered has no rows and no age.
     let mut s = sidebar(&[LOCAL, "nas"]);
-    s.apply(idle(LOCAL, &["work"]));
-    s.apply(idle("nas", &["media", "backup"]));
-    s.select_key(&key("nas", "backup"));
     s.apply(offline("nas"));
-    assert_eq!(selected(&s), at(LOCAL, "work"));
-    s.apply(idle(LOCAL, &["other", "work"]));
-    s.apply(offline("nas"));
-    assert_eq!(selected(&s), at(LOCAL, "work"));
-    s.apply(idle("nas", &["backup", "media"]));
+    assert_eq!(shape(&s), ["[laptop]", "-", "[nas offline]"]);
+    assert_eq!(s.offline_for("nas", Instant::now()), None);
     assert_eq!(
-        selected(&s),
-        at("nas", "backup"),
-        "back on the session the user chose"
+        s.offline_note("nas", Instant::now()).as_deref(),
+        Some("nas does not answer: timed out")
     );
-    assert_eq!(s.activate(), Some(Action::Attach(key("nas", "backup"))));
-    // Once only: it is an ordinary selection again.
-    s.move_by(-1);
-    assert_eq!(selected(&s), at(LOCAL, "work"));
-    s.apply(idle("nas", &["backup", "media", "new"]));
-    assert_eq!(selected(&s), at(LOCAL, "work"));
+}
 
-    // The user moved the cursor while the host was away: it stays where the user put it.
-    for explicit in ["move", "select", "click", "menu"] {
-        let mut s = sidebar(&[LOCAL, "nas"]);
-        s.apply(idle(LOCAL, &["a", "b", "c"]));
-        s.apply(idle("nas", &["media", "backup"]));
-        s.select_key(&key("nas", "backup"));
-        s.apply(offline("nas"));
-        assert_eq!(selected(&s), at(LOCAL, "c"));
-        match explicit {
-            "move" => s.move_by(-1),
-            "select" => s.select_key(&key(LOCAL, "b")),
-            "click" => assert_eq!(s.click(2), Some(Action::Attach(key(LOCAL, "b")))),
-            _ => assert_eq!(s.menu(2), Some(Action::Menu(key(LOCAL, "b")))),
-        }
-        s.apply(idle("nas", &["media", "backup"]));
-        assert_eq!(selected(&s), at(LOCAL, "b"), "after an explicit {explicit}");
-    }
-
-    // A session killed on a host that answers is not waited for: one of that name started
-    // later does not take the cursor.
-    let mut s = sidebar(&[LOCAL, "nas"]);
-    s.apply(idle(LOCAL, &["work"]));
-    s.apply(idle("nas", &["media", "backup"]));
-    s.select_key(&key("nas", "backup"));
-    s.apply(idle("nas", &["media"]));
-    assert_eq!(selected(&s), at("nas", "media"));
-    s.apply(idle("nas", &["media", "backup"]));
-    assert_eq!(selected(&s), at("nas", "media"));
-
-    // The only host with sessions goes away: nothing is selected, and nothing can be opened.
-    let mut s = sidebar(&["nas"]);
-    s.apply(idle("nas", &["media"]));
-    assert_eq!(selected(&s), at("nas", "media"));
-    s.apply(offline("nas"));
-    assert_eq!(s.selected(), None);
-    assert_eq!(s.activate(), None);
-    s.move_by(1);
-    assert_eq!(s.selected(), None);
-    assert!(
-        !s.toggle_pin(),
-        "nothing selected: nothing is pinned, nothing is written"
-    );
-    s.apply(idle("nas", &["first", "media"]));
-    assert_eq!(selected(&s), at("nas", "media"), "and back");
+#[test]
+fn ages_are_short() {
+    assert_eq!(age_text(Duration::from_secs(40)), "40s");
+    assert_eq!(age_text(Duration::from_secs(300)), "5m");
+    assert_eq!(age_text(Duration::from_secs(3 * 3600 + 5)), "3h");
+    assert_eq!(age_text(Duration::from_secs(2 * 86_400)), "2d");
 }
 
 #[test]
@@ -847,7 +825,7 @@ fn claude_outside_tmux_has_a_section_under_this_machine() {
     assert_eq!(kinds(&s), ["[laptop]", "a", "b", "-", "[nas]", "x"]);
     assert_eq!(s.selected(), Some(&key(LOCAL, "b")));
 
-    // This machine offline: its section goes too.
+    // This machine offline: its section stays, stale like the rest of its rows.
     let mut local = idle(LOCAL, &["a"]);
     local.sessions.push(outside("notes", 21, Status::Idle));
     s.apply(local);
@@ -858,7 +836,8 @@ fn claude_outside_tmux_has_a_section_under_this_machine() {
         error: None,
         sessions: Vec::new(),
     });
-    assert_eq!(kinds(&s), ["[laptop]", "-", "[nas]", "x"]);
+    assert!(kinds(&s).contains(&"[kitty]".to_string()));
+    assert!(s.stale(&key(KITTY, "notes")));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

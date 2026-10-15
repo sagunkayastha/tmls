@@ -69,6 +69,7 @@
 //! scissor).
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use client_core::{KITTY, SessionInfo, SessionKey, Tool};
 use s2_wgpu::gfx::atlas::{Atlas, CellMetrics, FontStyle};
@@ -77,7 +78,7 @@ use s2_wgpu::ui::draw::fit;
 pub use s2_wgpu::ui::layout::Rect;
 
 use crate::forms::{Cell, Look, Panel, Stop, Target};
-use crate::sidebar::{Row, Sidebar, summary};
+use crate::sidebar::{Row, Sidebar, age_text, summary};
 use crate::tabs::Front;
 use crate::theme::{
     ADD_RGB, ATTACHED_MARK, CLOSE_MARK, COPY_RGB, CURRENT_RGB, CURSOR_RGB, DANGER_RGB, LEGEND,
@@ -860,6 +861,8 @@ pub struct View {
     pub sign_in: Vec<String>,
     /// Messages waiting, per session.
     pub queued: Vec<(SessionKey, usize)>,
+    /// Hosts that do not answer, and how long ago they last did (s).
+    pub offline_for: Vec<(String, u64)>,
 }
 
 impl View {
@@ -934,13 +937,15 @@ pub struct RowLook {
     pub unread: bool,
     /// Messages waiting for the session: `N✉` after the name.
     pub queued: usize,
+    /// Its host does not answer: the row is the last listing's, all of it dimmed.
+    pub stale: bool,
 }
 
 /// A session's row on `cols` columns (tmls `pane_row_text`): `mark  tool-letter  name N✉ • ★`,
 /// then at the right end `◉N` when other clients are attached; under it, when there is a
 /// summary, that in dim. How full Claude's context is ends the summary's line, or the name's
 /// when there is no summary. The ★, the count and the percentage always fit; the name and the
-/// summary are cut.
+/// summary are cut. A stale row (`RowLook::stale`) has all of it in the dim colour.
 pub fn session_spans<'a>(
     info: &'a SessionInfo,
     look: RowLook,
@@ -1017,6 +1022,11 @@ pub fn session_spans<'a>(
         out.push(Span::new(1, name_col, cols, text).colour(colour));
     }
     out.extend(percent);
+    if look.stale {
+        for span in &mut out {
+            span.colour = theme.dim_fg;
+        }
+    }
     out
 }
 
@@ -1077,6 +1087,8 @@ pub struct HeaderLook {
     pub game: bool,
     /// ssh wants a sign-in: `⚠ sign in` instead of `· offline`.
     pub sign_in: bool,
+    /// Seconds since a host that does not answer last did: `· offline 3m`.
+    pub offline_for: Option<u64>,
 }
 
 /// `header_spans`, with the tags of `look` dimly after the name while the host answers, each
@@ -1090,12 +1102,18 @@ pub fn header_spans_look(
 ) -> Vec<Span<'static>> {
     let mut spans = header_spans(host, online, cols, theme);
     if !online {
-        // `· offline` is the last span of an offline header; the sign-in takes its place.
-        if look.sign_in
-            && let Some(last) = spans.last_mut()
-        {
-            *last =
-                Span::whole(0, last.col, SIGN_IN).colour(mark_rgb(client_core::Status::Waiting));
+        // `· offline` is the last span of an offline header; the sign-in takes its place, or
+        // it says how old the rows under it are.
+        if let Some(last) = spans.last_mut() {
+            if look.sign_in {
+                *last = Span::whole(0, last.col, SIGN_IN)
+                    .colour(mark_rgb(client_core::Status::Waiting));
+            } else if let Some(secs) = look.offline_for {
+                let text = format!("{OFFLINE} {}", age_text(Duration::from_secs(secs)));
+                if last.col + columns(&text) < cols {
+                    *last = Span::whole(0, last.col, text).colour(theme.dim_fg);
+                }
+            }
         }
         return spans;
     }
@@ -1447,6 +1465,11 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                     polled: view.polled.contains(host),
                     game: view.game_hosts.contains(host),
                     sign_in: view.sign_in.contains(host),
+                    offline_for: view
+                        .offline_for
+                        .iter()
+                        .find(|(h, _)| h == host)
+                        .map(|(_, secs)| *secs),
                 };
                 for span in header_spans_look(host, *online, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);
@@ -1484,6 +1507,7 @@ fn sidebar(p: &mut Painter, view: &View, list: &Sidebar, l: &Layout, theme: &The
                         .iter()
                         .find(|(k, _)| k == key)
                         .map_or(0, |(_, n)| *n),
+                    stale: list.stale(key),
                 };
                 for span in session_spans(info, look, l.list_cols, theme) {
                     p.span((r.x, r.y), &span);
