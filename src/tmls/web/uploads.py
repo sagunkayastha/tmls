@@ -30,7 +30,8 @@ PRUNE_FIRST = 120                  # seconds after start before the first prune
 PRUNE_EVERY = 6 * 3600             # seconds between prunes
 PRUNE_TIMEOUT = 60
 KEEP_TIMEOUT = 60
-STEM_MAX = 80
+STEM_MAX = 80                      # characters before the extension
+STEM_BYTES = 150                   # and UTF-8 bytes: a file name is at most 255 bytes, stamp and suffixes come on top
 # What chat.store names a file: stamp, random part, then the original name made safe (newer ones).
 _STORED = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}-(?P<orig>.+)")
 _CACHED = re.compile(r"\w[\w.-]{0,240}")
@@ -48,8 +49,8 @@ def safe_name(name, fallback="file"):
     path = PurePosixPath(clean)
     suffix = path.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", path.suffix) else ""
     stem = clean[: len(clean) - len(suffix)] if suffix else clean
-    stem = stem[:STEM_MAX].rstrip("._-") or fallback
-    return stem + suffix
+    stem = stem[:STEM_MAX].encode()[:STEM_BYTES].decode(errors="ignore")
+    return (stem.rstrip("._-") or fallback) + suffix
 
 
 def original_name(cached):
@@ -83,11 +84,13 @@ def keep_script(cached, name, month):
         '[ -f "$src" ] && [ ! -L "$src" ] || { echo "that upload is not on this host any more" >&2; exit 3; }; '
         f'd="$HOME/{KEEP_DIR}/"{q(month)}; mkdir -p "$d" || exit 1; '
         f'stem={q(stem)}; ext={q(suffix)}; t="$stem$ext"; i=1; '
-        'while [ -e "$d/$t" ] || [ -L "$d/$t" ]; do '
+        # set -C: the name is taken only if nothing has it (another keep at the same moment: the next one)
+        'while :; do '
         'if [ -f "$d/$t" ] && [ ! -L "$d/$t" ] && cmp -s "$src" "$d/$t"; then echo "$d/$t"; exit 0; fi; '
+        'if [ ! -e "$d/$t" ] && [ ! -L "$d/$t" ] && (set -C; cat -- "$src" > "$d/$t") 2>/dev/null; then echo "$d/$t"; exit 0; fi; '
+        '[ -e "$d/$t" ] || [ -L "$d/$t" ] || { echo "could not write $d/$t" >&2; exit 1; }; '
         't="$stem-$i$ext"; i=$((i+1)); [ "$i" -le 999 ] || { echo "too many files named $stem$ext" >&2; exit 4; }; '
-        'done; '
-        '(set -C; cat -- "$src" > "$d/$t") && echo "$d/$t"'
+        'done'
     )
 
 

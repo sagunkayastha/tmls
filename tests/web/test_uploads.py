@@ -57,6 +57,8 @@ def test_safe_name_keeps_the_name_readable_and_harmless():
     assert uploads.safe_name("") == "file" and uploads.safe_name(None) == "file" and uploads.safe_name("...") == "file"
     long = uploads.safe_name("a" * 300 + ".png")
     assert long == "a" * uploads.STEM_MAX + ".png"
+    wide = uploads.safe_name("漢" * 100 + ".png")  # 3 bytes each: cut by bytes, never inside a character
+    assert wide == "漢" * 50 + ".png" and len(wide.encode()) <= uploads.STEM_BYTES + 4
 
 
 def test_original_name_comes_back_out_of_the_cached_one():
