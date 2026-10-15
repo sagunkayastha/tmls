@@ -115,10 +115,17 @@ def prune_script(days):
     )
 
 
+IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+
+
 async def keep(request):
     """`{"key": K, "path": P, "name": N?}` -> `{"ok": true, "path": KEPT}`. P is an upload path
     (in ~/.cache/tmls/images/ of the session's host); N the name to keep it under, else the
-    original name inside the cached one."""
+    original name inside the cached one.
+
+    Or `{"key": K, "blob": ID, "name": N?}`: a picture of the chat (/api/chat/blob), as Claude's
+    record holds it (a photo sent is in the record, not its path). Its bytes go to the host's
+    upload cache like an upload, then are kept from there; N defaults to "image"."""
     from tmls.web import chat  # chat imports this module for the names
     try:
         data = await request.json()
@@ -126,12 +133,34 @@ async def keep(request):
         data = None
     if not isinstance(data, dict):
         return chat._fail(400, "invalid request")
-    cached, name = cached_name(data.get("path")), data.get("name")
-    if cached is None or (name is not None and (not isinstance(name, str) or "\0" in name)):
+    name, blob_id = data.get("name"), data.get("blob")
+    if name is not None and (not isinstance(name, str) or "\0" in name):
         return chat._fail(400, "invalid request")
+    if blob_id is not None:
+        if not isinstance(blob_id, str) or not blob_id or "path" in data:
+            return chat._fail(400, "invalid request")
+        cached = None
+    else:
+        cached = cached_name(data.get("path"))
+        if cached is None:
+            return chat._fail(400, "invalid request")
     found = await chat._row(request.app, data.get("key"))
     if isinstance(found, web.Response):
         return found
+    if blob_id is not None:
+        blobs = request.app["chat_blobs"].get(data["key"])
+        picture = blobs.get(blob_id) if blobs else None
+        if picture is None:
+            return chat._fail(404, "that picture is not loaded any more: open the chat again")
+        mime, body = picture
+        name = safe_name(name or "image")
+        if not PurePosixPath(name).suffix and mime in IMAGE_EXT:
+            name += IMAGE_EXT[mime]
+        try:
+            stored = await chat.store(found[0], body, name)
+        except image_paste.ImageError as error:
+            return chat._fail(502, str(error) or "host unreachable")
+        cached = PurePosixPath(stored).name
     script = keep_script(cached, name or original_name(cached), f"{datetime.now():%Y-%m}")
     try:
         out = await image_paste._run(hosts.run_argv(found[0], script), timeout=KEEP_TIMEOUT)

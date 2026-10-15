@@ -282,3 +282,21 @@ async def test_keep_over_http_end_to_end(aiohttp_client, monkeypatch, tmp_path):
 async def test_keep_needs_login(aiohttp_client, monkeypatch, tmp_path):
     client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])}, login=False)
     assert (await client.post("/api/chat/keep", json={"key": "box/work", "path": "/h/.cache/tmls/images/a"})).status == 401
+
+
+async def test_keep_a_picture_of_the_chat(aiohttp_client, monkeypatch, tmp_path):
+    from tmls.web import chat
+    client = await make(aiohttp_client, monkeypatch, tmp_path, {"box": (True, [claude()])})
+    monkeypatch.setattr(hosts, "run_argv", lambda host, script: ["sh", "-c", script])
+    blobs = client.app["chat_blobs"].setdefault("box/work", chat.Blobs())
+    blobs.put("b1", "image/jpeg", b"jpeg bytes")
+    kept = await client.post("/api/chat/keep", json={"key": "box/work", "blob": "b1", "name": "photo 2026-10-15"})
+    body = await kept.json()
+    assert kept.status == 200 and body["path"].endswith("/photo_2026-10-15.jpg")
+    assert open(body["path"], "rb").read() == b"jpeg bytes"
+    again = await client.post("/api/chat/keep", json={"key": "box/work", "blob": "b1"})
+    assert (await again.json())["path"].endswith("/image.jpg")
+    for bad in ({"key": "box/work", "blob": ""}, {"key": "box/work", "blob": 3},
+                {"key": "box/work", "blob": "b1", "path": "/h/.cache/tmls/images/a"}):
+        assert (await client.post("/api/chat/keep", json=bad)).status == 400, bad
+    assert (await client.post("/api/chat/keep", json={"key": "box/work", "blob": "nope"})).status == 404
