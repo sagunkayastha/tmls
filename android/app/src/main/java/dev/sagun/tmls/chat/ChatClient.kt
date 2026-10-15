@@ -240,6 +240,12 @@ class ChatClient(
     /** The session was looked at: its "done" mark has been seen (as the web page does on a pick). */
     suspend fun seen(key: String): Reply = post("api/seen", Wire.seen(key))
 
+    /** Copy an upload to ~/Documents/tmls/YYYY-MM/ on the session's host; the reply's path is the copy. */
+    suspend fun keep(key: String, path: String, name: String? = null): Reply = post("api/chat/keep", Wire.keep(key, path, name))
+
+    /** Keep a picture of the chat (its blob id) the same way, under [name] (the server adds the extension). */
+    suspend fun keepPicture(key: String, blob: String, name: String? = null): Reply = post("api/chat/keep", Wire.keepPicture(key, blob, name))
+
     suspend fun logout(): Reply = post("logout", "", followRedirects = false)
 
     private suspend fun post(path: String, json: String, followRedirects: Boolean = true): Reply {

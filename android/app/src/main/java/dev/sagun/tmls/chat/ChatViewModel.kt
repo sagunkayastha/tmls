@@ -38,8 +38,8 @@ sealed interface ChatPhase {
 /** A file on its way to the session's host; [fraction] is null while the size is unknown. */
 data class Upload(val name: String, val fraction: Float?)
 
-/** One thing picked to attach; [temp] is the camera's own file, deleted after the upload. */
-data class Picked(val uri: Uri, val fallbackName: String, val temp: File? = null)
+/** One thing picked to attach; [temp] is the camera's own file, deleted after the upload; [mime] when known. */
+data class Picked(val uri: Uri, val fallbackName: String, val temp: File? = null, val mime: String? = null)
 
 /**
  * Everything the screens show: the sessions, the selected one, its chat, the message being typed.
