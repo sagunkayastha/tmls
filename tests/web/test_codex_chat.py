@@ -99,6 +99,26 @@ def test_pick_the_thread_named_in_the_pane_title_even_behind_a_spinner():
     assert codex_thread.pick(out) == {"pane": "%8", "thread": T1, "path": path(T1), "title": "Inspect page"}
 
 
+def test_pick_the_named_thread_behind_a_state_in_the_title():
+    # Codex puts its state first while it asks: "[ . ] Action Required | <name> | <folder>"
+    out = listing(["%8\t100\t/h\t[ . ] Action Required | Inspect page | h"], TUI + DAEMON, LOCKS,
+                  [(T1, "/h", "codex-tui"), (T2, "/h", "codex-tui")], [(T1, "Inspect page"), (T2, "Other")])
+    assert codex_thread.pick(out)["thread"] == T1
+
+
+def test_pick_the_thread_codex_resume_opened():
+    # `bash -lc 'codex resume <id>; exec bash'`: the thread is older than the TUI, and others are live
+    tui = ["100\t1\t900\tbash -lc codex resume " + T1 + "; exec bash",
+           "101\t100\t600\tnode /h/.local/bin/codex resume " + T1, "102\t101\t600\t/h/vendor/codex resume " + T1]
+    out = listing(["%8\t100\t/h\tcodex"], tui + DAEMON, LOCKS,
+                  [(T1, "/h", "codex-tui", "2026-10-15T03:30:00Z"), (T2, "/h", "codex-tui")])
+    assert codex_thread.pick(out)["thread"] == T1
+    # not live any more (closed, or the TUI moved on with /new): no guess from the command line
+    out = listing(["%8\t100\t/h\tcodex"], tui + DAEMON, [f"301\t/h/.codex/thread-writer-locks/{T2}.lock"],
+                  [(T2, "/h", "codex-tui", "2026-10-15T03:30:00Z")])
+    assert codex_thread.pick(out)["thread"] is None
+
+
 def test_pick_the_one_live_thread_in_the_folder_started_after_this_codex():
     out = listing(["%8\t100\t/h/proj\tcodex"], TUI + DAEMON, LOCKS,
                   [(T1, "/h", "codex-tui"), (T2, "/h/proj", "codex-tui")], cwds=[("101", "/h/proj")])
@@ -253,6 +273,22 @@ async def test_send_and_keys_go_to_codexs_pane_found_now(aiohttp_client, monkeyp
     assert (await client.post("/api/chat/key", json={"key": "box/cx", "name": "Escape"})).status == 200
     assert seen[-1] == "tmux send-keys -t %8 Escape"
     assert (await client.post("/api/chat/key", json={"key": "box/asks", "name": "Escape"})).status == 200
+
+
+async def test_codex_under_bash_lc_still_takes_input(aiohttp_client, monkeypatch, tmp_path):
+    # `bash -lc 'codex resume …; exec bash'`: Codex stays in bash's process group, tmux says bash
+    rows = {"box": (True, [codex()])}
+    found = [{"pane": "%8", "thread": T1, "path": None, "title": None}]
+    client = await codex_client(aiohttp_client, monkeypatch, tmp_path, found, rows)
+    seen = []
+
+    async def run(argv, stdin=None):
+        seen.append(argv[-1])
+        return 0, "screen\n@@tmls-command@@\nbash\n" if "capture-pane" in argv[-1] else ""
+
+    monkeypatch.setattr(prompts, "_run", run)
+    assert (await client.post("/api/chat/key", json={"key": "box/cx", "name": "Escape"})).status == 200
+    assert seen[-1] == "tmux send-keys -t %8 Escape"
 
 
 async def test_rows_say_which_sessions_open_as_a_chat(aiohttp_client, monkeypatch, tmp_path):

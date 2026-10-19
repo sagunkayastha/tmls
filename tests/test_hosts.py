@@ -359,13 +359,20 @@ def test_only_the_webs_listing_captures_agent_panes():
 
 def test_panes_script_on_a_stub_tmux(tmp_path):
     # tmux lists a codex pane, a node pane running codex (found by ps), a Claude pane with a status
-    # file (no capture) and a shell; captures print a title and a screen line
+    # file (no capture), a `bash -lc 'codex resume …'` pane (Codex in bash's process group, so tmux
+    # says bash) and a shell running `less pi` with a `pi` in the background (not an agent pane);
+    # captures print a title and a screen line
     (tmp_path / "tmux").write_text(
         "#!/bin/sh\ncase \"$*\" in\n"
         "*list-panes*) printf 'a:codex:/dev/pts/1:%%1\\nb:node:/dev/pts/2:%%2\\nc:claude:/dev/pts/3:%%3\\n"
-        "d:bash:/dev/pts/4:%%4\\n';;\n"
+        "d:bash:/dev/pts/4:%%4\\ne:bash:/dev/pts/5:%%5\\n';;\n"
         "*display-message*) echo \"title of $5\"; echo 'screen line';;\nesac\n")
-    (tmp_path / "ps").write_text("#!/bin/sh\necho '/usr/bin/node /home/me/.npm/bin/codex --yolo'\n")
+    (tmp_path / "ps").write_text(
+        "#!/bin/sh\ncase \"$4\" in\n"
+        "/dev/pts/2) echo ' 5  5 /usr/bin/node /home/me/.npm/bin/codex --yolo';;\n"
+        "/dev/pts/4) echo ' 7  7 bash -lc codex resume 01a1; exec bash'; echo ' 7  7 node-MainThread /home/me/.local/bin/codex resume 01a1';"
+        " echo ' 7  7 /home/me/.local/lib/codex/codex resume 01a1';;\n"
+        "/dev/pts/5) echo ' 9  9 -bash'; echo ' 9  9 less pi'; echo ' 9  3 pi';;\nesac\n")
     home = tmp_path / "home"
     (home / ".claude" / "sessions").mkdir(parents=True)
     (home / ".claude" / "sessions" / "1.json").write_text('{"tmux":"c:@1.%3"}')
@@ -374,4 +381,5 @@ def test_panes_script_on_a_stub_tmux(tmp_path):
     out = subprocess.run(["sh", "-c", hosts.panes_script()], capture_output=True, text=True,
                          env={"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(home)}).stdout
     assert out.splitlines() == [hosts.PANES, "tool a:codex", ">title of %1", ">screen line",
-                                "tool b:codex", ">title of %2", ">screen line", "tool c:claude"]
+                                "tool b:codex", ">title of %2", ">screen line", "tool c:claude",
+                                "tool d:codex", ">title of %4", ">screen line"]

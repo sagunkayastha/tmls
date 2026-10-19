@@ -8,7 +8,7 @@ record, so an open file alone doesn't tell. One host call prints the facts and p
 - for each live thread: its record's path and first line (folder, which client started it), and
   its name from Codex's state database when sqlite3 is there.
 A TUI holding a record itself (no daemon) settles it; else the thread named in the pane title,
-else the one live thread started in the pane's folder.
+else the thread `codex resume <id>` opened, else the one live thread started in the pane's folder.
 """
 import json
 import re
@@ -19,6 +19,7 @@ from tmls.web.record import epoch
 
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 RECORD = re.compile(rf"^/.*/rollout-[^/]*-({UUID})\.jsonl$")
+RESUME = re.compile(rf"\sresume\s+({UUID})(\s|$)")
 LOCK = re.compile(rf"/thread-writer-locks/({UUID})\.lock$")
 META = 3000  # bytes of a record's first line: the folder and client come before the long instructions
 
@@ -127,11 +128,18 @@ def pick(out):
             m = RECORD.match(target)
             if pid in pids and m and m.group(1) in threads:
                 return found(pane, m.group(1))
-    for pane, _ in with_codex:  # the thread named in the pane's title (after a busy spinner, if any)
-        title = re.sub(r"^\W+\s", "", pane["title"])
-        named = [i for i in live if names.get(i) and (title == names[i] or title.startswith(names[i] + " | "))]
+    for pane, _ in with_codex:
+        # the thread named in the pane's title: "<name> | <folder>" after a busy spinner, or with a
+        # state in front ("[ . ] Action Required | <name> | <folder>")
+        parts = [re.sub(r"^\W+\s", "", part) for part in pane["title"].split(" | ")]
+        named = [i for i in live if names.get(i) and names[i] in parts]
         if len(named) == 1:
             return found(pane, named[0])
+    for pane, pids in with_codex:  # `codex resume <id>`: stale after /new, so only after the title
+        resumed = {m.group(1) for p in pids for m in [RESUME.search(procs[p][2])] if m}
+        here = [i for i in resumed if i in live]
+        if len(here) == 1:
+            return found(pane, here[0])
     for pane, pids in with_codex:
         # the one live thread in this Codex's folder, started after it; only when no other Codex
         # on the host works in that folder (its threads would look the same)

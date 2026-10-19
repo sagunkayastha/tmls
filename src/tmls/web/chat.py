@@ -170,7 +170,9 @@ async def _guard(request, data, found, escape=False):
     if code != 0:
         return _fail(409, out.strip() or f"couldn't read {name}"), None
     screen, _, command = out.partition(MARK)
-    if command.strip() in SHELLS:
+    # Codex: codex_find just saw its TUI under the pane, and one started by `bash -lc 'codex …'`
+    # stays in bash's process group, so tmux names the pane `bash`
+    if codex is None and command.strip() in SHELLS:
         return _fail(409, f"{_agent(row)} is not running in {name} any more"), None
     # Codex: herdr's rules read its screen in the listing; a dialog newer than the last poll is missed
     asking = approve.request(screen) is not None if row.get("claude") else row.get("mark") == "waiting"

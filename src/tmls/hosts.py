@@ -51,8 +51,10 @@ CLAUDE = ('echo ---; for f in "$HOME"/.claude/sessions/*.json; do p=${f##*/}; '
 
 # Agent panes, for the web's rows (list_argv(screens=True)): after a PANES line, one
 # `tool SESSION:AGENT` line per pane that runs an agent CLI herdr has rules for (tmls/detect.py),
-# then, behind a ">" each, its title and its visible screen. A `node` pane is named by the first
-# agent its processes run (`ps -t`: codex, gemini and qwen start from npm). A Claude pane has no
+# then, behind a ">" each, its title and its visible screen. Any other pane is named by the first
+# agent its foreground process group runs: codex, gemini and qwen start from npm (`node`, or
+# `node-MainThread` on newer Node), and `bash -lc 'codex resume …; exec bash'` leaves the agent in
+# bash's group, so tmux reports `bash`. A Claude pane has no
 # screen when a status file names it: Claude's own status is exact, the screen only a fallback.
 # Ported from tmls-rs (client-core listing.rs). One capture per agent pane, inside the listing.
 PANES = "==panes=="
@@ -60,9 +62,10 @@ PANES_SCRIPT = (
     "echo " + PANES + "; e='{names}'; "
     "tmux -u list-panes -a -F '#{{session_name}}:#{{pane_current_command}}:#{{pane_tty}}:#{{pane_id}}' 2>/dev/null "
     "| while IFS= read -r l; do p=${{l##*:}}; l=${{l%:*}}; t=${{l##*:}}; r=${{l%:*}}; c=${{r##*:}}; "
-    "if [ \"$c\" = node ]; then m=$(ps -o args= -t \"$t\" 2>/dev/null </dev/null "
-    "| grep -o -E '(^|[/ ])('\"$e\"')( |$)' | head -n 1); m=${{m%\" \"}}; m=${{m##*[/ ]}}; "
-    "[ -n \"$m\" ] && c=$m; fi; "
+    "case \"|$e|\" in *\"|$c|\"*) ;; *) m=$(ps -o tpgid=,pgid=,args= -t \"$t\" 2>/dev/null </dev/null "
+    "| awk '$1 == $2 {{ w = $3; if (w ~ /(^|\\/)(node|bun)[^\\/]*$/) w = $4; print w }}' "
+    "| grep -o -E '(^|/)('\"$e\"')$' | head -n 1); m=${{m##*/}}; "
+    "[ -n \"$m\" ] && c=$m;; esac; "
     "case \"|$e|\" in *\"|$c|\"*) ;; *) continue;; esac; "
     "echo \"tool ${{r%:*}}:$c\"; "
     "case $c in claude*) [ -n \"${{_tmls_s+x}}\" ] || _tmls_s=$(cat \"$HOME\"/.claude/sessions/*.json 2>/dev/null); "
