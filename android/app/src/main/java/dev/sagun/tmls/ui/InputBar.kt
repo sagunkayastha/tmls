@@ -69,6 +69,7 @@ import dev.sagun.tmls.chat.ChatViewModel
 import dev.sagun.tmls.chat.Choice
 import dev.sagun.tmls.chat.Picked
 import dev.sagun.tmls.chat.Row as SessionRow
+import dev.sagun.tmls.chat.Sessions
 import dev.sagun.tmls.chat.Upload
 import dev.sagun.tmls.chat.denyAt
 import java.io.File
@@ -129,7 +130,7 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
         val prompt = row.prompt?.takeIf { row.key !in vm.answered }
         prompt?.let { PromptCard(it, row.choices, vm.answering, vm::answer) }
         if (row.waiting && row.prompt == null) {
-            WaitingCard(row.waitingFor ?: "input needed", onShowTerminal = { vm.showTerminal(true) })
+            WaitingCard(Sessions.agentName(row.agent) ?: "Claude", row.waitingFor ?: "input needed", onShowTerminal = { vm.showTerminal(true) })
         }
         Surface(color = Tm.Raised, shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Tm.Line)) {
             Column(Modifier.padding(8.dp)) {
@@ -166,7 +167,7 @@ fun Composer(vm: ChatViewModel, row: SessionRow) {
                     if (row.working) {
                         Row(
                             Modifier.clip(CircleShape).background(Tm.Bg)
-                                .clickable(enabled = !vm.stopping, role = Role.Button, onClickLabel = "Stop Claude", onClick = vm::stop)
+                                .clickable(enabled = !vm.stopping, role = Role.Button, onClickLabel = "Stop ${Sessions.agentName(row.agent) ?: "Claude"}", onClick = vm::stop)
                                 .padding(start = 12.dp, end = 16.dp).heightIn(min = 44.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -392,12 +393,12 @@ private fun PromptCard(lines: List<String>, choices: List<Choice>?, busy: Boolea
     }
 }
 
-/** Claude waits on a menu or a question the app cannot draw: say so, and offer the terminal. */
+/** The agent waits on a menu or a question the app cannot draw: say so, and offer the terminal. */
 @Composable
-private fun WaitingCard(reason: String, onShowTerminal: () -> Unit) {
+private fun WaitingCard(agent: String, reason: String, onShowTerminal: () -> Unit) {
     Surface(color = Tm.Raised, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Tm.Line)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Claude is waiting: $reason", style = Tm.Small)
+            Text("$agent is waiting: $reason", style = Tm.Small)
             OutlinedButton(onClick = onShowTerminal, border = BorderStroke(1.dp, Tm.Line)) { Text("Show terminal", color = Tm.Text) }
         }
     }

@@ -431,9 +431,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app), ChatClient.Sink, 
         webGen++
     }
 
-    /** The chat feed follows the selected session, when Claude runs in it. */
+    /** The chat feed follows the selected session, when Claude or Codex runs in it. */
     private fun syncChat() {
-        val want = row?.takeIf { it.claude }?.key
+        val want = row?.takeIf { it.chat }?.key
         if (want == chatKey) return
         chatKey = want
         resetChat()

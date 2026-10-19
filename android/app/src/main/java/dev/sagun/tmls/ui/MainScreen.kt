@@ -134,8 +134,8 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
     // A session just made with Claude in it, before Claude is up: "Starting Claude…", then its chat.
     // One that waits already (Claude's trust dialog, read off its screen) shows its terminal to answer in.
     val awaitingClaude = creating == null && row != null && row.key == vm.starting && !row.claude && !row.waiting && !vm.terminal
-    // The terminal: for a session without Claude, or because it was asked for.
-    val terminal = creating == null && !awaitingClaude && row != null && (!row.claude || vm.terminal)
+    // The terminal: for a session without Claude or Codex, or because it was asked for.
+    val terminal = creating == null && !awaitingClaude && row != null && (!row.chat || vm.terminal)
 
     // Nothing to show yet (first run, or the last session is gone): the list of sessions.
     LaunchedEffect(vm.listed) {
@@ -185,7 +185,7 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
                     busy = creating == null && row?.working == true,
                     onMenu = { scope.launch { drawer.open() } },
                     items = buildList {
-                        if (creating == null && row != null && row.claude) {
+                        if (creating == null && row != null && row.chat) {
                             add((if (terminal) "Show chat" else "Show terminal") to { vm.showTerminal(!terminal) })
                         }
                         add("Reload" to vm::reload)
@@ -230,7 +230,7 @@ fun MainScreen(url: String, updater: Updater, onLeave: () -> Unit, onChangeServe
                                 backEnabled = !drawer.isOpen,
                                 // Back from a terminal that was asked for: the chat again. From a session that
                                 // has nothing but its terminal: out of the app, the session stays.
-                                onBack = { if (row?.claude == true) vm.showTerminal(false) else onLeave() },
+                                onBack = { if (row?.chat == true) vm.showTerminal(false) else onLeave() },
                                 onCurrent = vm::select,
                             )
                         }

@@ -35,6 +35,8 @@ data class Row(
     val background: Boolean = false,
     /** A Claude Code session runs in it: a chat exists. An older server never says so: terminal only. */
     val claude: Boolean = false,
+    /** It opens as a chat: Claude or Codex runs in it. An older server says only [claude]. */
+    val chat: Boolean = claude,
     /** Percent of Claude's context in use. */
     val context: Int? = null,
     val model: String? = null,
@@ -184,6 +186,7 @@ object Wire {
             online = o.bool("online") ?: true,
             background = o.bool("background") ?: false,
             claude = o.bool("claude") ?: false,
+            chat = o.bool("chat") ?: o.bool("claude") ?: false,
             context = o.long("context")?.toInt(),
             model = o.str("model"),
             agent = o.str("agent"),

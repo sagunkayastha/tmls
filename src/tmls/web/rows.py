@@ -52,6 +52,8 @@ def build(state, found, extras):
                         "claude": bool(s.claude), "model": s.model if s.claude else None,
                         # which agent CLI runs in it (claude, codex, opencode, another herdr id), or None
                         "agent": s.agent,
+                        # the phone opens it as a chat: Claude's record or Codex's (chat.py)
+                        "chat": bool(s.claude) or s.agent == "codex",
                         "context": hosts.context_pct(s) if s.claude else None,
                         "online": True, "background": hosts.is_background(host)})
     state.marks = {r["key"]: r["mark"] for r in out}

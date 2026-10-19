@@ -38,11 +38,22 @@ class WireTest {
         assertNull(old.choices)
     }
 
+    @Test fun aCodexRowOpensAsAChatAndAnOlderClaudeRowStillDoes() {
+        val rows = (Wire.event(
+            """{"t":"rows","set":[{"key":"a/cx","host":"a","name":"cx","mark":"idle","claude":false,"chat":true,"agent":"codex"},
+               {"key":"a/oc","host":"a","name":"oc","mark":"idle","claude":false,"chat":false,"agent":"opencode"},
+               {"key":"a/cl","host":"a","name":"cl","mark":"idle","claude":true}],"gone":[]}"""
+        ) as EventMsg.Rows).set
+        assertEquals(listOf(true, false, true), rows.map { it.chat })
+        assertFalse(rows[0].claude)
+    }
+
     @Test fun aRowOfAnOlderServerHasNoChat() {
         val msg = Wire.event("""{"t":"rows","set":[{"key":"pc/x","host":"pc","label":"pc","name":"x","mark":"idle","shown":null,"pane":null}],"gone":[]}""") as EventMsg.Rows
         val row = msg.set.single()
         assertFalse(msg.full)
         assertFalse(row.claude)
+        assertFalse(row.chat)
         assertNull(row.context)
         assertNull(row.prompt)
         assertNull(row.pane)

@@ -105,7 +105,7 @@ fun SharePicker(vm: ChatViewModel, share: Share, onDone: () -> Unit) {
             when {
                 !reachable -> Text("The tmls server can't be reached right now, so nothing can be shared. It is tried again by itself.",
                     style = Tm.Small.copy(color = Tm.Fail))
-                targets.isEmpty() -> Text("No Claude session is running on a host that answers. Start one first.",
+                targets.isEmpty() -> Text("No Claude or Codex session is running on a host that answers. Start one first.",
                     style = Tm.Small.copy(color = Tm.Fail))
                 else -> LazyColumn(Modifier.heightIn(max = 300.dp)) {
                     items(targets, key = { it.key }) { row ->

@@ -96,7 +96,7 @@ data class Share(val text: String?, val subject: String?, val files: List<Picked
          * in the drawer's order.
          */
         fun targets(groups: List<HostGroup>, selected: String?): List<Row> {
-            val all = groups.flatMap { it.rows }.filter { it.claude && it.online }
+            val all = groups.flatMap { it.rows }.filter { it.chat && it.online }
             return all.withIndex().sortedWith(compareBy({ !it.value.waiting }, { it.value.key != selected }, { !it.value.working }, { it.index }))
                 .map { it.value }
         }
